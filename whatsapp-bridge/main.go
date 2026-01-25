@@ -265,7 +265,30 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 		}
 	}
 
+	// Auto-detect disappearing message timer for this chat
+	// Note: For individual chats, the disappearing timer is synced via app state
+	// from the phone and not readily available via the store API. We only
+	// auto-detect for group chats where GetGroupInfo provides the timer.
+	var ephemeralExpiration uint32 = 0
+	if recipientJID.Server == "g.us" {
+		// Group chat - get group info which includes DisappearingTimer
+		groupInfo, err := client.GetGroupInfo(context.Background(), recipientJID)
+		if err == nil && groupInfo.DisappearingTimer > 0 {
+			ephemeralExpiration = groupInfo.DisappearingTimer
+			fmt.Printf("Auto-detected group disappearing timer: %d seconds\n", ephemeralExpiration)
+		}
+	}
+	// Individual chats default to 0 (no expiration) as the timer isn't
+	// available through the local store API
+
 	msg := &waProto.Message{}
+
+	// Set ephemeral expiration if detected
+	if ephemeralExpiration > 0 {
+		msg.MessageContextInfo = &waProto.MessageContextInfo{
+			MessageAddOnDurationInSecs: proto.Uint32(ephemeralExpiration),
+		}
+	}
 
 	// Check if we have media to send
 	if mediaPath != "" {
