@@ -5,14 +5,12 @@ from whatsapp import (
     list_messages as whatsapp_list_messages,
     list_chats as whatsapp_list_chats,
     get_chat as whatsapp_get_chat,
-    get_direct_chat_by_contact as whatsapp_get_direct_chat_by_contact,
-    get_contact_chats as whatsapp_get_contact_chats,
-    get_last_interaction as whatsapp_get_last_interaction,
     get_message_context as whatsapp_get_message_context,
     send_message as whatsapp_send_message,
     send_file as whatsapp_send_file,
     send_audio_message as whatsapp_audio_voice_message,
-    download_media as whatsapp_download_media
+    download_media as whatsapp_download_media,
+    request_sync as whatsapp_request_sync
 )
 
 # Initialize FastMCP server
@@ -107,38 +105,6 @@ def get_chat(chat_jid: str, include_last_message: bool = True) -> Dict[str, Any]
     return chat
 
 @mcp.tool()
-def get_direct_chat_by_contact(sender_phone_number: str) -> Dict[str, Any]:
-    """Get WhatsApp chat metadata by sender phone number.
-    
-    Args:
-        sender_phone_number: The phone number to search for
-    """
-    chat = whatsapp_get_direct_chat_by_contact(sender_phone_number)
-    return chat
-
-@mcp.tool()
-def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Dict[str, Any]]:
-    """Get all WhatsApp chats involving the contact.
-    
-    Args:
-        jid: The contact's JID to search for
-        limit: Maximum number of chats to return (default 20)
-        page: Page number for pagination (default 0)
-    """
-    chats = whatsapp_get_contact_chats(jid, limit, page)
-    return chats
-
-@mcp.tool()
-def get_last_interaction(jid: str) -> str:
-    """Get most recent WhatsApp message involving the contact.
-    
-    Args:
-        jid: The JID of the contact to search for
-    """
-    message = whatsapp_get_last_interaction(jid)
-    return message
-
-@mcp.tool()
 def get_message_context(
     message_id: str,
     before: int = 5,
@@ -224,16 +190,16 @@ def send_audio_message(recipient: str, media_path: str) -> Dict[str, Any]:
 @mcp.tool()
 def download_media(message_id: str, chat_jid: str) -> Dict[str, Any]:
     """Download media from a WhatsApp message and get the local file path.
-    
+
     Args:
         message_id: The ID of the message containing the media
         chat_jid: The JID of the chat containing the message
-    
+
     Returns:
         A dictionary containing success status, a status message, and the file path if successful
     """
     file_path = whatsapp_download_media(message_id, chat_jid)
-    
+
     if file_path:
         return {
             "success": True,
@@ -245,6 +211,29 @@ def download_media(message_id: str, chat_jid: str) -> Dict[str, Any]:
             "success": False,
             "message": "Failed to download media"
         }
+
+@mcp.tool()
+def request_sync(chat_jid: Optional[str] = None, from_timestamp: Optional[str] = None) -> Dict[str, Any]:
+    """Request a history sync from WhatsApp servers to refresh the message cache.
+
+    Use this when recent messages aren't appearing or data seems stale.
+    The sync is asynchronous - messages will update as they arrive from WhatsApp servers.
+
+    Args:
+        chat_jid: Optional chat JID to request history sync for a specific chat.
+                  If not provided, returns info about how to use targeted sync.
+        from_timestamp: Optional ISO8601 timestamp (e.g., "2026-01-20T22:00:00Z").
+                       Use current UTC time to fetch recent phone-sent messages
+                       that may not be in the cache (e.g., sent while bridge offline).
+
+    Returns:
+        A dictionary containing success status and a status message
+    """
+    success, message = whatsapp_request_sync(chat_jid, from_timestamp)
+    return {
+        "success": success,
+        "message": message
+    }
 
 if __name__ == "__main__":
     # Initialize and run the server

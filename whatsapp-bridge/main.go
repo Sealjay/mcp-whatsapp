@@ -24,6 +24,7 @@ import (
 
 	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
+	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
@@ -43,7 +44,8 @@ type Message struct {
 
 // Database handler for storing message history
 type MessageStore struct {
-	db *sql.DB
+	db         *sql.DB
+	whatsmeowDB *sql.DB // Reference to whatsmeow DB for LID resolution
 }
 
 // Initialize message store
@@ -59,6 +61,13 @@ func NewMessageStore() (*MessageStore, error) {
 		return nil, fmt.Errorf("failed to open message database: %v", err)
 	}
 
+	// Open whatsmeow database for LID resolution (read-only)
+	whatsmeowDB, err := sql.Open("sqlite3", "file:store/whatsapp.db?mode=ro")
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to open whatsmeow database: %v", err)
+	}
+
 	// Create tables if they don't exist
 	_, err = db.Exec(`
 		CREATE TABLE IF NOT EXISTS chats (
@@ -66,7 +75,7 @@ func NewMessageStore() (*MessageStore, error) {
 			name TEXT,
 			last_message_time TIMESTAMP
 		);
-		
+
 		CREATE TABLE IF NOT EXISTS messages (
 			id TEXT,
 			chat_jid TEXT,
@@ -87,15 +96,42 @@ func NewMessageStore() (*MessageStore, error) {
 	`)
 	if err != nil {
 		db.Close()
+		whatsmeowDB.Close()
 		return nil, fmt.Errorf("failed to create tables: %v", err)
 	}
 
-	return &MessageStore{db: db}, nil
+	return &MessageStore{db: db, whatsmeowDB: whatsmeowDB}, nil
 }
 
 // Close the database connection
 func (store *MessageStore) Close() error {
+	if store.whatsmeowDB != nil {
+		store.whatsmeowDB.Close()
+	}
 	return store.db.Close()
+}
+
+// ResolveLIDToJID converts a LID-based JID to a standard JID format using the whatsmeow_lid_map table.
+// If the JID is already in standard format or lookup fails, returns the original JID.
+func (store *MessageStore) ResolveLIDToJID(jid string) string {
+	// Only process LID format JIDs
+	if !strings.HasSuffix(jid, "@lid") {
+		return jid // Already standard format
+	}
+
+	// Extract the LID (numeric part before @lid)
+	lid := strings.Split(jid, "@")[0]
+
+	// Look up phone number in whatsmeow's LID map
+	var phone string
+	err := store.whatsmeowDB.QueryRow("SELECT pn FROM whatsmeow_lid_map WHERE lid = ?", lid).Scan(&phone)
+	if err == nil && phone != "" {
+		// Successfully resolved - return as standard JID
+		return phone + "@s.whatsapp.net"
+	}
+
+	// Lookup failed - return original JID
+	return jid
 }
 
 // Store a chat in the database
@@ -203,7 +239,7 @@ type SendMessageRequest struct {
 }
 
 // Function to send a WhatsApp message
-func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message string, mediaPath string) (bool, string) {
+func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, recipient string, message string, mediaPath string) (bool, string) {
 	if !client.IsConnected() {
 		return false, "Not connected to WhatsApp"
 	}
@@ -362,10 +398,77 @@ func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message str
 	}
 
 	// Send message
-	_, err = client.SendMessage(context.Background(), recipientJID, msg)
+	sendResp, err := client.SendMessage(context.Background(), recipientJID, msg)
 
 	if err != nil {
 		return false, fmt.Sprintf("Error sending message: %v", err)
+	}
+
+	// Store the sent message in the database
+	// Normalize the chat JID (resolve LID to standard JID for direct chats)
+	chatJID := recipientJID.String()
+	if !strings.HasSuffix(chatJID, "@g.us") {
+		chatJID = messageStore.ResolveLIDToJID(chatJID)
+	}
+
+	// Get chat name for storing
+	var chatName string
+	if recipientJID.Server == "g.us" {
+		// Group chat - try to get group name
+		groupInfo, err := client.GetGroupInfo(context.Background(), recipientJID)
+		if err == nil && groupInfo.Name != "" {
+			chatName = groupInfo.Name
+		} else {
+			chatName = fmt.Sprintf("Group %s", recipientJID.User)
+		}
+	} else {
+		// Direct chat - try to get contact name
+		contact, err := client.Store.Contacts.GetContact(context.Background(), recipientJID)
+		if err == nil && contact.FullName != "" {
+			chatName = contact.FullName
+		} else {
+			chatName = recipientJID.User
+		}
+	}
+
+	// Store chat entry
+	now := time.Now()
+	messageStore.StoreChat(chatJID, chatName, now)
+
+	// Determine sender (ourselves)
+	ourJID := client.Store.ID.User
+
+	// Extract media info for storage if applicable
+	var storedMediaType, storedFilename, storedURL string
+	var storedMediaKey, storedFileSHA256, storedFileEncSHA256 []byte
+	var storedFileLength uint64
+
+	if mediaPath != "" {
+		storedMediaType, storedFilename, storedURL, storedMediaKey, storedFileSHA256, storedFileEncSHA256, storedFileLength = extractMediaInfo(msg)
+	}
+
+	// Store the message
+	err = messageStore.StoreMessage(
+		sendResp.ID,
+		chatJID,
+		ourJID,
+		message,
+		now,
+		true, // isFromMe
+		storedMediaType,
+		storedFilename,
+		storedURL,
+		storedMediaKey,
+		storedFileSHA256,
+		storedFileEncSHA256,
+		storedFileLength,
+	)
+
+	if err != nil {
+		// Log but don't fail - message was sent successfully
+		fmt.Printf("Warning: Failed to store sent message: %v\n", err)
+	} else {
+		fmt.Printf("[%s] → %s: %s\n", now.Format("2006-01-02 15:04:05"), chatJID, message)
 	}
 
 	return true, fmt.Sprintf("Message sent to %s", recipient)
@@ -410,9 +513,29 @@ func extractMediaInfo(msg *waProto.Message) (mediaType string, filename string, 
 
 // Handle regular incoming messages with media support
 func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *events.Message, logger waLog.Logger) {
-	// Save message to database
-	chatJID := msg.Info.Chat.String()
+	// Get raw JID and sender from the message
+	rawChatJID := msg.Info.Chat.String()
+	rawSender := msg.Info.Sender.String()
+
+	// Normalize chat JID: convert LID format to standard JID for direct chats
+	// Group chats (@g.us) are left unchanged
+	chatJID := rawChatJID
+	if !strings.HasSuffix(rawChatJID, "@g.us") {
+		chatJID = messageStore.ResolveLIDToJID(rawChatJID)
+		if chatJID != rawChatJID {
+			logger.Infof("Normalized chat JID: %s -> %s", rawChatJID, chatJID)
+		}
+	}
+
+	// Normalize sender: resolve LID to phone number
+	// For group messages, sender might be in LID format
 	sender := msg.Info.Sender.User
+	normalizedSender := messageStore.ResolveLIDToJID(rawSender)
+	if normalizedSender != rawSender {
+		// Extract just the user part (phone number) from the normalized JID
+		sender = strings.Split(normalizedSender, "@")[0]
+		logger.Infof("Normalized sender: %s -> %s", msg.Info.Sender.User, sender)
+	}
 
 	// Get appropriate chat name (pass nil for conversation since we don't have one for regular messages)
 	name := GetChatName(client, messageStore, msg.Info.Chat, chatJID, nil, sender, logger)
@@ -641,7 +764,7 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 	}
 
 	// Download the media using whatsmeow client
-	mediaData, err := client.Download(downloader)
+	mediaData, err := client.Download(context.Background(), downloader)
 	if err != nil {
 		return false, "", "", "", fmt.Errorf("failed to download media: %v", err)
 	}
@@ -706,7 +829,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		fmt.Println("Received request to send message", req.Message, req.MediaPath)
 
 		// Send the message
-		success, message := sendWhatsAppMessage(client, req.Recipient, req.Message, req.MediaPath)
+		success, message := sendWhatsAppMessage(client, messageStore, req.Recipient, req.Message, req.MediaPath)
 		fmt.Println("Message sent", success, message)
 		// Set response headers
 		w.Header().Set("Content-Type", "application/json")
@@ -720,6 +843,80 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		json.NewEncoder(w).Encode(SendMessageResponse{
 			Success: success,
 			Message: message,
+		})
+	})
+
+	// Handler for requesting history sync for a specific chat
+	http.HandleFunc("/api/request-history-sync", func(w http.ResponseWriter, r *http.Request) {
+		// Allow POST requests
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+
+		if !client.IsConnected() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": false,
+				"message": "Client not connected to WhatsApp",
+			})
+			return
+		}
+
+		// Parse request body for optional chat_jid and from_timestamp
+		var req struct {
+			ChatJID       string `json:"chat_jid"`
+			FromTimestamp string `json:"from_timestamp"` // ISO8601 format, e.g. "2026-01-20T21:00:00Z"
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+
+		if req.ChatJID == "" {
+			// No chat specified - return info about how to use
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": true,
+				"message": "Provide chat_jid to sync. Optionally add from_timestamp (ISO8601) to sync from a specific time, or omit to sync from newest cached message.",
+			})
+			return
+		}
+
+		// Request history sync for specific chat with panic recovery
+		var syncErr error
+		var syncMsg string
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					syncErr = fmt.Errorf("panic during sync request: %v", r)
+				}
+			}()
+
+			if req.FromTimestamp != "" {
+				// Parse the timestamp and sync from that point
+				ts, err := time.Parse(time.RFC3339, req.FromTimestamp)
+				if err != nil {
+					syncErr = fmt.Errorf("invalid timestamp format (use ISO8601/RFC3339): %v", err)
+					return
+				}
+				syncMsg = requestHistorySyncFromTimestamp(client, messageStore, req.ChatJID, ts)
+			} else {
+				// Default: sync from newest cached message
+				syncMsg = requestHistorySyncForChat(client, messageStore, req.ChatJID)
+			}
+		}()
+
+		if syncErr != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": false,
+				"message": syncErr.Error(),
+			})
+			return
+		}
+
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+			"message": syncMsg,
 		})
 	})
 
@@ -774,6 +971,19 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		})
 	})
 
+	// Handler for checking connection status
+	http.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		isConnected := client.IsConnected()
+		isLoggedIn := client.Store.ID != nil
+
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"connected": isConnected,
+			"logged_in": isLoggedIn,
+		})
+	})
+
 	// Start the server
 	serverAddr := fmt.Sprintf(":%d", port)
 	fmt.Printf("Starting REST API server on %s...\n", serverAddr)
@@ -791,6 +1001,15 @@ func main() {
 	logger := waLog.Stdout("Client", "INFO", true)
 	logger.Infof("Starting WhatsApp client...")
 
+	// Fetch and set the latest WhatsApp version to avoid "client outdated" errors
+	latestVersion, err := whatsmeow.GetLatestVersion(context.Background(), nil)
+	if err != nil {
+		logger.Warnf("Failed to get latest WhatsApp version: %v (using default)", err)
+	} else {
+		store.SetWAVersion(*latestVersion)
+		logger.Infof("Using WhatsApp version: %s", latestVersion.String())
+	}
+
 	// Create database connection for storing session data
 	dbLog := waLog.Stdout("Database", "INFO", true)
 
@@ -800,14 +1019,14 @@ func main() {
 		return
 	}
 
-	container, err := sqlstore.New("sqlite3", "file:store/whatsapp.db?_foreign_keys=on", dbLog)
+	container, err := sqlstore.New(context.Background(), "sqlite3", "file:store/whatsapp.db?_foreign_keys=on", dbLog)
 	if err != nil {
 		logger.Errorf("Failed to connect to database: %v", err)
 		return
 	}
 
 	// Get device store - This contains session information
-	deviceStore, err := container.GetFirstDevice()
+	deviceStore, err := container.GetFirstDevice(context.Background())
 	if err != nil {
 		if err == sql.ErrNoRows {
 			// No device exists, create one
@@ -850,6 +1069,22 @@ func main() {
 
 		case *events.LoggedOut:
 			logger.Warnf("Device logged out, please scan QR code to log in again")
+
+		case *events.OfflineSyncPreview:
+			logger.Infof("Offline sync starting - %d messages, %d receipts pending", v.Messages, v.Receipts)
+
+		case *events.OfflineSyncCompleted:
+			logger.Infof("Offline sync completed - %d messages synced", v.Count)
+
+		case *events.Receipt:
+			logger.Debugf("Receipt for %d messages: %s", len(v.MessageIDs), v.Type)
+
+		case *events.UndecryptableMessage:
+			logger.Warnf("Undecryptable message from %s", v.Info.Sender)
+
+		default:
+			// Log any unhandled event types for debugging
+			logger.Debugf("Unhandled event type: %T", v)
 		}
 	})
 
@@ -973,7 +1208,7 @@ func GetChatName(client *whatsmeow.Client, messageStore *MessageStore, jid types
 
 		// If we didn't get a name, try group info
 		if name == "" {
-			groupInfo, err := client.GetGroupInfo(jid)
+			groupInfo, err := client.GetGroupInfo(context.Background(), jid)
 			if err == nil && groupInfo.Name != "" {
 				name = groupInfo.Name
 			} else {
@@ -988,7 +1223,7 @@ func GetChatName(client *whatsmeow.Client, messageStore *MessageStore, jid types
 		logger.Infof("Getting name for contact: %s", chatJID)
 
 		// Just use contact info (full name)
-		contact, err := client.Store.Contacts.GetContact(jid)
+		contact, err := client.Store.Contacts.GetContact(context.Background(), jid)
 		if err == nil && contact.FullName != "" {
 			name = contact.FullName
 		} else if sender != "" {
@@ -1007,7 +1242,11 @@ func GetChatName(client *whatsmeow.Client, messageStore *MessageStore, jid types
 
 // Handle history sync events
 func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, historySync *events.HistorySync, logger waLog.Logger) {
-	fmt.Printf("Received history sync event with %d conversations\n", len(historySync.Data.Conversations))
+	syncType := "UNKNOWN"
+	if historySync.Data.SyncType != nil {
+		syncType = historySync.Data.SyncType.String()
+	}
+	fmt.Printf("Received history sync event (type: %s) with %d conversations\n", syncType, len(historySync.Data.Conversations))
 
 	syncedCount := 0
 	for _, conversation := range historySync.Data.Conversations {
@@ -1016,13 +1255,23 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 			continue
 		}
 
-		chatJID := *conversation.ID
+		rawChatJID := *conversation.ID
 
 		// Try to parse the JID
-		jid, err := types.ParseJID(chatJID)
+		jid, err := types.ParseJID(rawChatJID)
 		if err != nil {
-			logger.Warnf("Failed to parse JID %s: %v", chatJID, err)
+			logger.Warnf("Failed to parse JID %s: %v", rawChatJID, err)
 			continue
+		}
+
+		// Normalize chat JID: convert LID format to standard JID for direct chats
+		// Group chats (@g.us) are left unchanged
+		chatJID := rawChatJID
+		if !strings.HasSuffix(rawChatJID, "@g.us") {
+			chatJID = messageStore.ResolveLIDToJID(rawChatJID)
+			if chatJID != rawChatJID {
+				logger.Infof("History sync: Normalized chat JID: %s -> %s", rawChatJID, chatJID)
+			}
 		}
 
 		// Get appropriate chat name by passing the history sync conversation directly
@@ -1088,7 +1337,15 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 						isFromMe = *msg.Message.Key.FromMe
 					}
 					if !isFromMe && msg.Message.Key.Participant != nil && *msg.Message.Key.Participant != "" {
-						sender = *msg.Message.Key.Participant
+						rawSender := *msg.Message.Key.Participant
+						// Normalize sender: resolve LID to phone number
+						normalizedSender := messageStore.ResolveLIDToJID(rawSender)
+						if normalizedSender != rawSender {
+							sender = strings.Split(normalizedSender, "@")[0]
+						} else {
+							// Extract user part from the JID
+							sender = strings.Split(rawSender, "@")[0]
+						}
 					} else if isFromMe {
 						sender = client.Store.ID.User
 					} else {
@@ -1147,40 +1404,135 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 	fmt.Printf("History sync complete. Stored %d messages.\n", syncedCount)
 }
 
-// Request history sync from the server
-func requestHistorySync(client *whatsmeow.Client) {
-	if client == nil {
-		fmt.Println("Client is not initialized. Cannot request history sync.")
-		return
+// Request history sync for a specific chat by looking up the newest message.
+// Uses the newest message as anchor so backward sync fills gaps after reconnection.
+func requestHistorySyncForChat(client *whatsmeow.Client, store *MessageStore, chatJID string) string {
+	fmt.Printf("[SYNC] Requesting history sync for chat: %s\n", chatJID)
+
+	if client == nil || !client.IsConnected() {
+		return "Client not connected"
 	}
 
-	if !client.IsConnected() {
-		fmt.Println("Client is not connected. Please ensure you are connected to WhatsApp first.")
-		return
+	// Parse the JID
+	jid, err := types.ParseJID(chatJID)
+	if err != nil {
+		return fmt.Sprintf("Invalid JID format: %v", err)
 	}
 
-	if client.Store.ID == nil {
-		fmt.Println("Client is not logged in. Please scan the QR code first.")
-		return
-	}
+	// Get the NEWEST message we have for this chat from the database
+	// This allows backward sync to fill gaps (messages between old data and newest)
+	var msgID string
+	var timestamp time.Time
+	var isFromMe bool
 
-	// Build and send a history sync request
-	historyMsg := client.BuildHistorySyncRequest(nil, 100)
-	if historyMsg == nil {
-		fmt.Println("Failed to build history sync request.")
-		return
-	}
-
-	_, err := client.SendMessage(context.Background(), types.JID{
-		Server: "s.whatsapp.net",
-		User:   "status",
-	}, historyMsg)
+	err = store.db.QueryRow(`
+		SELECT id, timestamp, is_from_me
+		FROM messages
+		WHERE chat_jid = ?
+		ORDER BY timestamp DESC
+		LIMIT 1
+	`, chatJID).Scan(&msgID, &timestamp, &isFromMe)
 
 	if err != nil {
-		fmt.Printf("Failed to request history sync: %v\n", err)
-	} else {
-		fmt.Println("History sync requested. Waiting for server response...")
+		return fmt.Sprintf("No messages found for chat %s: %v", chatJID, err)
 	}
+
+	fmt.Printf("[SYNC] Found newest message: ID=%s, timestamp=%v, isFromMe=%v\n", msgID, timestamp, isFromMe)
+
+	// Try to get LID for this chat (phone may use LID format internally)
+	requestJID := jid
+	if jid.Server == types.DefaultUserServer {
+		lidJID, err := client.Store.LIDs.GetLIDForPN(context.Background(), jid)
+		if err == nil && !lidJID.IsEmpty() {
+			fmt.Printf("[SYNC] Found LID mapping: %s -> %s\n", jid.String(), lidJID.String())
+			requestJID = lidJID
+		} else {
+			fmt.Printf("[SYNC] No LID mapping found for %s, using original JID\n", jid.String())
+		}
+	}
+
+	// Build MessageInfo for the sync request
+	messageInfo := &types.MessageInfo{
+		MessageSource: types.MessageSource{
+			Chat:     requestJID,
+			IsFromMe: isFromMe,
+		},
+		ID:        msgID,
+		Timestamp: timestamp,
+	}
+
+	// Build the history sync request
+	historyMsg := client.BuildHistorySyncRequest(messageInfo, 50)
+	if historyMsg == nil {
+		return "Failed to build history sync request"
+	}
+
+	// Send the request to our OWN device (peer message), not to the chat JID
+	// The ChatJID in the message body specifies which chat to sync
+	ownJID := client.Store.ID.ToNonAD()
+	fmt.Printf("[SYNC] Sending peer message to own JID: %s\n", ownJID.String())
+	fmt.Printf("[SYNC] Request details: ChatJID=%s (request uses %s), MsgID=%s, IsFromMe=%v, Timestamp=%v\n",
+		chatJID, requestJID.String(), msgID, isFromMe, timestamp)
+
+	resp, err := client.SendMessage(context.Background(), ownJID, historyMsg, whatsmeow.SendRequestExtra{Peer: true})
+	if err != nil {
+		return fmt.Sprintf("Failed to send sync request: %v", err)
+	}
+	fmt.Printf("[SYNC] Send response: ID=%s, Timestamp=%v\n", resp.ID, resp.Timestamp)
+
+	return fmt.Sprintf("History sync requested for %s (requesting 50 messages before %s to fill gaps)", chatJID, timestamp.Format("2006-01-02 15:04:05"))
+}
+
+// requestHistorySyncFromTimestamp requests history sync from a specific timestamp.
+// WhatsApp's sync protocol returns messages BEFORE the anchor timestamp.
+// Use current UTC time to fetch recent messages that may not be in the cache
+// (e.g., messages sent from phone while bridge was offline).
+func requestHistorySyncFromTimestamp(client *whatsmeow.Client, store *MessageStore, chatJID string, timestamp time.Time) string {
+	fmt.Printf("[SYNC] Requesting history sync from timestamp %v for chat: %s\n", timestamp, chatJID)
+
+	if client == nil || !client.IsConnected() {
+		return "Client not connected"
+	}
+
+	// Parse the JID
+	jid, err := types.ParseJID(chatJID)
+	if err != nil {
+		return fmt.Sprintf("Invalid JID format: %v", err)
+	}
+
+	// Create a synthetic message info at the given timestamp
+	// WhatsApp sync requests messages BEFORE the anchor
+	syntheticID := fmt.Sprintf("SYNC_%d", timestamp.UnixNano())
+
+	messageInfo := &types.MessageInfo{
+		MessageSource: types.MessageSource{
+			Chat:     jid,
+			IsFromMe: true,
+		},
+		ID:        syntheticID,
+		Timestamp: timestamp,
+	}
+
+	// Build the history sync request
+	historyMsg := client.BuildHistorySyncRequest(messageInfo, 50)
+	if historyMsg == nil {
+		return "Failed to build history sync request"
+	}
+
+	// Send the request to our OWN device (peer message), not to the chat JID
+	// The ChatJID in the message body specifies which chat to sync
+	ownJID := client.Store.ID.ToNonAD()
+	fmt.Printf("[SYNC] Sending peer message to own JID: %s\n", ownJID.String())
+	fmt.Printf("[SYNC] Request details: ChatJID=%s, SyntheticMsgID=%s, IsFromMe=true, Timestamp=%v\n",
+		chatJID, syntheticID, timestamp)
+
+	resp, err := client.SendMessage(context.Background(), ownJID, historyMsg, whatsmeow.SendRequestExtra{Peer: true})
+	if err != nil {
+		return fmt.Sprintf("Failed to send sync request: %v", err)
+	}
+	fmt.Printf("[SYNC] Send response: ID=%s, Timestamp=%v\n", resp.ID, resp.Timestamp)
+
+	return fmt.Sprintf("History sync requested for %s (requesting 50 messages before %s)", chatJID, timestamp.Format(time.RFC3339))
 }
 
 // analyzeOggOpus tries to extract duration and generate a simple waveform from an Ogg Opus file

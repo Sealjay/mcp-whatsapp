@@ -8,6 +8,7 @@ import json
 import audio
 
 MESSAGES_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge', 'store', 'messages.db')
+WHATSMEOW_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge', 'store', 'whatsapp.db')
 WHATSAPP_API_BASE_URL = "http://localhost:8080/api"
 
 @dataclass
@@ -20,6 +21,7 @@ class Message:
     id: str
     chat_name: Optional[str] = None
     media_type: Optional[str] = None
+    phone_number: Optional[str] = None  # Resolved phone number for LID-based JIDs
 
 @dataclass
 class Chat:
@@ -29,6 +31,7 @@ class Chat:
     last_message: Optional[str] = None
     last_sender: Optional[str] = None
     last_is_from_me: Optional[bool] = None
+    phone_number: Optional[str] = None  # Resolved phone number for LID-based JIDs
 
     @property
     def is_group(self) -> bool:
@@ -46,6 +49,43 @@ class MessageContext:
     message: Message
     before: List[Message]
     after: List[Message]
+
+
+def resolve_jid_to_phone(jid: str) -> Optional[str]:
+    """Extract phone number from a JID.
+
+    Note: The Go bridge now normalizes all JIDs at write time, so LID format
+    should not appear in new data. This function handles legacy data just in case.
+
+    Args:
+        jid: The JID (e.g., '447794989553@s.whatsapp.net')
+
+    Returns:
+        The phone number if extractable, None otherwise
+    """
+    if not jid:
+        return None
+
+    # Standard WhatsApp JID - extract phone number directly
+    if jid.endswith('@s.whatsapp.net'):
+        return jid.split('@')[0]
+
+    # LID format (legacy) - try to resolve via whatsmeow
+    if jid.endswith('@lid'):
+        lid = jid.split('@')[0]
+        try:
+            conn = sqlite3.connect(WHATSMEOW_DB_PATH)
+            cursor = conn.cursor()
+            cursor.execute("SELECT pn FROM whatsmeow_lid_map WHERE lid = ?", (lid,))
+            result = cursor.fetchone()
+            conn.close()
+            return result[0] if result else None
+        except sqlite3.Error:
+            return None
+
+    # Group JIDs don't have a single phone number
+    return None
+
 
 def get_sender_name(sender_jid: str) -> str:
     try:
@@ -330,20 +370,24 @@ def list_chats(
         
         # Build base query
         query_parts = ["""
-            SELECT 
+            SELECT
                 chats.jid,
                 chats.name,
                 chats.last_message_time,
-                messages.content as last_message,
-                messages.sender as last_sender,
-                messages.is_from_me as last_is_from_me
+                latest_msg.content as last_message,
+                latest_msg.sender as last_sender,
+                latest_msg.is_from_me as last_is_from_me
             FROM chats
         """]
-        
+
         if include_last_message:
             query_parts.append("""
-                LEFT JOIN messages ON chats.jid = messages.chat_jid 
-                AND chats.last_message_time = messages.timestamp
+                LEFT JOIN messages AS latest_msg ON chats.jid = latest_msg.chat_jid
+                AND latest_msg.rowid = (
+                    SELECT rowid FROM messages
+                    WHERE chat_jid = chats.jid
+                    ORDER BY timestamp DESC LIMIT 1
+                )
             """)
             
         where_clauses = []
@@ -367,21 +411,23 @@ def list_chats(
         
         cursor.execute(" ".join(query_parts), tuple(params))
         chats = cursor.fetchall()
-        
+
         result = []
         for chat_data in chats:
+            jid = chat_data[0]
             chat = Chat(
-                jid=chat_data[0],
+                jid=jid,
                 name=chat_data[1],
                 last_message_time=datetime.fromisoformat(chat_data[2]) if chat_data[2] else None,
                 last_message=chat_data[3],
                 last_sender=chat_data[4],
-                last_is_from_me=chat_data[5]
+                last_is_from_me=chat_data[5],
+                phone_number=resolve_jid_to_phone(jid)
             )
             result.append(chat)
-            
+
         return result
-        
+
     except sqlite3.Error as e:
         print(f"Database error: {e}")
         return []
@@ -432,106 +478,6 @@ def search_contacts(query: str) -> List[Contact]:
             conn.close()
 
 
-def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Chat]:
-    """Get all chats involving the contact.
-    
-    Args:
-        jid: The contact's JID to search for
-        limit: Maximum number of chats to return (default 20)
-        page: Page number for pagination (default 0)
-    """
-    try:
-        conn = sqlite3.connect(MESSAGES_DB_PATH)
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT DISTINCT
-                c.jid,
-                c.name,
-                c.last_message_time,
-                m.content as last_message,
-                m.sender as last_sender,
-                m.is_from_me as last_is_from_me
-            FROM chats c
-            JOIN messages m ON c.jid = m.chat_jid
-            WHERE m.sender = ? OR c.jid = ?
-            ORDER BY c.last_message_time DESC
-            LIMIT ? OFFSET ?
-        """, (jid, jid, limit, page * limit))
-        
-        chats = cursor.fetchall()
-        
-        result = []
-        for chat_data in chats:
-            chat = Chat(
-                jid=chat_data[0],
-                name=chat_data[1],
-                last_message_time=datetime.fromisoformat(chat_data[2]) if chat_data[2] else None,
-                last_message=chat_data[3],
-                last_sender=chat_data[4],
-                last_is_from_me=chat_data[5]
-            )
-            result.append(chat)
-            
-        return result
-        
-    except sqlite3.Error as e:
-        print(f"Database error: {e}")
-        return []
-    finally:
-        if 'conn' in locals():
-            conn.close()
-
-
-def get_last_interaction(jid: str) -> str:
-    """Get most recent message involving the contact."""
-    try:
-        conn = sqlite3.connect(MESSAGES_DB_PATH)
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT 
-                m.timestamp,
-                m.sender,
-                c.name,
-                m.content,
-                m.is_from_me,
-                c.jid,
-                m.id,
-                m.media_type
-            FROM messages m
-            JOIN chats c ON m.chat_jid = c.jid
-            WHERE m.sender = ? OR c.jid = ?
-            ORDER BY m.timestamp DESC
-            LIMIT 1
-        """, (jid, jid))
-        
-        msg_data = cursor.fetchone()
-        
-        if not msg_data:
-            return None
-            
-        message = Message(
-            timestamp=datetime.fromisoformat(msg_data[0]),
-            sender=msg_data[1],
-            chat_name=msg_data[2],
-            content=msg_data[3],
-            is_from_me=msg_data[4],
-            chat_jid=msg_data[5],
-            id=msg_data[6],
-            media_type=msg_data[7]
-        )
-        
-        return format_message(message)
-        
-    except sqlite3.Error as e:
-        print(f"Database error: {e}")
-        return None
-    finally:
-        if 'conn' in locals():
-            conn.close()
-
-
 def get_chat(chat_jid: str, include_last_message: bool = True) -> Optional[Chat]:
     """Get chat metadata by JID."""
     try:
@@ -539,7 +485,7 @@ def get_chat(chat_jid: str, include_last_message: bool = True) -> Optional[Chat]
         cursor = conn.cursor()
         
         query = """
-            SELECT 
+            SELECT
                 c.jid,
                 c.name,
                 c.last_message_time,
@@ -548,30 +494,36 @@ def get_chat(chat_jid: str, include_last_message: bool = True) -> Optional[Chat]
                 m.is_from_me as last_is_from_me
             FROM chats c
         """
-        
+
         if include_last_message:
             query += """
-                LEFT JOIN messages m ON c.jid = m.chat_jid 
-                AND c.last_message_time = m.timestamp
+                LEFT JOIN messages m ON c.jid = m.chat_jid
+                AND m.rowid = (
+                    SELECT rowid FROM messages
+                    WHERE chat_jid = c.jid
+                    ORDER BY timestamp DESC LIMIT 1
+                )
             """
-            
+
         query += " WHERE c.jid = ?"
         
         cursor.execute(query, (chat_jid,))
         chat_data = cursor.fetchone()
-        
+
         if not chat_data:
             return None
-            
+
+        jid = chat_data[0]
         return Chat(
-            jid=chat_data[0],
+            jid=jid,
             name=chat_data[1],
             last_message_time=datetime.fromisoformat(chat_data[2]) if chat_data[2] else None,
             last_message=chat_data[3],
             last_sender=chat_data[4],
-            last_is_from_me=chat_data[5]
+            last_is_from_me=chat_data[5],
+            phone_number=resolve_jid_to_phone(jid)
         )
-        
+
     except sqlite3.Error as e:
         print(f"Database error: {e}")
         return None
@@ -579,48 +531,6 @@ def get_chat(chat_jid: str, include_last_message: bool = True) -> Optional[Chat]
         if 'conn' in locals():
             conn.close()
 
-
-def get_direct_chat_by_contact(sender_phone_number: str) -> Optional[Chat]:
-    """Get chat metadata by sender phone number."""
-    try:
-        conn = sqlite3.connect(MESSAGES_DB_PATH)
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT 
-                c.jid,
-                c.name,
-                c.last_message_time,
-                m.content as last_message,
-                m.sender as last_sender,
-                m.is_from_me as last_is_from_me
-            FROM chats c
-            LEFT JOIN messages m ON c.jid = m.chat_jid 
-                AND c.last_message_time = m.timestamp
-            WHERE c.jid LIKE ? AND c.jid NOT LIKE '%@g.us'
-            LIMIT 1
-        """, (f"%{sender_phone_number}%",))
-        
-        chat_data = cursor.fetchone()
-        
-        if not chat_data:
-            return None
-            
-        return Chat(
-            jid=chat_data[0],
-            name=chat_data[1],
-            last_message_time=datetime.fromisoformat(chat_data[2]) if chat_data[2] else None,
-            last_message=chat_data[3],
-            last_sender=chat_data[4],
-            last_is_from_me=chat_data[5]
-        )
-        
-    except sqlite3.Error as e:
-        print(f"Database error: {e}")
-        return None
-    finally:
-        if 'conn' in locals():
-            conn.close()
 
 def send_message(recipient: str, message: str) -> Tuple[bool, str]:
     try:
@@ -724,13 +634,49 @@ def send_audio_message(recipient: str, media_path: str) -> Tuple[bool, str]:
     except Exception as e:
         return False, f"Unexpected error: {str(e)}"
 
+def request_sync(chat_jid: Optional[str] = None, from_timestamp: Optional[str] = None) -> Tuple[bool, str]:
+    """Request a history sync from WhatsApp servers to refresh message cache.
+
+    Args:
+        chat_jid: Optional chat JID to request history sync for a specific chat.
+                  If not provided, returns info about how to use targeted sync.
+        from_timestamp: Optional ISO8601 timestamp to sync from (e.g., "2026-01-20T22:00:00Z").
+                       Use current UTC time to fetch recent messages not yet in cache
+                       (e.g., messages sent from phone while bridge was offline).
+
+    Returns:
+        A tuple of (success, message)
+    """
+    try:
+        url = f"{WHATSAPP_API_BASE_URL}/request-history-sync"
+        payload = {}
+        if chat_jid:
+            payload["chat_jid"] = chat_jid
+        if from_timestamp:
+            payload["from_timestamp"] = from_timestamp
+        response = requests.post(url, json=payload)
+
+        if response.status_code == 200:
+            result = response.json()
+            return result.get("success", False), result.get("message", "Unknown response")
+        else:
+            return False, f"Error: HTTP {response.status_code} - {response.text}"
+
+    except requests.RequestException as e:
+        return False, f"Request error: {str(e)}"
+    except json.JSONDecodeError:
+        return False, f"Error parsing response: {response.text}"
+    except Exception as e:
+        return False, f"Unexpected error: {str(e)}"
+
+
 def download_media(message_id: str, chat_jid: str) -> Optional[str]:
     """Download media from a message and return the local file path.
-    
+
     Args:
         message_id: The ID of the message containing the media
         chat_jid: The JID of the chat containing the message
-    
+
     Returns:
         The local file path if download was successful, None otherwise
     """
