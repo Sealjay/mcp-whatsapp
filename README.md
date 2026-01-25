@@ -1,5 +1,12 @@
 # WhatsApp MCP Server
 
+> **Fork Notice**: This is a private fork of [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp) with additional enhancements:
+>
+> - **LID Resolution**: Resolves WhatsApp Linked IDs (LIDs) to real phone numbers for accurate contact matching
+> - **Sent Message Storage**: Stores messages sent via the MCP server in the local database for complete conversation history
+> - **Disappearing Message Support**: Queries chat settings and sends messages with appropriate ephemeral timers
+> - **Targeted History Sync**: Requests specific chat history on demand rather than waiting for background sync
+
 This is a Model Context Protocol (MCP) server for WhatsApp.
 
 With this you can search and read your personal Whatsapp messages (including images, videos, documents, and audio messages), search your contacts and send messages to either individuals or groups. You can also send media files including images, videos, documents, and audio messages.
