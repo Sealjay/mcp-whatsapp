@@ -22,20 +22,24 @@ type FileLock struct {
 }
 
 // TryLock acquires a non-blocking exclusive flock(2) on <storeDir>/.lock.
-// If the lock is held by another process, ErrLocked is returned.
+// If the lock is held by another process, a wrapped ErrLocked is returned
+// whose message includes the full path of the lock file and a hint for
+// recovery when the lock is stale.
 func TryLock(storeDir string) (*FileLock, error) {
-	if err := os.MkdirAll(storeDir, 0o755); err != nil {
+	if err := os.MkdirAll(storeDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create store dir: %w", err)
 	}
 	p := filepath.Join(storeDir, ".lock")
-	f, err := os.OpenFile(p, os.O_CREATE|os.O_RDWR, 0o644)
+	f, err := os.OpenFile(p, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open lock file: %w", err)
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		_ = f.Close()
 		if errors.Is(err, syscall.EWOULDBLOCK) {
-			return nil, ErrLocked
+			// Wrap ErrLocked so existing errors.Is callers still match,
+			// but enrich the message with the operator-recovery hint.
+			return nil, fmt.Errorf("%w (if no other whatsapp-mcp is running, remove %s)", ErrLocked, p)
 		}
 		return nil, fmt.Errorf("flock: %w", err)
 	}

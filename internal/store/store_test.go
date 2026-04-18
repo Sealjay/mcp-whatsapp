@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -215,5 +216,37 @@ func TestOpen_EnablesWAL(t *testing.T) {
 	}
 	if mode != "wal" {
 		t.Fatalf("want journal_mode=wal, got %q", mode)
+	}
+}
+
+// TestOpen_StorePermissions verifies the store directory is 0700 and the
+// messages.db file is 0600 after Open returns. Session material and cached
+// message bodies must not be readable by other local users.
+func TestOpen_StorePermissions(t *testing.T) {
+	dir := t.TempDir()
+	// Force the directory to a laxer mode to prove Open tightens it.
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatalf("pre-chmod dir: %v", err)
+	}
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat dir: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o700 {
+		t.Errorf("store dir mode: want 0700, got %o", got)
+	}
+
+	msgInfo, err := os.Stat(filepath.Join(dir, "messages.db"))
+	if err != nil {
+		t.Fatalf("stat messages.db: %v", err)
+	}
+	if got := msgInfo.Mode().Perm(); got != 0o600 {
+		t.Errorf("messages.db mode: want 0600, got %o", got)
 	}
 }

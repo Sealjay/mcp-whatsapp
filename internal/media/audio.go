@@ -10,6 +10,8 @@ import (
 	"math/rand/v2"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 )
 
 // AnalyzeOggOpus parses Ogg pages to extract duration (seconds) and generates
@@ -144,8 +146,15 @@ func ConvertToOpusOgg(ctx context.Context, inputPath string) (outputPath string,
 		return "", fmt.Errorf("failed to close temp file: %w", err)
 	}
 
+	// Flag-injection guard: ffmpeg treats any arg starting with `-` as a
+	// flag, so a file whose basename happens to start with `-` (e.g. from
+	// a malicious or malformed path that made it past media_path
+	// allowlisting) could inject options. Rewrite to `./<basename>` so the
+	// leading `.` forces ffmpeg to read it as a path.
+	safeInput := sanitizeFFmpegInputPath(inputPath)
+
 	cmd := exec.CommandContext(ctx, "ffmpeg",
-		"-i", inputPath,
+		"-i", safeInput,
 		"-c:a", "libopus",
 		"-b:a", "32k",
 		"-vbr", "on",
@@ -163,4 +172,34 @@ func ConvertToOpusOgg(ctx context.Context, inputPath string) (outputPath string,
 	}
 
 	return tmpPath, nil
+}
+
+// sanitizeFFmpegInputPath rewrites paths whose basename begins with `-` so
+// that ffmpeg treats them as files rather than option flags. Absolute paths
+// pass through unchanged (they already begin with `/`); relative paths get a
+// `./` prefix when the basename would otherwise begin with `-`.
+//
+// Examples:
+//
+//	"/tmp/foo.mp3"      -> "/tmp/foo.mp3"
+//	"/tmp/-weird.mp3"   -> "/tmp/-weird.mp3"  (basename-leading-dash, absolute is safe)
+//	"-weird.mp3"        -> "./-weird.mp3"
+//	"./-weird.mp3"      -> "./-weird.mp3"
+func sanitizeFFmpegInputPath(p string) string {
+	if p == "" {
+		return p
+	}
+	// Absolute paths already start with `/` (or a drive letter on Windows,
+	// but we don't run on Windows), which ffmpeg parses as a filename.
+	if filepath.IsAbs(p) {
+		return p
+	}
+	// Relative paths that already lead with `./` or `../` are fine.
+	if strings.HasPrefix(p, "./") || strings.HasPrefix(p, "../") {
+		return p
+	}
+	if strings.HasPrefix(p, "-") {
+		return "./" + p
+	}
+	return p
 }

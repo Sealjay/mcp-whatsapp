@@ -65,10 +65,15 @@ type Store struct {
 }
 
 // Open creates (if necessary) the store directory and opens both databases.
-// Dir is the directory holding messages.db and whatsapp.db.
+// Dir is the directory holding messages.db and whatsapp.db. The directory is
+// created/tightened to 0700 and each .db file ends up at 0600 to keep session
+// material and cached message contents off other local users' radar.
 func Open(dir string) (*Store, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create store dir: %w", err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("chmod store dir: %w", err)
 	}
 	msgPath := filepath.Join(dir, "messages.db")
 	waPath := filepath.Join(dir, "whatsapp.db")
@@ -85,12 +90,24 @@ func Open(dir string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate schema: %w", err)
 	}
+	// Tighten messages.db after schema has been applied (the file exists
+	// by then). IsNotExist-tolerate in case a future sqlite driver version
+	// defers file creation.
+	if err := os.Chmod(msgPath, 0o600); err != nil && !os.IsNotExist(err) {
+		db.Close()
+		return nil, fmt.Errorf("chmod messages.db: %w", err)
+	}
 
 	// whatsapp.db may not yet exist on first run; open lazily in read-only mode.
 	waDB, err := sql.Open("sqlite3", "file:"+waPath+"?mode=ro")
 	if err != nil {
 		// Non-fatal: LID resolution falls through to identity.
 		waDB = nil
+	}
+	// If whatsapp.db already exists (from a previous login), tighten it.
+	if err := os.Chmod(waPath, 0o600); err != nil && !os.IsNotExist(err) {
+		db.Close()
+		return nil, fmt.Errorf("chmod whatsapp.db: %w", err)
 	}
 
 	return &Store{db: db, whatsmeowDB: waDB, dir: dir}, nil

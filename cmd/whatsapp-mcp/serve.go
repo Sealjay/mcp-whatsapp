@@ -38,6 +38,18 @@ func runServe(storeDir string, redactor *security.Redactor, args []string) int {
 		return 2
 	}
 
+	// When binding to a non-loopback address we require a shared bearer
+	// token. Loopback-only operation intentionally keeps no token so local
+	// editors and curl can hit the daemon without extra setup.
+	var authToken string
+	if allowRemote {
+		authToken = os.Getenv("WHATSAPP_MCP_TOKEN")
+		if authToken == "" {
+			fmt.Fprintln(os.Stderr, "-allow-remote requires WHATSAPP_MCP_TOKEN to be set in the environment")
+			return 2
+		}
+	}
+
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
@@ -61,6 +73,9 @@ func runServe(storeDir string, redactor *security.Redactor, args []string) int {
 	if mkErr := os.MkdirAll(allowedMediaRoot, 0o755); mkErr != nil {
 		fmt.Fprintf(os.Stderr, "warn: could not create media root %q: %v\n", allowedMediaRoot, mkErr)
 	}
+	// Operator UX: make the media root obvious on boot so users know where
+	// to drop outbound attachments.
+	fmt.Fprintf(os.Stderr, "media root: %s (drop outbound files here)\n", allowedMediaRoot)
 
 	st, err := store.Open(storeDir)
 	if err != nil {
@@ -85,9 +100,10 @@ func runServe(storeDir string, redactor *security.Redactor, args []string) int {
 	drv := newProductionDriver(c)
 
 	d, err := daemon.New(daemon.Config{
-		Addr:     addr,
-		Driver:   drv,
-		MCPMount: mcpServer.AttachHTTP,
+		Addr:      addr,
+		Driver:    drv,
+		MCPMount:  mcpServer.AttachHTTP,
+		AuthToken: authToken,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "daemon.New: %v\n", err)
@@ -95,6 +111,9 @@ func runServe(storeDir string, redactor *security.Redactor, args []string) int {
 	}
 
 	fmt.Fprintf(os.Stderr, "whatsapp-mcp listening on http://%s (MCP at /mcp, pairing at /pair)\n", addr)
+	if !c.IsLoggedIn() {
+		fmt.Fprintf(os.Stderr, "unpaired: open http://%s/pair to scan QR\n", addr)
+	}
 	if err := d.Run(ctx); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		fmt.Fprintf(os.Stderr, "daemon: %v\n", err)
 		return 1

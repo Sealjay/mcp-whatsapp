@@ -72,8 +72,13 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		logger.Infof("Using WhatsApp version: %s", latest.String())
 	}
 
-	if err := os.MkdirAll(cfg.StoreDir, 0o755); err != nil {
+	if err := os.MkdirAll(cfg.StoreDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create store dir: %w", err)
+	}
+	// If the directory already existed (e.g. from a legacy install) tighten
+	// it now. Chmod is a no-op when the mode already matches.
+	if err := os.Chmod(cfg.StoreDir, 0o700); err != nil {
+		return nil, fmt.Errorf("chmod store dir: %w", err)
 	}
 
 	dbLog := NewStderrLogger("Database", "INFO", true)
@@ -81,6 +86,10 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 	container, err := sqlstore.New(ctx, "sqlite3", "file:"+waPath+"?_foreign_keys=on", dbLog)
 	if err != nil {
 		return nil, fmt.Errorf("open whatsmeow sqlstore: %w", err)
+	}
+	// whatsmeow creates whatsapp.db with the process umask; force 0600.
+	if err := os.Chmod(waPath, 0o600); err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("chmod whatsapp.db: %w", err)
 	}
 
 	device, err := container.GetFirstDevice(ctx)

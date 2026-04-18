@@ -138,6 +138,74 @@ func TestAnalyzeOggOpus_ValidSynthetic(t *testing.T) {
 	}
 }
 
+func TestSanitizeFFmpegInputPath(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"/tmp/foo.mp3", "/tmp/foo.mp3"},
+		{"/tmp/-weird.mp3", "/tmp/-weird.mp3"}, // absolute: safe as-is
+		{"-weird.mp3", "./-weird.mp3"},         // bare leading dash: prefix
+		{"./-weird.mp3", "./-weird.mp3"},       // already prefixed
+		{"../foo/-weird.mp3", "../foo/-weird.mp3"},
+		{"foo.mp3", "foo.mp3"},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		got := sanitizeFFmpegInputPath(tc.in)
+		if got != tc.want {
+			t.Errorf("sanitizeFFmpegInputPath(%q) = %q; want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestConvertToOpusOgg_RejectsFlagLikeBasename(t *testing.T) {
+	// End-to-end: create a temp file whose basename begins with `-`. If
+	// ffmpeg is available and we did NOT sanitise the path, ffmpeg would
+	// reject it with "Unrecognized option"; with the sanitiser it reads
+	// the file normally.
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not available; skipping flag-injection guard test")
+	}
+	if fixturePath == "" {
+		t.Skip("ffmpeg present but fixture generation failed; skipping")
+	}
+	src, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	tmpDir, err := os.MkdirTemp("", "mcp-whatsapp-flag-guard-*")
+	if err != nil {
+		t.Fatalf("mktemp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+	// Use a relative path so the leading dash is actually at the
+	// beginning of the arg ffmpeg sees.
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer func() { _ = os.Chdir(cwd) }()
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	dangerous := "-sneaky.ogg"
+	if err := os.WriteFile(dangerous, src, 0o644); err != nil {
+		t.Fatalf("write fixture copy: %v", err)
+	}
+	out, err := ConvertToOpusOgg(context.Background(), dangerous)
+	if err != nil {
+		t.Fatalf("ConvertToOpusOgg with dash-prefixed basename: %v", err)
+	}
+	defer os.Remove(out)
+	info, err := os.Stat(out)
+	if err != nil {
+		t.Fatalf("stat output: %v", err)
+	}
+	if info.Size() == 0 {
+		t.Fatalf("expected non-empty output, got size 0")
+	}
+}
+
 func TestConvertToOpusOgg(t *testing.T) {
 	ctx := context.Background()
 	if _, err := exec.LookPath("ffmpeg"); err != nil {

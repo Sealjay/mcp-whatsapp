@@ -2,10 +2,12 @@ package daemon
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -31,10 +33,16 @@ type pairDriver interface {
 // (the latter only for tests). MCPMount, if non-nil, is called once the
 // mux is being built so the caller can attach additional handlers (in
 // practice, the /mcp Streamable HTTP handler from internal/mcp).
+//
+// AuthToken, if non-empty, gates /mcp and /pair/* behind the HTTP header
+// `Authorization: Bearer <token>`. Loopback-bound operation passes an
+// empty token and leaves these routes unauthenticated — the local-only
+// bind is itself the access control.
 type Config struct {
-	Addr     string
-	Driver   pairDriver
-	MCPMount func(mux *http.ServeMux)
+	Addr      string
+	Driver    pairDriver
+	MCPMount  func(mux *http.ServeMux)
+	AuthToken string
 }
 
 // Server is the long-lived daemon process. Safe for a single Run call.
@@ -79,7 +87,7 @@ func (s *Server) BoundAddr() string {
 // sequence: drain HTTP → Disconnect driver.
 func (s *Server) Run(ctx context.Context) error {
 	mux := http.NewServeMux()
-	handlers := &pairHandlers{cache: s.cache, reset: driverLogout{s.cfg.Driver}}
+	handlers := newPairHandlers(s.cache, driverLogout{s.cfg.Driver})
 	handlers.mount(mux)
 	if s.cfg.MCPMount != nil {
 		s.cfg.MCPMount(mux)
@@ -90,6 +98,11 @@ func (s *Server) Run(ctx context.Context) error {
 		})
 	}
 
+	// Wrap /mcp and /pair/* in a bearer-token gate when a token is
+	// configured (i.e. -allow-remote mode). Loopback-bound runs leave the
+	// token empty and the wrapper is a no-op pass-through.
+	rootHandler := authMiddleware(mux, s.cfg.AuthToken)
+
 	ln, err := net.Listen("tcp", s.cfg.Addr)
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
@@ -97,7 +110,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 	s.mu.Lock()
 	s.httpServer = &http.Server{
-		Handler:           mux,
+		Handler:           rootHandler,
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
@@ -171,3 +184,38 @@ func (s *Server) onLoggedOut(ctx context.Context) func() {
 type driverLogout struct{ d pairDriver }
 
 func (d driverLogout) Logout(ctx context.Context) error { return d.d.Logout(ctx) }
+
+// authMiddleware wraps next with a bearer-token gate on /mcp and /pair/*.
+// When token is empty the middleware is a pass-through: loopback-bound
+// operation is intentionally unauthenticated because the bind itself is
+// the access control.
+func authMiddleware(next http.Handler, token string) http.Handler {
+	if token == "" {
+		return next
+	}
+	expected := []byte("Bearer " + token)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requiresAuth(r.URL.Path) {
+			got := r.Header.Get("Authorization")
+			if subtle.ConstantTimeCompare([]byte(got), expected) != 1 {
+				w.Header().Set("WWW-Authenticate", `Bearer realm="whatsapp-mcp"`)
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// requiresAuth reports whether the given request path is behind the bearer
+// token gate. /mcp and everything under /pair* is gated; anything else
+// (currently nothing, but we leave room) is not.
+func requiresAuth(path string) bool {
+	if path == "/mcp" || strings.HasPrefix(path, "/mcp/") {
+		return true
+	}
+	if path == "/pair" || strings.HasPrefix(path, "/pair/") {
+		return true
+	}
+	return false
+}

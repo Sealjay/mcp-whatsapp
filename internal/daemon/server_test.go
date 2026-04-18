@@ -3,6 +3,8 @@ package daemon
 import (
 	"context"
 	"errors"
+	"io"
+	"net/http"
 	"testing"
 	"time"
 )
@@ -132,6 +134,73 @@ func TestServer_PairedStartThenLoggedOut(t *testing.T) {
 
 	drv.outCh <- struct{}{}
 	waitFor(t, func() bool { return !s.Cache().Paired() }, "LoggedOut flipped cache to unpaired")
+}
+
+func TestServer_AuthTokenGatesMCPAndPair(t *testing.T) {
+	drv := newFakePairDriver(true)
+	s, err := New(Config{
+		Addr:      "127.0.0.1:0",
+		Driver:    drv,
+		AuthToken: "secret123",
+	})
+	if err != nil {
+		t.Fatalf("daemon.New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = s.Run(ctx) }()
+	<-s.listenerOK
+	base := "http://" + s.BoundAddr()
+
+	// /mcp without Authorization -> 401.
+	resp, err := http.Get(base + "/mcp")
+	if err != nil {
+		t.Fatalf("GET /mcp: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("want 401 without token on /mcp, got %d", resp.StatusCode)
+	}
+
+	// /pair without Authorization -> 401.
+	resp, err = http.Get(base + "/pair")
+	if err != nil {
+		t.Fatalf("GET /pair: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("want 401 without token on /pair, got %d", resp.StatusCode)
+	}
+
+	// /pair with the right bearer token -> 200 (the Run goroutine marks the
+	// cache paired synchronously because IsLoggedIn starts true).
+	waitFor(t, func() bool { return s.Cache().Paired() }, "initial paired flag set")
+	req, _ := http.NewRequest(http.MethodGet, base+"/pair", nil)
+	req.Header.Set("Authorization", "Bearer secret123")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("authorised GET /pair: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200 with correct bearer, got %d", resp.StatusCode)
+	}
+
+	// /pair with the wrong bearer token -> 401.
+	req, _ = http.NewRequest(http.MethodGet, base+"/pair", nil)
+	req.Header.Set("Authorization", "Bearer not-the-token")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("wrong-bearer GET /pair: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("want 401 with wrong bearer, got %d", resp.StatusCode)
+	}
 }
 
 func TestServer_LogoutErrorFromReset(t *testing.T) {
