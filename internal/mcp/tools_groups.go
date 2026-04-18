@@ -29,16 +29,16 @@ type createGroupArgs struct {
 
 func (s *Server) registerCreateGroup() {
 	tool := mcp.NewTool("create_group",
-		mcp.WithDescription("Create a new WhatsApp group with the given name and initial participants (phone numbers or JIDs)."),
-		mcp.WithString("name", mcp.Required()),
-		mcp.WithArray("participants", mcp.Required(), mcp.Items(map[string]any{"type": "string"})),
+		mcp.WithDescription("Create a new WhatsApp group with the given name and initial participants."),
+		mcp.WithString("name", mcp.Required(), mcp.Description("group display name")),
+		mcp.WithArray("participants", mcp.Required(), mcp.Items(map[string]any{"type": "string"}), mcp.Description("phone numbers or individual JIDs ("+jidDesc+")")),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a createGroupArgs) (*mcp.CallToolResult, error) {
-		if a.Name == "" {
-			return mcp.NewToolResultError("name is required"), nil
+		if r := requireNonEmpty("name", a.Name); r != nil {
+			return r, nil
 		}
 		if len(a.Participants) == 0 {
-			return mcp.NewToolResultError("participants must not be empty"), nil
+			return mcp.NewToolResultError("participants: required"), nil
 		}
 		jid, info, err := s.client.CreateGroup(ctx, a.Name, a.Participants)
 		if err != nil {
@@ -55,11 +55,11 @@ type leaveGroupArgs struct {
 func (s *Server) registerLeaveGroup() {
 	tool := mcp.NewTool("leave_group",
 		mcp.WithDescription("Leave a WhatsApp group."),
-		mcp.WithString("chat_jid", mcp.Required()),
+		mcp.WithString("chat_jid", mcp.Required(), mcp.Description(jidDesc)),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a leaveGroupArgs) (*mcp.CallToolResult, error) {
-		if a.ChatJID == "" {
-			return mcp.NewToolResultError("chat_jid is required"), nil
+		if r := requireNonEmpty("chat_jid", a.ChatJID); r != nil {
+			return r, nil
 		}
 		if err := s.client.LeaveGroup(ctx, a.ChatJID); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
@@ -70,7 +70,7 @@ func (s *Server) registerLeaveGroup() {
 
 func (s *Server) registerListGroups() {
 	tool := mcp.NewTool("list_groups",
-		mcp.WithDescription("List all WhatsApp groups the user is a member of. Returns JSON array of group info."),
+		mcp.WithDescription("List every WhatsApp group the paired user belongs to. Returns a JSON array of group info objects."),
 	)
 	s.mcp.AddTool(tool, func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		js, err := s.client.ListJoinedGroups(ctx)
@@ -87,12 +87,12 @@ type getGroupInfoArgs struct {
 
 func (s *Server) registerGetGroupInfo() {
 	tool := mcp.NewTool("get_group_info",
-		mcp.WithDescription("Get detailed group metadata (participants, settings, invite config) for the given group JID."),
-		mcp.WithString("chat_jid", mcp.Required()),
+		mcp.WithDescription("Fetch live group metadata (participants, settings, invite config) for the given group JID. Returns a JSON object."),
+		mcp.WithString("chat_jid", mcp.Required(), mcp.Description(jidDesc)),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a getGroupInfoArgs) (*mcp.CallToolResult, error) {
-		if a.ChatJID == "" {
-			return mcp.NewToolResultError("chat_jid is required"), nil
+		if r := requireNonEmpty("chat_jid", a.ChatJID); r != nil {
+			return r, nil
 		}
 		js, err := s.client.GetGroupInfoJSON(ctx, a.ChatJID)
 		if err != nil {
@@ -110,17 +110,17 @@ type updateGroupParticipantsArgs struct {
 
 func (s *Server) registerUpdateGroupParticipants() {
 	tool := mcp.NewTool("update_group_participants",
-		mcp.WithDescription("Add, remove, promote, or demote participants of a group."),
-		mcp.WithString("chat_jid", mcp.Required()),
-		mcp.WithArray("participants", mcp.Required(), mcp.Items(map[string]any{"type": "string"})),
-		mcp.WithString("action", mcp.Required(), mcp.Description("One of: add, remove, promote, demote")),
+		mcp.WithDescription("Add, remove, promote, or demote participants of a group. Requires admin privileges."),
+		mcp.WithString("chat_jid", mcp.Required(), mcp.Description(jidDesc)),
+		mcp.WithArray("participants", mcp.Required(), mcp.Items(map[string]any{"type": "string"}), mcp.Description("phone numbers or individual JIDs ("+jidDesc+")")),
+		mcp.WithString("action", mcp.Required(), mcp.Enum("add", "remove", "promote", "demote"), mcp.Description("participant mutation to perform")),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a updateGroupParticipantsArgs) (*mcp.CallToolResult, error) {
-		if a.ChatJID == "" {
-			return mcp.NewToolResultError("chat_jid is required"), nil
+		if r := requireNonEmpty("chat_jid", a.ChatJID); r != nil {
+			return r, nil
 		}
 		if len(a.Participants) == 0 {
-			return mcp.NewToolResultError("participants must not be empty"), nil
+			return mcp.NewToolResultError("participants: required"), nil
 		}
 		js, err := s.client.UpdateGroupParticipants(ctx, a.ChatJID, a.Participants, a.Action)
 		if err != nil {
@@ -137,13 +137,16 @@ type setGroupNameArgs struct {
 
 func (s *Server) registerSetGroupName() {
 	tool := mcp.NewTool("set_group_name",
-		mcp.WithDescription("Change a group's display name (subject)."),
-		mcp.WithString("chat_jid", mcp.Required()),
-		mcp.WithString("name", mcp.Required()),
+		mcp.WithDescription("Change a group's display name (its 'subject')."),
+		mcp.WithString("chat_jid", mcp.Required(), mcp.Description(jidDesc)),
+		mcp.WithString("name", mcp.Required(), mcp.Description("new group name")),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a setGroupNameArgs) (*mcp.CallToolResult, error) {
-		if a.ChatJID == "" || a.Name == "" {
-			return mcp.NewToolResultError("chat_jid and name are required"), nil
+		if r := requireNonEmpty("chat_jid", a.ChatJID); r != nil {
+			return r, nil
+		}
+		if r := requireNonEmpty("name", a.Name); r != nil {
+			return r, nil
 		}
 		if err := s.client.SetGroupName(ctx, a.ChatJID, a.Name); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
@@ -159,13 +162,13 @@ type setGroupTopicArgs struct {
 
 func (s *Server) registerSetGroupTopic() {
 	tool := mcp.NewTool("set_group_topic",
-		mcp.WithDescription("Change a group's description/topic. Pass empty topic to clear it."),
-		mcp.WithString("chat_jid", mcp.Required()),
-		mcp.WithString("topic"),
+		mcp.WithDescription("Change a group's description/topic. Pass an empty `topic` to clear it."),
+		mcp.WithString("chat_jid", mcp.Required(), mcp.Description(jidDesc)),
+		mcp.WithString("topic", mcp.Description("new topic text; empty string clears")),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a setGroupTopicArgs) (*mcp.CallToolResult, error) {
-		if a.ChatJID == "" {
-			return mcp.NewToolResultError("chat_jid is required"), nil
+		if r := requireNonEmpty("chat_jid", a.ChatJID); r != nil {
+			return r, nil
 		}
 		if err := s.client.SetGroupTopic(ctx, a.ChatJID, a.Topic); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
@@ -181,13 +184,13 @@ type setGroupAnnounceArgs struct {
 
 func (s *Server) registerSetGroupAnnounce() {
 	tool := mcp.NewTool("set_group_announce",
-		mcp.WithDescription("Toggle announce-only mode (when true, only admins can send messages)."),
-		mcp.WithString("chat_jid", mcp.Required()),
-		mcp.WithBoolean("announce_only", mcp.Required()),
+		mcp.WithDescription("Toggle announce-only mode. When `announce_only` is true, only admins can send messages to the group."),
+		mcp.WithString("chat_jid", mcp.Required(), mcp.Description(jidDesc)),
+		mcp.WithBoolean("announce_only", mcp.Required(), mcp.Description("true to lock posting to admins only")),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a setGroupAnnounceArgs) (*mcp.CallToolResult, error) {
-		if a.ChatJID == "" {
-			return mcp.NewToolResultError("chat_jid is required"), nil
+		if r := requireNonEmpty("chat_jid", a.ChatJID); r != nil {
+			return r, nil
 		}
 		if err := s.client.SetGroupAnnounce(ctx, a.ChatJID, a.AnnounceOnly); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
@@ -203,13 +206,13 @@ type setGroupLockedArgs struct {
 
 func (s *Server) registerSetGroupLocked() {
 	tool := mcp.NewTool("set_group_locked",
-		mcp.WithDescription("Toggle locked mode (when true, only admins can change group metadata)."),
-		mcp.WithString("chat_jid", mcp.Required()),
-		mcp.WithBoolean("locked", mcp.Required()),
+		mcp.WithDescription("Toggle locked mode. When `locked` is true, only admins can change group metadata (name, topic, icon)."),
+		mcp.WithString("chat_jid", mcp.Required(), mcp.Description(jidDesc)),
+		mcp.WithBoolean("locked", mcp.Required(), mcp.Description("true to restrict metadata edits to admins")),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a setGroupLockedArgs) (*mcp.CallToolResult, error) {
-		if a.ChatJID == "" {
-			return mcp.NewToolResultError("chat_jid is required"), nil
+		if r := requireNonEmpty("chat_jid", a.ChatJID); r != nil {
+			return r, nil
 		}
 		if err := s.client.SetGroupLocked(ctx, a.ChatJID, a.Locked); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
@@ -225,19 +228,16 @@ type getGroupInviteLinkArgs struct {
 
 func (s *Server) registerGetGroupInviteLink() {
 	tool := mcp.NewTool("get_group_invite_link",
-		mcp.WithDescription("Get a group's invite link. Pass reset=true to revoke the previous link and generate a new one."),
-		mcp.WithString("chat_jid", mcp.Required()),
-		mcp.WithBoolean("reset", mcp.DefaultBool(false)),
+		mcp.WithDescription("Return a group's current invite link. Set `reset` to revoke the existing link and mint a fresh one."),
+		mcp.WithString("chat_jid", mcp.Required(), mcp.Description(jidDesc)),
+		mcp.WithBoolean("reset", mcp.DefaultBool(false), mcp.Description("if true, revoke the old link and return a new one")),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a getGroupInviteLinkArgs) (*mcp.CallToolResult, error) {
-		if a.ChatJID == "" {
-			return mcp.NewToolResultError("chat_jid is required"), nil
+		if r := requireNonEmpty("chat_jid", a.ChatJID); r != nil {
+			return r, nil
 		}
 		link, err := s.client.GetGroupInviteLink(ctx, a.ChatJID, a.Reset)
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
-		return resultJSON(map[string]string{"link": link})
+		return toolResult(map[string]string{"link": link}, err)
 	}))
 }
 
@@ -247,18 +247,15 @@ type joinGroupArgs struct {
 
 func (s *Server) registerJoinGroupWithLink() {
 	tool := mcp.NewTool("join_group_with_link",
-		mcp.WithDescription("Join a group via a full chat.whatsapp.com invite URL or the bare invite code."),
-		mcp.WithString("link_or_code", mcp.Required()),
+		mcp.WithDescription("Join a group via a full `chat.whatsapp.com` invite URL or the bare invite code."),
+		mcp.WithString("link_or_code", mcp.Required(), mcp.Description("full invite URL or the trailing invite code")),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a joinGroupArgs) (*mcp.CallToolResult, error) {
-		if a.LinkOrCode == "" {
-			return mcp.NewToolResultError("link_or_code is required"), nil
+		if r := requireNonEmpty("link_or_code", a.LinkOrCode); r != nil {
+			return r, nil
 		}
 		jid, err := s.client.JoinGroupWithLink(ctx, a.LinkOrCode)
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
-		return resultJSON(map[string]string{"jid": jid})
+		return toolResult(map[string]string{"jid": jid}, err)
 	}))
 }
 
