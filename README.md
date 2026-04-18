@@ -17,7 +17,7 @@ Enhancements over the original fork:
 - **Sent Message Storage** — outgoing messages are persisted to SQLite for complete conversation history
 - **Disappearing Message Support** — outgoing messages automatically inherit group-chat ephemeral timers
 - **Targeted History Sync** — on-demand per-chat backfill via the `request_sync` tool
-- **Extended tool surface** — reactions, replies, edits, revoke, mark-read, typing, is-on-whatsapp, in addition to the original send/query/download set
+- **Extended tool surface** — 39 tools covering reactions, replies, edits, revoke, mark-read, typing, is-on-whatsapp, group management (create, leave, participant/metadata/invite-link admin), blocklist, polls, contact cards, view-once flag, presence, privacy settings, and the profile "About" text, in addition to the original send/query/download set
 - **Single-instance enforcement** — a file lock on `store/.lock` prevents two copies of the server racing each other on the same SQLite files
 
 With this you can search and read your personal WhatsApp messages (including images, videos, documents, and audio messages), search your contacts and send messages to either individuals or groups. Messages are stored locally in SQLite and only sent to an LLM (such as Claude) when the agent accesses them through tools (which you control).
@@ -148,6 +148,10 @@ Once connected, you can interact with your WhatsApp contacts through Claude, lev
 
 ### MCP Tools
 
+39 tools, grouped by purpose:
+
+#### Read / query
+
 | Tool | Purpose |
 |---|---|
 | `search_contacts` | Substring search across cached contact names and phone numbers |
@@ -155,20 +159,79 @@ Once connected, you can interact with your WhatsApp contacts through Claude, lev
 | `list_chats` | List chats with last-message preview; sort by activity or name |
 | `get_chat` | Chat metadata by JID |
 | `get_message_context` | Before/after window around a specific message |
-| `send_message` | Send a text message to a phone number or JID |
-| `send_file` | Send image/video/document/raw audio with optional caption |
-| `send_audio_message` | Send a voice note (auto-converts via ffmpeg if not `.ogg` Opus) |
 | `download_media` | Download persisted media to a local path |
 | `request_sync` | Ask WhatsApp to backfill history for a chat |
-| `mark_read` | Mark message IDs as read |
+
+#### Send
+
+| Tool | Purpose |
+|---|---|
+| `send_message` | Send a text message to a phone number or JID |
+| `send_file` | Send image/video/document/raw audio with optional caption; `view_once: bool` marks image/video/audio submessages as view-once (ignored for documents) |
+| `send_audio_message` | Send a voice note (auto-converts via ffmpeg if not `.ogg` Opus); supports `view_once: bool` |
+| `send_poll` | Send a poll with a question and 2+ options; `selectable_count` controls how many options a voter may pick (creation only — voting is deferred) |
+| `send_contact_card` | Send a contact card; synthesises a vCard 3.0 from `name` + `phone`, or pass a raw `vcard` to skip synthesis |
+
+#### Message actions
+
+| Tool | Purpose |
+|---|---|
+| `mark_read` | Mark specific message IDs as read |
+| `mark_chat_read` | Ack the most recent incoming messages in a chat to clear the unread badge |
 | `send_reaction` | React to a message (empty emoji clears an existing reaction) |
 | `send_reply` | Text reply that quotes a prior message |
 | `edit_message` | Edit a previously-sent message |
 | `delete_message` | Revoke (delete for everyone) a message |
-| `send_typing` | Set composing / recording presence |
+| `send_typing` | Set per-chat composing / recording presence |
+
+#### Groups
+
+| Tool | Purpose |
+|---|---|
+| `create_group` | Create a group with a name and initial participants |
+| `leave_group` | Leave a group |
+| `list_groups` | List all groups the user is a member of |
+| `get_group_info` | Full group metadata (participants, settings, invite config) |
+| `update_group_participants` | Add / remove / promote / demote participants (`action: add\|remove\|promote\|demote`) |
+| `set_group_name` | Change the group subject |
+| `set_group_topic` | Change the group description; empty string clears it |
+| `set_group_announce` | Toggle announce-only mode (only admins can send) |
+| `set_group_locked` | Toggle locked mode (only admins can edit group metadata) |
+| `get_group_invite_link` | Get the invite link; `reset: true` revokes the previous link first |
+| `join_group_with_link` | Join a group via a `chat.whatsapp.com` URL or bare invite code |
+
+#### Blocklist
+
+| Tool | Purpose |
+|---|---|
+| `get_blocklist` | Return the current blocklist |
+| `block_contact` | Block a contact by phone number or JID |
+| `unblock_contact` | Unblock a contact |
+
+#### Privacy / presence / status
+
+| Tool | Purpose |
+|---|---|
+| `send_presence` | Set own availability (`available` or `unavailable`) — distinct from per-chat `send_typing` |
+| `get_privacy_settings` | Current privacy settings as JSON |
+| `set_privacy_setting` | Change one privacy setting by `name` + `value` (strict enum validation; invalid combinations are rejected) |
+| `set_status_message` | Update the profile "About" text; empty string clears it |
+
+#### Admin
+
+| Tool | Purpose |
+|---|---|
 | `is_on_whatsapp` | Batch-check which phone numbers are registered on WhatsApp |
-| `mark_chat_read` | Ack the most recent incoming messages in a chat to clear the unread badge |
 | `get_status` | Report whether the bridge is connected and which account it's paired as |
+
+#### Deferred
+
+Intentionally not exposed (yet):
+
+- **Poll voting** — whatsmeow's `EncryptPollVote` helper is not in the pinned version; voting would require a non-trivial crypto port.
+- **`subscribe_presence`** — no persistence layer for presence events yet; skipped to avoid a dangling tool.
+- **Profile photo setter** — upstream whatsmeow doesn't expose a user-level setter.
+- **Approval-mode participants, communities, newsletters** — low-use surface, deferred.
 
 ### Media Handling Features
 

@@ -45,11 +45,17 @@ make upgrade-check
 
 ## Feature implementation map
 
+Tool surface is 39 tools, registered from `internal/mcp/tools.go` + `tools_groups.go` + `tools_media.go` + `tools_privacy.go`.
+
 1. **LID Resolution** — `internal/store/lid.go`. Normalises `@lid` JIDs to real phone numbers via the `whatsmeow_lid_map` table.
 2. **Sent message storage** — `internal/client/send.go` persists outgoing messages after `SendMessage` returns.
 3. **Disappearing-message timers** — `internal/client/send.go` auto-detects group ephemeral timers via `GetGroupInfo` and sets `MessageContextInfo.MessageAddOnDurationInSecs`. Individual-chat timers are not exposed by whatsmeow's store API.
 4. **Targeted history sync** — `internal/client/history.go`: `RequestHistorySync(ctx, chatJID, fromTimestamp)`. Zero timestamp anchors on the newest cached message.
 5. **Reactions / replies / edits / revoke / mark-read / typing / is-on-whatsapp** — `internal/client/features.go`. Each wraps the corresponding whatsmeow builder (`BuildReaction`, `BuildEdit`, `BuildRevoke`) or one-shot call (`MarkRead`, `SendChatPresence`, `IsOnWhatsApp`).
+6. **Group management** — `internal/client/features_groups.go`. Create / leave / list / get-info / participant mutation / subject / topic / announce / locked / invite-link get+reset / join-by-link. Thin wrappers over `CreateGroup`, `LeaveGroup`, `GetJoinedGroups`, `GetGroupInfo`, `UpdateGroupParticipants`, `SetGroupName`, `SetGroupTopic`, `SetGroupAnnounce`, `SetGroupLocked`, `GetGroupInviteLink`, `JoinGroupWithLink`.
+7. **Blocklist** — also in `internal/client/features_groups.go`. `GetBlocklist`, `BlockContact`, `UnblockContact` wrap whatsmeow's `GetBlocklist` / `UpdateBlocklist`.
+8. **Polls + contact cards + view-once flag** — `internal/client/features_media.go` (poll + contact-card send paths) plus `internal/client/vcard.go` (vCard 3.0 synthesis when no override supplied) and the `ViewOnce` option plumbed through `SendMediaOptions` in `internal/client/send.go`. Poll voting is deferred — whatsmeow's pinned version lacks `EncryptPollVote`.
+9. **Presence / privacy / status message** — `internal/client/features_privacy.go`. `SendPresence` (own availability), `GetPrivacySettings` / `SetPrivacySetting` with strict enum validation, `SetStatusMessage` for the "About" text.
 
 ## Database location
 
