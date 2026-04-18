@@ -12,6 +12,7 @@ import (
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 
+	"github.com/sealjay/mcp-whatsapp/internal/security"
 	"github.com/sealjay/mcp-whatsapp/internal/store"
 )
 
@@ -381,10 +382,7 @@ func extractMediaInfo(msg *waProto.Message) (mediaType, filename, url string, me
 			aud.GetURL(), aud.GetMediaKey(), aud.GetFileSHA256(), aud.GetFileEncSHA256(), aud.GetFileLength()
 	}
 	if doc := msg.GetDocumentMessage(); doc != nil {
-		fname := doc.GetFileName()
-		if fname == "" {
-			fname = "document_" + time.Now().Format("20060102_150405")
-		}
+		fname := security.SafeFilename(doc.GetFileName())
 		return "document", fname,
 			doc.GetURL(), doc.GetMediaKey(), doc.GetFileSHA256(), doc.GetFileEncSHA256(), doc.GetFileLength()
 	}

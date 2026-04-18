@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/sealjay/mcp-whatsapp/internal/client"
@@ -30,6 +31,21 @@ func runServe(storeDir string, args []string) int {
 	}
 	defer lock.Release()
 
+	var absStore string
+	absStore, err = filepath.Abs(storeDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "resolve store dir: %v\n", err)
+		return 1
+	}
+	allowedMediaRoot := os.Getenv("WHATSAPP_MCP_MEDIA_ROOT")
+	if allowedMediaRoot == "" {
+		allowedMediaRoot = filepath.Join(absStore, "uploads")
+	}
+	allowedMediaRoot = filepath.Clean(allowedMediaRoot)
+	if mkErr := os.MkdirAll(allowedMediaRoot, 0o755); mkErr != nil {
+		fmt.Fprintf(os.Stderr, "warn: could not create media root %q: %v\n", allowedMediaRoot, mkErr)
+	}
+
 	st, err := store.Open(storeDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "open store: %v\n", err)
@@ -38,9 +54,10 @@ func runServe(storeDir string, args []string) int {
 	defer st.Close()
 
 	c, err := client.New(ctx, client.Config{
-		StoreDir: storeDir,
-		Store:    st,
-		Logger:   client.NewStderrLogger("Client", "INFO", false),
+		StoreDir:         storeDir,
+		Store:            st,
+		Logger:           client.NewStderrLogger("Client", "INFO", false),
+		AllowedMediaRoot: allowedMediaRoot,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "init client: %v\n", err)

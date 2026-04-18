@@ -120,12 +120,16 @@ func parseRecipient(recipient string) (types.JID, error) {
 // as view-once. DocumentMessage has no view-once support in WhatsApp clients,
 // so the flag is silently ignored for documents.
 func (c *Client) attachMedia(ctx context.Context, msg *waProto.Message, mediaPath, caption string, viewOnce bool) error {
-	mediaData, err := os.ReadFile(mediaPath)
+	safePath, err := c.ValidateMediaPath(mediaPath)
 	if err != nil {
-		return fmt.Errorf("Error reading media file: %v", err)
+		return fmt.Errorf("media_path rejected: %w", err)
+	}
+	mediaData, err := os.ReadFile(safePath)
+	if err != nil {
+		return fmt.Errorf("read media file: %w", err)
 	}
 
-	mediaType, mimeType := mediaTypeFromExt(mediaPath)
+	mediaType, mimeType := mediaTypeFromExt(safePath)
 
 	resp, err := c.wa.Upload(ctx, mediaData, mediaType)
 	if err != nil {

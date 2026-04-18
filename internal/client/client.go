@@ -17,14 +17,17 @@ import (
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	waLog "go.mau.fi/whatsmeow/util/log"
 
+	"github.com/sealjay/mcp-whatsapp/internal/security"
 	"github.com/sealjay/mcp-whatsapp/internal/store"
 )
 
 // Config configures a new Client.
 type Config struct {
-	StoreDir string       // directory holding messages.db and whatsapp.db
-	Store    *store.Store // initialized message store
-	Logger   waLog.Logger // optional; defaults to stderr at INFO
+	StoreDir         string             // directory holding messages.db and whatsapp.db
+	Store            *store.Store       // initialized message store
+	Logger           waLog.Logger       // optional; defaults to stderr at INFO
+	AllowedMediaRoot string             // absolute path; media_path args must live under this
+	Redactor         *security.Redactor // optional; defaults to a redacting instance
 }
 
 // Client wraps a whatsmeow.Client together with the message cache and logger.
@@ -34,6 +37,8 @@ type Client struct {
 	log              waLog.Logger
 	handlerID        uint32
 	handlerInstalled bool
+	allowedMediaRoot string
+	redactor         *security.Redactor
 }
 
 // New constructs a Client. It sets the latest WhatsApp version best-effort,
@@ -50,6 +55,11 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 	logger := cfg.Logger
 	if logger == nil {
 		logger = NewStderrLogger("Client", "INFO", true)
+	}
+
+	redactor := cfg.Redactor
+	if redactor == nil {
+		redactor = &security.Redactor{}
 	}
 
 	// Best-effort: fetch the latest WhatsApp version so the server doesn't
@@ -88,10 +98,20 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 	}
 
 	return &Client{
-		wa:    wa,
-		store: cfg.Store,
-		log:   logger,
+		wa:               wa,
+		store:            cfg.Store,
+		log:              logger,
+		allowedMediaRoot: cfg.AllowedMediaRoot,
+		redactor:         redactor,
 	}, nil
+}
+
+// ValidateMediaPath is a bound convenience wrapper around
+// security.ValidateMediaPath that uses the client's configured allowlist
+// root. Callers inside internal/client and internal/mcp should prefer this
+// over calling the package-level helper directly.
+func (c *Client) ValidateMediaPath(userPath string) (string, error) {
+	return security.ValidateMediaPath(userPath, c.allowedMediaRoot)
 }
 
 // Connect connects an already-paired device. Returns an error if not paired.

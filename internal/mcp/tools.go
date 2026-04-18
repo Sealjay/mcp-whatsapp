@@ -256,13 +256,14 @@ func (s *Server) registerSendFile() {
 		if a.Recipient == "" || a.MediaPath == "" {
 			return mcp.NewToolResultError("recipient and media_path are required"), nil
 		}
-		if _, err := os.Stat(a.MediaPath); err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("media file not found: %s", a.MediaPath)), nil
+		safePath, err := s.client.ValidateMediaPath(a.MediaPath)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
 		}
 		r := s.client.SendMediaWithOptions(ctx, client.SendMediaOptions{
 			Recipient: a.Recipient,
 			Caption:   a.Caption,
-			MediaPath: a.MediaPath,
+			MediaPath: safePath,
 			ViewOnce:  a.ViewOnce,
 		})
 		s.maybeMarkChatRead(ctx, r, a.Recipient, a.MarkChatRead)
@@ -289,10 +290,11 @@ func (s *Server) registerSendAudioMessage() {
 		if a.Recipient == "" || a.MediaPath == "" {
 			return mcp.NewToolResultError("recipient and media_path are required"), nil
 		}
-		if _, err := os.Stat(a.MediaPath); err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("media file not found: %s", a.MediaPath)), nil
+		safePath, err := s.client.ValidateMediaPath(a.MediaPath)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
 		}
-		path := a.MediaPath
+		path := safePath
 		if !strings.HasSuffix(strings.ToLower(path), ".ogg") {
 			converted, err := media.ConvertToOpusOgg(ctx, path)
 			if err != nil {

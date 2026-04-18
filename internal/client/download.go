@@ -64,7 +64,7 @@ func (c *Client) Download(ctx context.Context, messageID, chatJID string) Downlo
 		return DownloadResult{Success: false, Message: fmt.Sprintf("failed to create chat directory: %v", err)}
 	}
 
-	localPath := filepath.Join(chatDir, filename)
+	localPath := filepath.Join(chatDir, filepath.Base(filename))
 	absPath, err := filepath.Abs(localPath)
 	if err != nil {
 		return DownloadResult{Success: false, Message: fmt.Sprintf("failed to get absolute path: %v", err)}
