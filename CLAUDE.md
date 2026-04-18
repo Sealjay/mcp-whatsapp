@@ -7,6 +7,7 @@ Single Go binary that speaks MCP over stdio and wraps [whatsmeow](https://github
 ```
 cmd/whatsapp-mcp/       login, serve, smoke subcommands
 internal/client/        whatsmeow client wrapper (send, download, events, history, features)
+internal/daemon/        HTTP server, pairing state machine, /pair endpoint
 internal/mcp/           mark3labs/mcp-go server + tool registrations
 internal/media/         ogg analysis + ffmpeg shell-out
 internal/security/      path allowlisting, filename sanitisation, log redaction
@@ -19,7 +20,7 @@ Data lives under `./store/` (override with `-store DIR`). Binary is `bin/whatsap
 ## Subcommands
 
 - `login` — pair the device via QR, write session to `store/whatsapp.db`.
-- `serve` — start the MCP stdio server. Takes a `flock` on `store/.lock`; holding the lock is mutually exclusive with any other `serve` instance using the same store directory.
+- `serve` — HTTP daemon on `127.0.0.1:<port>`; tracks events + serves MCP at `/mcp`; pairing UI at `/pair`. Holds `store/.lock` while running and is mutually exclusive with any other `serve` instance using the same store directory.
 - `smoke` — boot-test without connecting to WhatsApp.
 
 ## Testing

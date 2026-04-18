@@ -43,25 +43,36 @@ Scan the QR code with WhatsApp on your phone (*Settings → Linked Devices → L
 
 ### Connect your MCP client
 
-Add this to your MCP client config, replacing `{{PATH_TO_REPO}}` with the absolute path to your clone:
+`whatsapp-mcp serve` is an HTTP daemon on `127.0.0.1:8765` (or `$WHATSAPP_MCP_ADDR`). MCP clients connect to it over HTTP:
 
-```json
+```jsonc
+// Claude Desktop — ~/Library/Application Support/Claude/claude_desktop_config.json
 {
   "mcpServers": {
-    "whatsapp": {
-      "command": "{{PATH_TO_REPO}}/bin/whatsapp-mcp",
-      "args": ["-store", "{{PATH_TO_REPO}}/store", "serve"]
-    }
+    "whatsapp": { "url": "http://127.0.0.1:8765/mcp" }
   }
 }
 ```
 
-Config file locations:
+```jsonc
+// Claude Code — .claude/mcp.json (project) or ~/.claude/mcp.json (user)
+{
+  "mcpServers": {
+    "whatsapp": { "type": "http", "url": "http://127.0.0.1:8765/mcp" }
+  }
+}
+```
 
-- **Claude Desktop:** `~/Library/Application Support/Claude/claude_desktop_config.json`
-- **Cursor:** `~/.cursor/mcp.json`
+```jsonc
+// Cursor — ~/.cursor/mcp.json
+{
+  "mcpServers": {
+    "whatsapp": { "type": "http", "url": "http://127.0.0.1:8765/mcp" }
+  }
+}
+```
 
-Restart the client. WhatsApp will appear as an available integration; the client starts `whatsapp-mcp serve` automatically when it needs tools and terminates it when the session ends.
+Restart the client. WhatsApp appears as an available integration. Closing and reopening the client reconnects to the daemon — no process spawn, no per-session handshake, no stdin/stdout juggling.
 
 ### Sending files
 
@@ -116,82 +127,26 @@ Everything lives under `./store/` (override with `-store DIR`):
 3. The handler either queries the local SQLite store or calls whatsmeow directly (send, download, reactions, etc.).
 4. Incoming WhatsApp events are persisted to the store in a background goroutine inside the same process, so query tools always see current state.
 
-### Running continuously (advanced)
+### Running the daemon
 
-By default, `whatsapp-mcp serve` runs on-demand — your MCP client spawns it and kills it with the session. If you need tighter message capture (e.g. you're offline from Claude for days at a time), the options below all trade something for it. Today there is no way to have both a keep-alive event tracker *and* functioning MCP clients at the same time: the single-instance lock (`store/.lock`) is exclusive, and MCP is stdio-only, so whatever process holds the lock owns the whatsmeow connection and the MCP stdio both. Pick one.
+The daemon is designed to run independently of any MCP client. Three supported lifecycle models:
 
-**Pattern A — accept the default (recommended for most).** Use `request_sync` to backfill known gaps after reconnecting.
+**macOS — launchd.** Template at `docs/launchd/com.sealjay.whatsapp-mcp.plist`. Copy to `~/Library/LaunchAgents/`, replace `{{PATH_TO_REPO}}` / `{{STORE_DIR}}` placeholders, `launchctl load`. Daemon runs from login onwards.
 
-**Pattern B — keep-alive event tracker (advanced).** Run:
+**Linux — systemd user unit.** Template at `docs/systemd/whatsapp-mcp.service`. Copy to `~/.config/systemd/user/`, replace placeholders, `systemctl --user enable --now whatsapp-mcp`.
 
-```bash
-./bin/whatsapp-mcp serve < <(tail -f /dev/null)
-```
+**Claude Code SessionStart hook.** For project-scoped lifetimes, drop `docs/hooks/setup.sh` into your project's `.claude/hooks/` and configure `settings.json` to invoke it. The hook is idempotent — safe to run alongside launchd/systemd.
 
-`tail -f /dev/null` never sends EOF, so `ServeStdio` stays in its read loop indefinitely. The process holds the WhatsApp connection and writes events to SQLite. Caveat: **no MCP client can use `whatsapp-mcp` while this runs** — every client that tries to spawn `serve` will hit the lock and fail. This pattern is only useful if you read SQLite directly with another tool, or if you kill the tracker before opening Claude.
+**Manual.** `./bin/whatsapp-mcp serve -addr 127.0.0.1:8765` in any terminal. Ctrl-C to stop.
 
-**Pattern C — Claude Code SessionStart hook.** If you mostly use WhatsApp from inside one specific project via Claude Code, a `.claude/hooks/setup.sh` + `cleanup.sh` pair can start the binary on session open and stop it on session close. The same lock caveat applies — if the hook is running, remove the `whatsapp` entry from your MCP config for that client, or accept that MCP will be unavailable while the hook process is alive.
+First-time pairing happens in a browser: start the daemon, open `http://127.0.0.1:8765/pair`, scan the QR with your phone. No terminal required. WhatsApp's multidevice protocol rotates the linked-device session roughly every 20 days; when that happens, the `/pair` page serves a fresh QR automatically — visit it again and re-pair.
 
-`setup.sh` skeleton (~place at `.claude/hooks/setup.sh` in your project):
+Flags and environment variables for `serve`:
 
-```bash
-#!/bin/bash
-# WhatsApp MCP SessionStart hook — macOS only (uses osascript)
-if [[ "$OSTYPE" != "darwin"* ]]; then echo "macOS only (osascript)"; exit 0; fi
-
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-
-if pgrep -f "whatsapp-mcp" > /dev/null 2>&1; then
-    echo "whatsapp-mcp: already running"
-else
-    echo "whatsapp-mcp: starting in Terminal..."
-    osascript -e "tell application \"Terminal\"
-        activate
-        do script \"$REPO_DIR/bin/whatsapp-mcp serve < <(tail -f /dev/null)\"
-        delay 0.5
-        set miniaturized of front window to true
-    end tell" 2>/dev/null || echo "  (Could not open Terminal — run manually: $REPO_DIR/bin/whatsapp-mcp serve)"
-fi
-
-exit 0
-```
-
-`cleanup.sh` skeleton (~place at `.claude/hooks/cleanup.sh` in your project):
-
-```bash
-#!/bin/bash
-# WhatsApp MCP SessionStop hook — stop the keep-alive process
-
-# Close Terminal windows showing the process before killing it
-osascript <<'EOF' 2>/dev/null
-tell application "Terminal"
-    set windowsToClose to {}
-    repeat with w in windows
-        repeat with t in tabs of w
-            try
-                if (name of t) contains "whatsapp-mcp" then
-                    set end of windowsToClose to w
-                    exit repeat
-                end if
-            end try
-        end repeat
-    end repeat
-    repeat with w in windowsToClose
-        close w saving no
-    end repeat
-end tell
-EOF
-
-# Graceful shutdown, then force-kill if needed
-pkill -f "whatsapp-mcp" 2>/dev/null
-sleep 1
-pkill -9 -f "whatsapp-mcp" 2>/dev/null
-
-exit 0
-```
-
-**Why isn't there a real daemon mode?**
-Unifying the bridge and the MCP server into one binary keeps local install simple — one auth, one store, one lock. The cost is that you can't both background-track events *and* serve MCP clients from the same process. A future `whatsapp-mcp sync` subcommand (event-only, no `ServeStdio`) paired with a read-only `serve` mode would unlock that. It's not implemented today.
+- `-addr host:port` (env `WHATSAPP_MCP_ADDR`, default `127.0.0.1:8765`).
+- `-allow-remote` (explicit opt-in to bind a non-loopback address).
+- `WHATSAPP_MCP_MEDIA_ROOT` — allowed root for `send_file` / `send_audio_message` paths.
+- `WHATSAPP_MCP_DEBUG=1` — disable JID/body redaction in logs.
 
 ## Tools
 
