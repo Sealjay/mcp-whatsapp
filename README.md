@@ -17,7 +17,7 @@ Enhancements over the original fork:
 - **Sent Message Storage** — outgoing messages are persisted to SQLite for complete conversation history
 - **Disappearing Message Support** — outgoing messages automatically inherit group-chat ephemeral timers
 - **Targeted History Sync** — on-demand per-chat backfill via the `request_sync` tool
-- **Extended tool surface** — 39 tools covering reactions, replies, edits, revoke, mark-read, typing, is-on-whatsapp, group management (create, leave, participant/metadata/invite-link admin), blocklist, polls, contact cards, view-once flag, presence, privacy settings, and the profile "About" text, in addition to the original send/query/download set
+- **Extended tool surface** — 41 tools covering reactions, replies, edits, revoke, mark-read, typing, is-on-whatsapp, group management (create, leave, participant/metadata/invite-link admin), blocklist, polls (create + vote + tally), contact cards, view-once flag, presence, privacy settings, and the profile "About" text, in addition to the original send/query/download set
 - **Single-instance enforcement** — a file lock on `store/.lock` prevents two copies of the server racing each other on the same SQLite files
 
 With this you can search and read your personal WhatsApp messages (including images, videos, documents, and audio messages), search your contacts and send messages to either individuals or groups. Messages are stored locally in SQLite and only sent to an LLM (such as Claude) when the agent accesses them through tools (which you control).
@@ -169,7 +169,9 @@ Once connected, you can interact with your WhatsApp contacts through Claude, lev
 | `send_message` | Send a text message to a phone number or JID |
 | `send_file` | Send image/video/document/raw audio with optional caption; `view_once: bool` marks image/video/audio submessages as view-once (ignored for documents) |
 | `send_audio_message` | Send a voice note (auto-converts via ffmpeg if not `.ogg` Opus); supports `view_once: bool` |
-| `send_poll` | Send a poll with a question and 2+ options; `selectable_count` controls how many options a voter may pick (creation only — voting is deferred) |
+| `send_poll` | Send a poll with a question and 2+ options; `selectable_count` controls how many options a voter may pick. Now generates the 32-byte `MessageSecret` required for votes to decrypt (previously missing, making tallies impossible) |
+| `send_poll_vote` | Cast a vote on a previously-seen poll; `options` must match option names exactly |
+| `get_poll_results` | Return the tally for a poll we have cached (includes 0-vote options) |
 | `send_contact_card` | Send a contact card; synthesises a vCard 3.0 from `name` + `phone`, or pass a raw `vcard` to skip synthesis |
 
 #### Message actions
@@ -228,7 +230,6 @@ Once connected, you can interact with your WhatsApp contacts through Claude, lev
 
 Intentionally not exposed (yet):
 
-- **Poll voting** — whatsmeow's `EncryptPollVote` helper is not in the pinned version; voting would require a non-trivial crypto port.
 - **`subscribe_presence`** — no persistence layer for presence events yet; skipped to avoid a dangling tool.
 - **Profile photo setter** — upstream whatsmeow doesn't expose a user-level setter.
 - **Approval-mode participants, communities, newsletters** — low-use surface, deferred.

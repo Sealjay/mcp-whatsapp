@@ -19,8 +19,18 @@ CREATE TABLE IF NOT EXISTS messages (
     file_sha256 BLOB,
     file_enc_sha256 BLOB,
     file_length INTEGER,
+    poll_options_json TEXT,
     PRIMARY KEY (id, chat_jid),
     FOREIGN KEY (chat_jid) REFERENCES chats(jid)
+);
+
+CREATE TABLE IF NOT EXISTS poll_votes (
+    poll_message_id TEXT NOT NULL,
+    poll_chat_jid TEXT NOT NULL,
+    voter_jid TEXT NOT NULL,
+    selected_options_json TEXT NOT NULL,
+    timestamp TIMESTAMP NOT NULL,
+    PRIMARY KEY (poll_message_id, poll_chat_jid, voter_jid)
 );
 
 -- whatsmeow LID->PN map (normally lives in whatsapp.db, but co-located for tests)

@@ -49,6 +49,10 @@ methods=(
   GetPrivacySettings
   SetPrivacySetting
   SetStatusMessage
+  BuildPollCreation
+  BuildPollVote
+  EncryptPollVote
+  DecryptPollVote
 )
 
 missing=()

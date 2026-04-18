@@ -81,6 +81,10 @@ func Open(dir string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
+	if err := migrateSchema(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate schema: %w", err)
+	}
 
 	// whatsapp.db may not yet exist on first run; open lazily in read-only mode.
 	waDB, err := sql.Open("sqlite3", "file:"+waPath+"?mode=ro")
@@ -222,7 +226,55 @@ CREATE TABLE IF NOT EXISTS messages (
 	file_sha256 BLOB,
 	file_enc_sha256 BLOB,
 	file_length INTEGER,
+	poll_options_json TEXT,
 	PRIMARY KEY (id, chat_jid),
 	FOREIGN KEY (chat_jid) REFERENCES chats(jid)
 );
+
+CREATE TABLE IF NOT EXISTS poll_votes (
+	poll_message_id TEXT NOT NULL,
+	poll_chat_jid TEXT NOT NULL,
+	voter_jid TEXT NOT NULL,
+	selected_options_json TEXT NOT NULL,
+	timestamp TIMESTAMP NOT NULL,
+	PRIMARY KEY (poll_message_id, poll_chat_jid, voter_jid)
+);
 `
+
+// migrateSchema brings legacy databases up to the current layout. SQLite lacks
+// "ADD COLUMN IF NOT EXISTS", so we inspect PRAGMA table_info before issuing
+// any ALTER. Every step is idempotent — running migrateSchema twice is a
+// no-op on an up-to-date DB.
+func migrateSchema(db *sql.DB) error {
+	rows, err := db.Query("PRAGMA table_info(messages)")
+	if err != nil {
+		return fmt.Errorf("pragma table_info(messages): %w", err)
+	}
+	defer rows.Close()
+	hasPollOptions := false
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			ctype      string
+			notnull    int
+			dfltValue  sql.NullString
+			primaryKey int
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &primaryKey); err != nil {
+			return fmt.Errorf("scan table_info(messages): %w", err)
+		}
+		if name == "poll_options_json" {
+			hasPollOptions = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate table_info(messages): %w", err)
+	}
+	if !hasPollOptions {
+		if _, err := db.Exec("ALTER TABLE messages ADD COLUMN poll_options_json TEXT"); err != nil {
+			return fmt.Errorf("add column poll_options_json: %w", err)
+		}
+	}
+	return nil
+}

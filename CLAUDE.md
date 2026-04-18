@@ -45,7 +45,7 @@ make upgrade-check
 
 ## Feature implementation map
 
-Tool surface is 39 tools, registered from `internal/mcp/tools.go` + `tools_groups.go` + `tools_media.go` + `tools_privacy.go`.
+Tool surface is 41 tools, registered from `internal/mcp/tools.go` + `tools_groups.go` + `tools_media.go` + `tools_privacy.go`.
 
 1. **LID Resolution** — `internal/store/lid.go`. Normalises `@lid` JIDs to real phone numbers via the `whatsmeow_lid_map` table.
 2. **Sent message storage** — `internal/client/send.go` persists outgoing messages after `SendMessage` returns.
@@ -54,7 +54,7 @@ Tool surface is 39 tools, registered from `internal/mcp/tools.go` + `tools_group
 5. **Reactions / replies / edits / revoke / mark-read / typing / is-on-whatsapp** — `internal/client/features.go`. Each wraps the corresponding whatsmeow builder (`BuildReaction`, `BuildEdit`, `BuildRevoke`) or one-shot call (`MarkRead`, `SendChatPresence`, `IsOnWhatsApp`).
 6. **Group management** — `internal/client/features_groups.go`. Create / leave / list / get-info / participant mutation / subject / topic / announce / locked / invite-link get+reset / join-by-link. Thin wrappers over `CreateGroup`, `LeaveGroup`, `GetJoinedGroups`, `GetGroupInfo`, `UpdateGroupParticipants`, `SetGroupName`, `SetGroupTopic`, `SetGroupAnnounce`, `SetGroupLocked`, `GetGroupInviteLink`, `JoinGroupWithLink`.
 7. **Blocklist** — also in `internal/client/features_groups.go`. `GetBlocklist`, `BlockContact`, `UnblockContact` wrap whatsmeow's `GetBlocklist` / `UpdateBlocklist`.
-8. **Polls + contact cards + view-once flag** — `internal/client/features_media.go` (poll + contact-card send paths) plus `internal/client/vcard.go` (vCard 3.0 synthesis when no override supplied) and the `ViewOnce` option plumbed through `SendMediaOptions` in `internal/client/send.go`. Poll voting is deferred — whatsmeow's pinned version lacks `EncryptPollVote`.
+8. **Polls + contact cards + view-once flag** — `internal/client/features_media.go` (poll send / vote / tally + contact-card send paths) plus `internal/client/vcard.go` (vCard 3.0 synthesis when no override supplied) and the `ViewOnce` option plumbed through `SendMediaOptions` in `internal/client/send.go`. `SendPoll` now uses `wa.BuildPollCreation` so the required `MessageSecret` is attached (without it, votes cannot be decrypted — this was silently broken before). Vote ingest + tally live in `internal/client/events.go::handlePollVote` and `internal/store/poll.go` (the new `poll_votes` table + `messages.poll_options_json` column).
 9. **Presence / privacy / status message** — `internal/client/features_privacy.go`. `SendPresence` (own availability), `GetPrivacySettings` / `SetPrivacySetting` with strict enum validation, `SetStatusMessage` for the "About" text.
 
 ## Database location

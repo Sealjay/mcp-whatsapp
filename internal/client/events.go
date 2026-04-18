@@ -1,11 +1,13 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"reflect"
 	"strings"
 	"time"
 
+	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
@@ -72,8 +74,32 @@ func (c *Client) handleMessage(msg *events.Message) {
 		c.log.Warnf("Failed to store chat: %v", err)
 	}
 
+	// Poll vote — a signal-only event with no user-visible content. Decrypt,
+	// tally into the local cache, and return. We pass the post-LID-resolution
+	// full JID so StorePollVote's primary key never collides across servers.
+	if msg.Message != nil && msg.Message.GetPollUpdateMessage() != nil {
+		voterFullJID := normalizedSender
+		if voterFullJID == "" {
+			voterFullJID = msg.Info.Sender.String()
+		}
+		c.handlePollVote(msg, chatJID, voterFullJID)
+		return
+	}
+
 	content := extractTextContent(msg.Message)
 	mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength := extractMediaInfo(msg.Message)
+
+	// Poll creation — store a "[poll] <question>" row for readability and
+	// cache the option names so we can decode vote SHA-256 hashes later.
+	var pollOptions []string
+	if msg.Message != nil {
+		if pc := msg.Message.GetPollCreationMessage(); pc != nil {
+			pollOptions = extractPollOptionNames(pc)
+			if content == "" {
+				content = "[poll] " + pc.GetName()
+			}
+		}
+	}
 
 	if content == "" && mediaType == "" {
 		return
@@ -90,6 +116,12 @@ func (c *Client) handleMessage(msg *events.Message) {
 		Filename:  filename,
 		URL:       url,
 	}, mediaKey, fileSHA256, fileEncSHA256, fileLength)
+
+	if err == nil && len(pollOptions) > 0 {
+		if perr := c.store.StorePollMetadata(context.Background(), msg.Info.ID, chatJID, pollOptions); perr != nil {
+			c.log.Warnf("Failed to store poll metadata for %s: %v", msg.Info.ID, perr)
+		}
+	}
 
 	if err != nil {
 		c.log.Warnf("Failed to store message: %v", err)
@@ -358,4 +390,81 @@ func extractMediaInfo(msg *waProto.Message) (mediaType, filename, url string, me
 	}
 
 	return "", "", "", nil, nil, nil, 0
+}
+
+// extractPollOptionNames pulls the option names out of a PollCreationMessage.
+// Returns nil if the input is nil or the options list is empty.
+func extractPollOptionNames(pc *waProto.PollCreationMessage) []string {
+	if pc == nil {
+		return nil
+	}
+	opts := pc.GetOptions()
+	if len(opts) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(opts))
+	for _, o := range opts {
+		out = append(out, o.GetOptionName())
+	}
+	return out
+}
+
+// handlePollVote decrypts an incoming PollUpdateMessage, reverses its
+// SelectedOptions SHA-256 hashes against the cached option names, and records
+// the voter's current selection. Failures are logged (without poll content)
+// and swallowed so a broken vote never blocks the rest of message handling.
+// voterJID must be the full post-LID-resolution JID string.
+func (c *Client) handlePollVote(msg *events.Message, chatJID, voterJID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	vote, err := c.wa.DecryptPollVote(ctx, msg)
+	if err != nil {
+		c.log.Warnf("Failed to decrypt poll vote from %s in %s: %v", voterJID, chatJID, err)
+		return
+	}
+
+	pu := msg.Message.GetPollUpdateMessage()
+	key := pu.GetPollCreationMessageKey()
+	pollID := key.GetID()
+	if pollID == "" {
+		c.log.Warnf("Poll vote missing poll creation message id (chat=%s)", chatJID)
+		return
+	}
+
+	// Scope lookup to our locally-observed chatJID; ignore key.RemoteJID to
+	// prevent a crafted update from another chat polluting this chat's tally.
+	options, err := c.store.GetPollOptions(ctx, pollID, chatJID)
+	if err != nil {
+		// No cached metadata — we've probably never seen the poll creation
+		// message. Log without listing option text and bail.
+		c.log.Warnf("Poll vote for unknown poll %s in %s: %v", pollID, chatJID, err)
+		return
+	}
+
+	optionHashes := whatsmeow.HashPollOptions(options)
+	selectedHashes := vote.GetSelectedOptions()
+	selected := make([]string, 0, len(selectedHashes))
+	for _, h := range selectedHashes {
+		for i, known := range optionHashes {
+			if bytes.Equal(h, known) {
+				selected = append(selected, options[i])
+				break
+			}
+		}
+	}
+
+	// Clamp the peer-supplied timestamp to now so a malicious far-future value
+	// can't permanently suppress later legitimate updates via the replay guard.
+	ts := msg.Info.Timestamp
+	if now := time.Now(); ts.After(now) {
+		ts = now
+	}
+
+	if err := c.store.StorePollVote(ctx, pollID, chatJID, voterJID, selected, ts); err != nil {
+		c.log.Warnf("Failed to store poll vote for poll %s in %s: %v", pollID, chatJID, err)
+		return
+	}
+
+	c.log.Debugf("Recorded poll vote from %s on poll %s with %d selections", voterJID, pollID, len(selected))
 }

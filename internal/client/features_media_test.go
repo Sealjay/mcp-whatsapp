@@ -100,3 +100,35 @@ func TestSendContactCard_NotConnected(t *testing.T) {
 		t.Fatalf("expected not-connected message, got %q", r.Message)
 	}
 }
+
+func TestSendPollVote_NotConnected(t *testing.T) {
+	c := newDisconnectedClient()
+	r := c.SendPollVote(context.Background(), "447700000001@s.whatsapp.net", "POLL1", []string{"a"})
+	if r.Success {
+		t.Fatalf("expected Success=false, got %+v", r)
+	}
+	if r.Message != "Not connected to WhatsApp" {
+		t.Fatalf("expected not-connected message, got %q", r.Message)
+	}
+}
+
+func TestGetPollResults_NotConnected(t *testing.T) {
+	// GetPollResults hits the local store only (no whatsmeow). The guard we
+	// exercise here is input validation + the nil-store fallback.
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("GetPollResults on disconnected client panicked: %v", r)
+		}
+	}()
+	c := newDisconnectedClient()
+	if _, err := c.GetPollResults(context.Background(), "", "POLL1"); err == nil {
+		t.Fatalf("expected error for empty chat_jid, got nil")
+	}
+	if _, err := c.GetPollResults(context.Background(), "447700000001@s.whatsapp.net", ""); err == nil {
+		t.Fatalf("expected error for empty poll_message_id, got nil")
+	}
+	// With both args set but no store, must error cleanly instead of panicking.
+	if _, err := c.GetPollResults(context.Background(), "447700000001@s.whatsapp.net", "POLL1"); err == nil {
+		t.Fatalf("expected error for nil store, got nil")
+	}
+}
