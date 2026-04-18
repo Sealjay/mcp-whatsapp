@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -292,8 +293,15 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 
 	// Check if we have media to send
 	if mediaPath != "" {
+		// Validate the caller-supplied path lives inside the configured
+		// media root. This prevents a confused-deputy read of arbitrary
+		// files (e.g. /etc/passwd) via the /api/send endpoint.
+		safePath, err := validateMediaPath(mediaPath)
+		if err != nil {
+			return false, fmt.Sprintf("Invalid media path: %v", err)
+		}
 		// Read media file
-		mediaData, err := os.ReadFile(mediaPath)
+		mediaData, err := os.ReadFile(safePath)
 		if err != nil {
 			return false, fmt.Sprintf("Error reading media file: %v", err)
 		}
@@ -491,7 +499,7 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 		// Log but don't fail - message was sent successfully
 		fmt.Printf("Warning: Failed to store sent message: %v\n", err)
 	} else {
-		fmt.Printf("[%s] → %s: %s\n", now.Format("2006-01-02 15:04:05"), chatJID, message)
+		fmt.Printf("[%s] → %s: (sent, %d bytes)\n", now.Format("2006-01-02 15:04:05"), redactJID(chatJID), len(message))
 	}
 
 	return true, fmt.Sprintf("Message sent to %s", recipient)
@@ -523,8 +531,11 @@ func extractMediaInfo(msg *waProto.Message) (mediaType string, filename string, 
 
 	// Check for document message
 	if doc := msg.GetDocumentMessage(); doc != nil {
-		filename := doc.GetFileName()
-		if filename == "" {
+		// Sanitize the supplied filename: only keep the base component so that
+		// a malicious sender cannot use path separators or ".." to traverse
+		// the filesystem when the file is later written to disk.
+		filename := filepath.Base(doc.GetFileName())
+		if filename == "" || filename == "." || filename == ".." || filename == "/" {
 			filename = "document_" + time.Now().Format("20060102_150405")
 		}
 		return "document", filename,
@@ -607,11 +618,12 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 			direction = "→"
 		}
 
-		// Log based on message type
+		// Log based on message type. Message bodies and filenames are not
+		// written to stdout to avoid leaking conversation contents into logs.
 		if mediaType != "" {
-			fmt.Printf("[%s] %s %s: [%s: %s] %s\n", timestamp, direction, sender, mediaType, filename, content)
+			fmt.Printf("[%s] %s %s: [%s, %d bytes]\n", timestamp, direction, redactJID(sender), mediaType, len(content))
 		} else if content != "" {
-			fmt.Printf("[%s] %s %s: %s\n", timestamp, direction, sender, content)
+			fmt.Printf("[%s] %s %s: (%d bytes)\n", timestamp, direction, redactJID(sender), len(content))
 		}
 	}
 }
@@ -736,8 +748,9 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 		return false, "", "", "", fmt.Errorf("failed to create chat directory: %v", err)
 	}
 
-	// Generate a local path for the file
-	localPath = fmt.Sprintf("%s/%s", chatDir, filename)
+	// Generate a local path for the file. Re-apply filepath.Base as a
+	// defensive measure in case stored filenames predate sanitization.
+	localPath = filepath.Join(chatDir, filepath.Base(filename))
 
 	// Get absolute path
 	absPath, err := filepath.Abs(localPath)
@@ -756,7 +769,7 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 		return false, "", "", "", fmt.Errorf("incomplete media information for download")
 	}
 
-	fmt.Printf("Attempting to download media for message %s in chat %s...\n", messageID, chatJID)
+	fmt.Printf("Attempting to download media for message %s in chat %s...\n", messageID, redactJID(chatJID))
 
 	// Extract direct path from URL
 	directPath := extractDirectPathFromURL(url)
@@ -821,6 +834,76 @@ func extractDirectPathFromURL(url string) string {
 	return "/" + pathPart
 }
 
+// redactJID returns a privacy-safe identifier for logging. It keeps only the
+// last 4 characters of the user-part of a JID so full phone numbers are not
+// written to stdout/logs.
+func redactJID(jid string) string {
+	user := jid
+	if i := strings.Index(jid, "@"); i >= 0 {
+		user = jid[:i]
+	}
+	if len(user) > 4 {
+		return "…" + user[len(user)-4:]
+	}
+	if user == "" {
+		return "…"
+	}
+	return "…" + user
+}
+
+// mediaRoot returns the directory under which caller-supplied media paths are
+// allowed to live. Overridable via WHATSAPP_BRIDGE_MEDIA_ROOT; defaults to the
+// user's home directory, which is permissive enough for normal use while
+// preventing reads of arbitrary system paths (/etc, /proc, etc.).
+func mediaRoot() string {
+	if v := os.Getenv("WHATSAPP_BRIDGE_MEDIA_ROOT"); v != "" {
+		return v
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return home
+	}
+	return "."
+}
+
+// validateMediaPath resolves userPath to an absolute, cleaned path and ensures
+// it lives inside mediaRoot(). Empty input is permitted and returned as-is.
+func validateMediaPath(userPath string) (string, error) {
+	if userPath == "" {
+		return "", nil
+	}
+	abs, err := filepath.Abs(userPath)
+	if err != nil {
+		return "", fmt.Errorf("invalid path: %v", err)
+	}
+	abs = filepath.Clean(abs)
+	rootAbs, err := filepath.Abs(mediaRoot())
+	if err != nil {
+		return "", fmt.Errorf("invalid media root: %v", err)
+	}
+	rootAbs = filepath.Clean(rootAbs)
+	if abs != rootAbs && !strings.HasPrefix(abs, rootAbs+string(filepath.Separator)) {
+		return "", fmt.Errorf("media path is outside allowed root %q", rootAbs)
+	}
+	return abs, nil
+}
+
+// listenAddr determines the HTTP bind address for the bridge. Defaults to
+// 127.0.0.1 on the given port. Overridable via WHATSAPP_BRIDGE_ADDR (full
+// host:port) or WHATSAPP_BRIDGE_PORT (port only). Binding to a non-loopback
+// interface requires explicit WHATSAPP_BRIDGE_ADDR configuration.
+func listenAddr(defaultPort int) string {
+	if v := os.Getenv("WHATSAPP_BRIDGE_ADDR"); v != "" {
+		return v
+	}
+	port := defaultPort
+	if v := os.Getenv("WHATSAPP_BRIDGE_PORT"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil && p > 0 {
+			port = p
+		}
+	}
+	return fmt.Sprintf("127.0.0.1:%d", port)
+}
+
 // Start a REST API server to expose the WhatsApp client functionality
 func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port int) {
 	// Handler for sending messages
@@ -849,11 +932,12 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			return
 		}
 
-		fmt.Println("Received request to send message", req.Message, req.MediaPath)
+		fmt.Printf("Received send request: recipient=%s textLen=%d hasMedia=%t\n",
+			redactJID(req.Recipient), len(req.Message), req.MediaPath != "")
 
 		// Send the message
 		success, message := sendWhatsAppMessage(client, messageStore, req.Recipient, req.Message, req.MediaPath)
-		fmt.Println("Message sent", success, message)
+		fmt.Printf("Send result: success=%t\n", success)
 		// Set response headers
 		w.Header().Set("Content-Type", "application/json")
 
@@ -1007,8 +1091,10 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		})
 	})
 
-	// Start the server
-	serverAddr := fmt.Sprintf(":%d", port)
+	// Start the server. Bind to loopback by default so the HTTP API is not
+	// exposed on the LAN. Override with WHATSAPP_BRIDGE_ADDR only when the
+	// operator understands that the API is unauthenticated.
+	serverAddr := listenAddr(port)
 	fmt.Printf("Starting REST API server on %s...\n", serverAddr)
 
 	// Run server in a goroutine so it doesn't block
@@ -1430,7 +1516,7 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 // Request history sync for a specific chat by looking up the newest message.
 // Uses the newest message as anchor so backward sync fills gaps after reconnection.
 func requestHistorySyncForChat(client *whatsmeow.Client, store *MessageStore, chatJID string) string {
-	fmt.Printf("[SYNC] Requesting history sync for chat: %s\n", chatJID)
+	fmt.Printf("[SYNC] Requesting history sync for chat: %s\n", redactJID(chatJID))
 
 	if client == nil || !client.IsConnected() {
 		return "Client not connected"
@@ -1457,7 +1543,7 @@ func requestHistorySyncForChat(client *whatsmeow.Client, store *MessageStore, ch
 	`, chatJID).Scan(&msgID, &timestamp, &isFromMe)
 
 	if err != nil {
-		return fmt.Sprintf("No messages found for chat %s: %v", chatJID, err)
+		return fmt.Sprintf("No messages found for chat %s: %v", redactJID(chatJID), err)
 	}
 
 	fmt.Printf("[SYNC] Found newest message: ID=%s, timestamp=%v, isFromMe=%v\n", msgID, timestamp, isFromMe)
@@ -1467,10 +1553,10 @@ func requestHistorySyncForChat(client *whatsmeow.Client, store *MessageStore, ch
 	if jid.Server == types.DefaultUserServer {
 		lidJID, err := client.Store.LIDs.GetLIDForPN(context.Background(), jid)
 		if err == nil && !lidJID.IsEmpty() {
-			fmt.Printf("[SYNC] Found LID mapping: %s -> %s\n", jid.String(), lidJID.String())
+			fmt.Printf("[SYNC] Found LID mapping: %s -> %s\n", redactJID(jid.String()), redactJID(lidJID.String()))
 			requestJID = lidJID
 		} else {
-			fmt.Printf("[SYNC] No LID mapping found for %s, using original JID\n", jid.String())
+			fmt.Printf("[SYNC] No LID mapping found for %s, using original JID\n", redactJID(jid.String()))
 		}
 	}
 
@@ -1493,9 +1579,9 @@ func requestHistorySyncForChat(client *whatsmeow.Client, store *MessageStore, ch
 	// Send the request to our OWN device (peer message), not to the chat JID
 	// The ChatJID in the message body specifies which chat to sync
 	ownJID := client.Store.ID.ToNonAD()
-	fmt.Printf("[SYNC] Sending peer message to own JID: %s\n", ownJID.String())
+	fmt.Printf("[SYNC] Sending peer message to own JID: %s\n", redactJID(ownJID.String()))
 	fmt.Printf("[SYNC] Request details: ChatJID=%s (request uses %s), MsgID=%s, IsFromMe=%v, Timestamp=%v\n",
-		chatJID, requestJID.String(), msgID, isFromMe, timestamp)
+		redactJID(chatJID), redactJID(requestJID.String()), msgID, isFromMe, timestamp)
 
 	resp, err := client.SendMessage(context.Background(), ownJID, historyMsg, whatsmeow.SendRequestExtra{Peer: true})
 	if err != nil {
@@ -1503,7 +1589,7 @@ func requestHistorySyncForChat(client *whatsmeow.Client, store *MessageStore, ch
 	}
 	fmt.Printf("[SYNC] Send response: ID=%s, Timestamp=%v\n", resp.ID, resp.Timestamp)
 
-	return fmt.Sprintf("History sync requested for %s (requesting 50 messages before %s to fill gaps)", chatJID, timestamp.Format("2006-01-02 15:04:05"))
+	return fmt.Sprintf("History sync requested for %s (requesting 50 messages before %s to fill gaps)", redactJID(chatJID), timestamp.Format("2006-01-02 15:04:05"))
 }
 
 // requestHistorySyncFromTimestamp requests history sync from a specific timestamp.
@@ -1511,7 +1597,7 @@ func requestHistorySyncForChat(client *whatsmeow.Client, store *MessageStore, ch
 // Use current UTC time to fetch recent messages that may not be in the cache
 // (e.g., messages sent from phone while bridge was offline).
 func requestHistorySyncFromTimestamp(client *whatsmeow.Client, store *MessageStore, chatJID string, timestamp time.Time) string {
-	fmt.Printf("[SYNC] Requesting history sync from timestamp %v for chat: %s\n", timestamp, chatJID)
+	fmt.Printf("[SYNC] Requesting history sync from timestamp %v for chat: %s\n", timestamp, redactJID(chatJID))
 
 	if client == nil || !client.IsConnected() {
 		return "Client not connected"
@@ -1545,9 +1631,9 @@ func requestHistorySyncFromTimestamp(client *whatsmeow.Client, store *MessageSto
 	// Send the request to our OWN device (peer message), not to the chat JID
 	// The ChatJID in the message body specifies which chat to sync
 	ownJID := client.Store.ID.ToNonAD()
-	fmt.Printf("[SYNC] Sending peer message to own JID: %s\n", ownJID.String())
+	fmt.Printf("[SYNC] Sending peer message to own JID: %s\n", redactJID(ownJID.String()))
 	fmt.Printf("[SYNC] Request details: ChatJID=%s, SyntheticMsgID=%s, IsFromMe=true, Timestamp=%v\n",
-		chatJID, syntheticID, timestamp)
+		redactJID(chatJID), syntheticID, timestamp)
 
 	resp, err := client.SendMessage(context.Background(), ownJID, historyMsg, whatsmeow.SendRequestExtra{Peer: true})
 	if err != nil {
@@ -1555,7 +1641,7 @@ func requestHistorySyncFromTimestamp(client *whatsmeow.Client, store *MessageSto
 	}
 	fmt.Printf("[SYNC] Send response: ID=%s, Timestamp=%v\n", resp.ID, resp.Timestamp)
 
-	return fmt.Sprintf("History sync requested for %s (requesting 50 messages before %s)", chatJID, timestamp.Format(time.RFC3339))
+	return fmt.Sprintf("History sync requested for %s (requesting 50 messages before %s)", redactJID(chatJID), timestamp.Format(time.RFC3339))
 }
 
 // analyzeOggOpus tries to extract duration and generate a simple waveform from an Ogg Opus file
