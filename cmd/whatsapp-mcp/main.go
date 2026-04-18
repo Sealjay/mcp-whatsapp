@@ -1,9 +1,9 @@
-// Command whatsapp-mcp is a single-binary WhatsApp bridge that speaks MCP
-// over stdio. Subcommands:
+// Command whatsapp-mcp is a single-binary WhatsApp bridge that runs as an
+// HTTP MCP daemon (default 127.0.0.1:8765). Subcommands:
 //
 //	login  — one-shot interactive QR pairing (writes session to store/whatsapp.db)
-//	serve  — MCP stdio server for Claude/Cursor/etc.
-//	smoke  — non-interactive smoke test used by CI
+//	serve  — long-running HTTP daemon: serves MCP at /mcp and pairing UI at /pair
+//	smoke  — non-interactive boot-check used by CI (no network, no listener)
 package main
 
 import (
@@ -14,20 +14,25 @@ import (
 	"github.com/sealjay/mcp-whatsapp/internal/security"
 )
 
+// Version is overridden at build time via -ldflags "-X main.Version=...".
+var Version = "dev"
+
 const usage = `whatsapp-mcp: WhatsApp bridge over MCP
 
 Usage:
   whatsapp-mcp <command> [flags]
+  whatsapp-mcp -version
 
 Commands:
   login   Pair this device with your WhatsApp account via QR code (terminal)
   serve   Run the always-on HTTP MCP daemon (tracks events + serves MCP on 127.0.0.1:8765)
-  smoke   Run a non-interactive boot check
+  smoke   Non-interactive boot check (CI): opens store + builds MCP server without connecting
   help    Show this help
 
 Global flags (before the command):
   -store DIR   Directory holding messages.db and whatsapp.db (default: ./store)
   -debug       Show full JIDs and message bodies in logs (default: redacted)
+  -version     Print version and exit
 
 Serve-specific flags (after 'serve'):
   -addr host:port   HTTP bind address (default: 127.0.0.1:8765, env WHATSAPP_MCP_ADDR)
@@ -35,6 +40,20 @@ Serve-specific flags (after 'serve'):
 `
 
 func main() {
+	// Handle -version / --version before subcommand dispatch so it works
+	// regardless of the command that follows (or if none is given).
+	for _, a := range os.Args[1:] {
+		if a == "-version" || a == "--version" {
+			fmt.Printf("whatsapp-mcp %s\n", Version)
+			os.Exit(0)
+		}
+		// Stop scanning at the first non-flag token: that's the subcommand,
+		// and a later `-version` belongs to the subcommand's FlagSet.
+		if len(a) == 0 || a[0] != '-' {
+			break
+		}
+	}
+
 	var (
 		storeDir string
 		debug    bool

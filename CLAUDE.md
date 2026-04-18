@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Single Go binary that speaks MCP over stdio and wraps [whatsmeow](https://github.com/tulir/whatsmeow) to expose a personal WhatsApp account as MCP tools. By default the MCP client launches it on demand; see the README's *Running continuously* section for optional keep-alive patterns and their caveats.
+Single Go binary that runs as an HTTP MCP daemon (default `127.0.0.1:8765`) wrapping [whatsmeow](https://github.com/tulir/whatsmeow) to expose a personal WhatsApp account as MCP tools. `whatsapp-mcp serve` is the long-running process: it tracks WhatsApp events, caches messages locally, serves MCP at `/mcp`, and hosts the pairing UI at `/pair`. MCP clients (Claude Desktop, Cursor, etc.) connect to it over HTTP.
 
 ## Structure
 

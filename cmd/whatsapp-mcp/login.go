@@ -16,6 +16,10 @@ import (
 func runLogin(storeDir string, redactor *security.Redactor, args []string) int {
 	fs := flag.NewFlagSet("login", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "whatsapp-mcp login: pair this device via QR; writes session to <store>/whatsapp.db. Ctrl-C aborts.")
+		fmt.Fprintln(os.Stderr, "\nUsage: whatsapp-mcp [-store DIR] login")
+	}
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
