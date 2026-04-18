@@ -1,9 +1,9 @@
 // Package mcp wires mark3labs/mcp-go to the internal/client and internal/store
-// packages, exposing the WhatsApp bridge over MCP stdio.
+// packages, exposing the WhatsApp bridge over MCP Streamable HTTP.
 package mcp
 
 import (
-	"context"
+	"net/http"
 
 	"github.com/mark3labs/mcp-go/server"
 
@@ -32,8 +32,9 @@ func NewServer(c *client.Client) *Server {
 // MCP returns the underlying mcp-go server (tests only).
 func (s *Server) MCP() *server.MCPServer { return s.mcp }
 
-// ServeStdio serves the MCP protocol on stdin/stdout until the context is
-// cancelled or stdin closes.
-func (s *Server) ServeStdio(_ context.Context) error {
-	return server.ServeStdio(s.mcp)
+// AttachHTTP mounts the MCP Streamable HTTP handler on mux at /mcp. The
+// actual listener lifecycle is owned by the caller (internal/daemon).
+func (s *Server) AttachHTTP(mux *http.ServeMux) {
+	httpHandler := server.NewStreamableHTTPServer(s.mcp)
+	mux.Handle("/mcp", httpHandler)
 }

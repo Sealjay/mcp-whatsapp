@@ -74,9 +74,7 @@ func runServe(storeDir string, redactor *security.Redactor, args []string) int {
 	}
 
 	s := mcpsrv.NewServer(c)
-	if err := s.ServeStdio(ctx); err != nil {
-		fmt.Fprintf(os.Stderr, "serve: %v\n", err)
-		return 1
-	}
+	_ = s // TODO(task 5): replace with daemon.Run
+	<-ctx.Done()
 	return 0
 }
