@@ -132,20 +132,25 @@ func (s *Store) ListChats(ctx context.Context, query string, limit, page int, in
 	b.WriteString(`SELECT
 		chats.jid,
 		chats.name,
-		chats.last_message_time,
+		chats.last_message_time,`)
+	if includeLastMessage {
+		b.WriteString(`
 		latest_msg.content,
 		latest_msg.sender,
 		latest_msg.is_from_me
-	FROM chats`)
-
-	if includeLastMessage {
-		b.WriteString(`
+	FROM chats
 		LEFT JOIN messages AS latest_msg ON chats.jid = latest_msg.chat_jid
 		AND latest_msg.rowid = (
 			SELECT rowid FROM messages
 			WHERE chat_jid = chats.jid
 			ORDER BY timestamp DESC LIMIT 1
 		)`)
+	} else {
+		b.WriteString(`
+		NULL,
+		NULL,
+		NULL
+	FROM chats`)
 	}
 
 	var args []any
@@ -190,20 +195,25 @@ func (s *Store) GetChat(ctx context.Context, jid string, includeLastMessage bool
 	b.WriteString(`SELECT
 		c.jid,
 		c.name,
-		c.last_message_time,
+		c.last_message_time,`)
+	if includeLastMessage {
+		b.WriteString(`
 		m.content,
 		m.sender,
 		m.is_from_me
-	FROM chats c`)
-
-	if includeLastMessage {
-		b.WriteString(`
+	FROM chats c
 		LEFT JOIN messages m ON c.jid = m.chat_jid
 		AND m.rowid = (
 			SELECT rowid FROM messages
 			WHERE chat_jid = c.jid
 			ORDER BY timestamp DESC LIMIT 1
 		)`)
+	} else {
+		b.WriteString(`
+		NULL,
+		NULL,
+		NULL
+	FROM chats c`)
 	}
 	b.WriteString(" WHERE c.jid = ?")
 
