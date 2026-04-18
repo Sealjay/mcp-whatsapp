@@ -76,8 +76,8 @@ func TestRedactor_URL_NonDebug(t *testing.T) {
 	cases := map[string]string{
 		"https://mmg.whatsapp.net/v/abc123": "https://mmg.whatsapp.net/…",
 		"http://example.com/path?q=1":       "http://example.com/…",
-		"not-a-url":                          "[url]",
-		"":                                   "[url]",
+		"not-a-url":                         "[url]",
+		"":                                  "[url]",
 	}
 	for in, want := range cases {
 		t.Run(in, func(t *testing.T) {

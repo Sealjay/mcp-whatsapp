@@ -51,13 +51,13 @@ func (c *Client) StartEventHandler() {
 // store-ready Message plus the raw media crypto fields and the full
 // post-LID-resolution sender JID (used for poll-vote keying).
 type normalizedMessage struct {
-	msg            store.Message
-	mediaKey       []byte
-	fileSHA256     []byte
-	fileEncSHA256  []byte
-	fileLength     uint64
-	senderFullJID  string // post-LID sender as "user@server"
-	chatJID        string // post-LID-normalised chat JID
+	msg           store.Message
+	mediaKey      []byte
+	fileSHA256    []byte
+	fileEncSHA256 []byte
+	fileLength    uint64
+	senderFullJID string // post-LID sender as "user@server"
+	chatJID       string // post-LID-normalised chat JID
 }
 
 // normalizeIncomingMessage resolves sender and chat JIDs (LID → phone),

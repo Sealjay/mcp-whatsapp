@@ -14,13 +14,13 @@ func TestNormalizeIncomingMessage_LIDOriginSender(t *testing.T) {
 	c := newClientWithStore(t, s)
 
 	nm := c.normalizeIncomingMessage(
-		"99887766@lid",         // rawChatJID (DM with LID)
-		"99887766@lid",         // rawSenderJID
-		"99887766",             // senderUser
-		false,                  // isGroup
-		false,                  // isFromMe
-		"",                     // ownID
-		"lid-norm-1",           // msgID
+		"99887766@lid", // rawChatJID (DM with LID)
+		"99887766@lid", // rawSenderJID
+		"99887766",     // senderUser
+		false,          // isGroup
+		false,          // isFromMe
+		"",             // ownID
+		"lid-norm-1",   // msgID
 		time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
 		&waProto.Message{Conversation: proto.String("hi from lid")},
 	)
@@ -45,13 +45,13 @@ func TestNormalizeIncomingMessage_GroupChat(t *testing.T) {
 	c := newClientWithStore(t, s)
 
 	nm := c.normalizeIncomingMessage(
-		"123456789@g.us",       // rawChatJID
-		"99887766@lid",         // rawSenderJID (LID in group)
-		"99887766",             // senderUser
-		true,                   // isGroup
-		false,                  // isFromMe
-		"",                     // ownID
-		"group-norm-1",         // msgID
+		"123456789@g.us", // rawChatJID
+		"99887766@lid",   // rawSenderJID (LID in group)
+		"99887766",       // senderUser
+		true,             // isGroup
+		false,            // isFromMe
+		"",               // ownID
+		"group-norm-1",   // msgID
 		time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
 		&waProto.Message{Conversation: proto.String("group hello")},
 	)
@@ -71,10 +71,10 @@ func TestNormalizeIncomingMessage_IsFromMe(t *testing.T) {
 	nm := c.normalizeIncomingMessage(
 		"447700000001@s.whatsapp.net",
 		"myownid@s.whatsapp.net",
-		"",                     // senderUser empty
-		false,                  // isGroup
-		true,                   // isFromMe
-		"myownid",              // ownID
+		"",        // senderUser empty
+		false,     // isGroup
+		true,      // isFromMe
+		"myownid", // ownID
 		"from-me-1",
 		time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
 		&waProto.Message{Conversation: proto.String("sent by me")},
@@ -103,9 +103,9 @@ func TestNormalizeIncomingMessage_WithMedia(t *testing.T) {
 		time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
 		&waProto.Message{
 			ImageMessage: &waProto.ImageMessage{
-				URL:       proto.String("https://cdn.example.com/img"),
-				MediaKey:  []byte("key123"),
-				Mimetype:  proto.String("image/jpeg"),
+				URL:      proto.String("https://cdn.example.com/img"),
+				MediaKey: []byte("key123"),
+				Mimetype: proto.String("image/jpeg"),
 			},
 		},
 	)

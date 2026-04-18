@@ -12,8 +12,8 @@ import (
 var templateFS embed.FS
 
 var (
-	pairTmpl    = template.Must(template.ParseFS(templateFS, "templates/pair.html.tmpl"))
-	pairedTmpl  = template.Must(template.ParseFS(templateFS, "templates/pair_success.html.tmpl"))
+	pairTmpl   = template.Must(template.ParseFS(templateFS, "templates/pair.html.tmpl"))
+	pairedTmpl = template.Must(template.ParseFS(templateFS, "templates/pair_success.html.tmpl"))
 )
 
 const (
@@ -50,8 +50,8 @@ func newPairHandlers(cache *PairCache, reset resetter) *pairHandlers {
 		cache:            cache,
 		reset:            reset,
 		pairGetLimiter:   NewLimiter(5.0/60.0, 5),   // 5/min, burst 5
-		pairQRLimiter:    NewLimiter(10.0/60.0, 10),  // 10/min, burst 10
-		pairResetLimiter: NewLimiter(1.0/60.0, 1),    // 1/min, burst 1
+		pairQRLimiter:    NewLimiter(10.0/60.0, 10), // 10/min, burst 10
+		pairResetLimiter: NewLimiter(1.0/60.0, 1),   // 1/min, burst 1
 	}
 }
 

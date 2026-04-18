@@ -264,4 +264,3 @@ func (c *Client) JoinGroupWithLink(ctx context.Context, linkOrCode string) (stri
 	}
 	return jid.String(), nil
 }
-
