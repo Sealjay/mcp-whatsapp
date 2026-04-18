@@ -21,17 +21,13 @@ With this you can search and read your personal WhatsApp messages (including ima
 
 It connects to your **personal WhatsApp account** directly via the WhatsApp web multidevice API, using the [whatsmeow](https://github.com/tulir/whatsmeow) library as its WhatsApp client — this project is a thin wrapper that adds an MCP surface, a local SQLite store, and LID/ephemeral/history enhancements on top. All your messages are stored locally and only sent to an LLM (such as Claude) when the agent accesses them through tools (which you control).
 
-Here's an example of what you can do when it's connected to Claude.
-
-![WhatsApp MCP](./example-use.png)
-
 ## Setup
 
 ### Prerequisites
 
 - Go
 - Python 3.6+
-- Anthropic Claude Desktop app (or Cursor)
+- An MCP-compatible client (e.g. Claude Desktop, Cursor, Claude Code, VS Code)
 - UV (Python package manager), install with `curl -LsSf https://astral.sh/uv/install.sh | sh`
 - FFmpeg (_optional_) - Only needed for audio messages. If you want to send audio files as playable WhatsApp voice messages, they must be in `.ogg` Opus format. With FFmpeg installed, the MCP server will automatically convert non-Opus audio files. Without FFmpeg, you can still send raw audio files using the `send_file` tool.
 
@@ -59,16 +55,16 @@ Here's an example of what you can do when it's connected to Claude.
 
 3. **Connect to the MCP server**
 
-   Copy the below json with the appropriate {{PATH}} values:
+   Register the server with your MCP client using the client's configuration mechanism. The exact file and path varies per client — consult your client's documentation. The server command is:
 
    ```json
    {
      "mcpServers": {
        "whatsapp": {
-         "command": "{{PATH_TO_UV}}", // Run `which uv` and place the output here
+         "command": "{{PATH_TO_UV}}",
          "args": [
            "--directory",
-           "{{PATH_TO_SRC}}/mcp-whatsapp/whatsapp-mcp-server", // cd into the repo, run `pwd` and enter the output here + "/whatsapp-mcp-server"
+           "{{PATH_TO_SRC}}/mcp-whatsapp/whatsapp-mcp-server",
            "run",
            "main.py"
          ]
@@ -77,23 +73,11 @@ Here's an example of what you can do when it's connected to Claude.
    }
    ```
 
-   For **Claude**, save this as `claude_desktop_config.json` in your Claude Desktop configuration directory at:
+   Replace `{{PATH_TO_UV}}` with the output of `which uv`, and `{{PATH_TO_SRC}}` with the absolute path to the directory containing this repository.
 
-   ```
-   ~/Library/Application Support/Claude/claude_desktop_config.json
-   ```
+4. **Restart your MCP client**
 
-   For **Cursor**, save this as `mcp.json` in your Cursor configuration directory at:
-
-   ```
-   ~/.cursor/mcp.json
-   ```
-
-4. **Restart Claude Desktop / Cursor**
-
-   Open Claude Desktop and you should now see WhatsApp as an available integration.
-
-   Or restart Cursor.
+   After registering the server, restart your MCP client. WhatsApp should appear as an available integration.
 
 ## Platform notes
 
@@ -178,6 +162,12 @@ You can send various media types to your WhatsApp contacts:
 
 By default, just the metadata of the media is stored in the local database. The message will indicate that media was sent. To access this media you need to use the `download_media` tool which takes the `message_id` and `chat_jid` (which are shown when printing messages containing the media), this downloads the media and then returns the file path which can be then opened or passed to another tool.
 
+## Security Model
+
+The Go bridge's HTTP API binds to `127.0.0.1` only and has no authentication by design. Access control is provided by the local-only bind. **Do not expose this port to untrusted networks.** Override the bind address via `WHATSAPP_BRIDGE_ADDR` (e.g. `WHATSAPP_BRIDGE_ADDR=127.0.0.1:9090`) only if you understand the implications.
+
+Outbound media paths (for `send_file` / `send_audio_message`) are restricted to an allowlisted directory (default: `whatsapp-bridge/store/uploads`, overridable via `WHATSAPP_BRIDGE_MEDIA_ROOT`). Put files you want to send into that directory first.
+
 ## Limitations
 
 - **Prompt-injection risk**: as with many MCP servers, this one is subject to [the lethal trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/). Prompt injection in incoming messages could lead to private data exfiltration — treat the tool surface accordingly.
@@ -200,7 +190,7 @@ By default, just the metadata of the media is stored in the local database. The 
 - **No Messages Loading**: After initial authentication, it can take several minutes for your message history to load, especially if you have many chats.
 - **WhatsApp Out of Sync**: If your WhatsApp messages get out of sync with the bridge, delete both database files (`whatsapp-bridge/store/messages.db` and `whatsapp-bridge/store/whatsapp.db`) and restart the bridge to re-authenticate.
 
-For additional Claude Desktop integration troubleshooting, see the [MCP documentation](https://modelcontextprotocol.io/quickstart/server#claude-for-desktop-integration-issues). The documentation includes helpful tips for checking logs and resolving common issues.
+See your MCP client's documentation for additional integration troubleshooting and log locations.
 
 ## Contributing
 

@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-This is a private fork of [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp) with enhancements for LifeOS integration.
+This is a fork of [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp) with additional enhancements.
 
 ## Upstream Tracking
 
@@ -23,7 +23,7 @@ Note: This fork is more advanced than upstream in several areas, so merge confli
 
 ### 1. LID Resolution (Go Bridge)
 
-WhatsApp uses Linked IDs (LIDs) internally for some contacts. This fork resolves LIDs to real phone numbers, enabling accurate contact matching with Obsidian profiles.
+WhatsApp uses Linked IDs (LIDs) internally for some contacts. This fork resolves LIDs to real phone numbers, enabling accurate contact matching for downstream integrations.
 
 **Files**: `whatsapp-bridge/main.go` - `resolveLID()` function
 
