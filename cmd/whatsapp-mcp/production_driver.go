@@ -38,7 +38,7 @@ func (p *productionDriver) StartPairing(ctx context.Context, onQR func(string), 
 		}
 	}()
 	// Must call Connect AFTER QRChannel per whatsmeow docs.
-	return p.c.ConnectForPairing(ctx)
+	return p.c.Connect(ctx, client.ConnectOpts{AllowUnpaired: true})
 }
 
 func (p *productionDriver) Connect(ctx context.Context, onLoggedOut func()) error {
@@ -49,7 +49,7 @@ func (p *productionDriver) Connect(ctx context.Context, onLoggedOut func()) erro
 		// the post-pair handlers and return.
 		return nil
 	}
-	return p.c.Connect(ctx)
+	return p.c.Connect(ctx, client.ConnectOpts{})
 }
 
 func (p *productionDriver) Logout(ctx context.Context) error { return p.c.Logout(ctx) }
