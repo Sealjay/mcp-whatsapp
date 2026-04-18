@@ -1,64 +1,65 @@
 # CLAUDE.md
 
-This is a fork of [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp) with additional enhancements.
+Single Go binary that speaks MCP over stdio and wraps [whatsmeow](https://github.com/tulir/whatsmeow) to expose a personal WhatsApp account as MCP tools. No background daemon — the MCP client launches it on demand.
 
-## Upstream Tracking
+## Structure
 
-**Check periodically for upstream updates** using:
-
-```bash
-git fetch upstream
-git log HEAD..upstream/main --oneline
+```
+cmd/whatsapp-mcp/       login, serve, smoke subcommands
+internal/client/        whatsmeow client wrapper (send, download, events, history, features)
+internal/store/         SQLite cache + queries + LID resolution + formatters
+internal/media/         ogg analysis + ffmpeg shell-out
+internal/mcp/           mark3labs/mcp-go server + tool registrations
+scripts/mdtest-parity.sh  whatsmeow API drift canary
 ```
 
-To merge upstream changes:
+Data lives under `./store/` (override with `-store DIR`). Binary is `bin/whatsapp-mcp`.
+
+## Subcommands
+
+- `login` — pair the device via QR, write session to `store/whatsapp.db`.
+- `serve` — start the MCP stdio server. Takes a `flock` on `store/.lock`.
+- `smoke` — boot-test without connecting to WhatsApp.
+
+## Testing
 
 ```bash
-git merge upstream/main
+make test          # unit tests
+make test-race     # with -race
+make e2e           # spawn the binary, speak JSON-RPC over stdio
+make smoke         # boot-test without connecting to WhatsApp
+make vet           # go vet
 ```
 
-Note: This fork is more advanced than upstream in several areas, so merge conflicts may occur in the enhanced features.
+Fixtures: `internal/store/testdata/seed.sql` seeds three chats + ~12 messages with a mix of direct/group, media, is_from_me, and LID-originated variants. Used by store tests via `openTestStore(t)` in `internal/store/testutil_test.go`.
 
-## Key Enhancements Over Upstream
+## whatsmeow upgrade cadence
 
-### 1. LID Resolution (Go Bridge)
-
-WhatsApp uses Linked IDs (LIDs) internally for some contacts. This fork resolves LIDs to real phone numbers, enabling accurate contact matching for downstream integrations.
-
-**Files**: `whatsapp-bridge/main.go` - `resolveLID()` function
-
-### 2. Sent Message Storage (Go Bridge)
-
-Messages sent via the MCP server are now stored in the local SQLite database, providing complete conversation history for both sent and received messages.
-
-**Files**: `whatsapp-bridge/main.go` - message storage after `SendMessage()`
-
-### 3. Disappearing Message Support (Go Bridge + Python MCP)
-
-Queries chat settings to determine if disappearing messages are enabled, then sends messages with appropriate ephemeral timers. Prevents sent messages from persisting longer than the chat's configured timer.
-
-**Files**:
-- `whatsapp-bridge/main.go` - `/chat-settings` endpoint, `EphemeralExpiration` in `SendMessage`
-- `whatsapp-mcp-server/main.py` - `get_chat_settings()` function, `ephemeral_expiration` parameter
-
-### 4. Targeted History Sync (Go Bridge)
-
-Requests specific chat history on demand via the `/request-history` endpoint, rather than waiting for WhatsApp's background sync which can be slow or incomplete.
-
-**Files**: `whatsapp-bridge/main.go` - `/request-history` endpoint
-
-## Running the Bridge
+Bump roughly every 30 days:
 
 ```bash
-cd whatsapp-bridge
-go run main.go
+make upgrade-check
 ```
 
-First run requires QR code scan. Re-authentication needed approximately every 20 days.
+`.github/workflows/ci.yml` runs this weekly. The `mdtest-parity` job fails if any method on `*whatsmeow.Client` we call disappears upstream. Current pin: see `go.mod` (`go.mau.fi/whatsmeow`).
 
-## Database Location
+## Feature implementation map
 
-- Messages: `whatsapp-bridge/store/messages.db`
-- WhatsApp session: `whatsapp-bridge/store/whatsapp.db`
+Tool surface is 41 tools, registered from `internal/mcp/tools.go` + `tools_groups.go` + `tools_media.go` + `tools_privacy.go`.
 
-To force re-sync, delete both files and restart the bridge.
+1. **LID Resolution** — `internal/store/lid.go`. Normalises `@lid` JIDs to real phone numbers via the `whatsmeow_lid_map` table.
+2. **Sent message storage** — `internal/client/send.go` persists outgoing messages after `SendMessage` returns.
+3. **Disappearing-message timers** — `internal/client/send.go` auto-detects group ephemeral timers via `GetGroupInfo` and sets `MessageContextInfo.MessageAddOnDurationInSecs`. Individual-chat timers are not exposed by whatsmeow's store API.
+4. **Targeted history sync** — `internal/client/history.go`: `RequestHistorySync(ctx, chatJID, fromTimestamp)`. Zero timestamp anchors on the newest cached message.
+5. **Reactions / replies / edits / revoke / mark-read / typing / is-on-whatsapp** — `internal/client/features.go`. Each wraps the corresponding whatsmeow builder (`BuildReaction`, `BuildEdit`, `BuildRevoke`) or one-shot call (`MarkRead`, `SendChatPresence`, `IsOnWhatsApp`).
+6. **Group management** — `internal/client/features_groups.go`. Create / leave / list / get-info / participant mutation / subject / topic / announce / locked / invite-link get+reset / join-by-link. Thin wrappers over `CreateGroup`, `LeaveGroup`, `GetJoinedGroups`, `GetGroupInfo`, `UpdateGroupParticipants`, `SetGroupName`, `SetGroupTopic`, `SetGroupAnnounce`, `SetGroupLocked`, `GetGroupInviteLink`, `JoinGroupWithLink`.
+7. **Blocklist** — also in `internal/client/features_groups.go`. `GetBlocklist`, `BlockContact`, `UnblockContact` wrap whatsmeow's `GetBlocklist` / `UpdateBlocklist`.
+8. **Polls + contact cards + view-once flag** — `internal/client/features_media.go` (poll send / vote / tally + contact-card send paths) plus `internal/client/vcard.go` (vCard 3.0 synthesis when no override supplied) and the `ViewOnce` option plumbed through `SendMediaOptions` in `internal/client/send.go`. `SendPoll` now uses `wa.BuildPollCreation` so the required `MessageSecret` is attached (without it, votes cannot be decrypted — this was silently broken before). Vote ingest + tally live in `internal/client/events.go::handlePollVote` and `internal/store/poll.go` (the new `poll_votes` table + `messages.poll_options_json` column).
+9. **Presence / privacy / status message** — `internal/client/features_privacy.go`. `SendPresence` (own availability), `GetPrivacySettings` / `SetPrivacySetting` with strict enum validation, `SetStatusMessage` for the "About" text.
+
+## Database location
+
+- Messages: `store/messages.db`
+- WhatsApp session: `store/whatsapp.db`
+
+To force re-sync: delete both files and re-run `login`.
