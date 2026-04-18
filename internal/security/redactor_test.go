@@ -26,9 +26,11 @@ func TestRedactor_JID(t *testing.T) {
 
 func TestRedactor_JID_Debug(t *testing.T) {
 	r := &Redactor{Debug: true}
+	// Phone-number user-parts are masked in debug mode.
 	in := "15551234567@s.whatsapp.net"
-	if got := r.JID(in); got != in {
-		t.Fatalf("debug mode should pass through, got %q", got)
+	want := "*****34567@s.whatsapp.net"
+	if got := r.JID(in); got != want {
+		t.Fatalf("JID(%q): want %q, got %q", in, want, got)
 	}
 }
 
@@ -57,5 +59,56 @@ func TestRedactor_Body_Debug(t *testing.T) {
 	in := "hello world"
 	if got := r.Body(in); got != in {
 		t.Fatalf("debug mode should pass through, got %q", got)
+	}
+}
+
+func TestRedactor_Body_DebugMasksPhones(t *testing.T) {
+	r := &Redactor{Debug: true}
+	in := "Call me on +15551234567"
+	want := "Call me on ****34567"
+	if got := r.Body(in); got != want {
+		t.Fatalf("Body(%q): want %q, got %q", in, want, got)
+	}
+}
+
+func TestRedactor_URL_NonDebug(t *testing.T) {
+	r := &Redactor{}
+	cases := map[string]string{
+		"https://mmg.whatsapp.net/v/abc123": "https://mmg.whatsapp.net/…",
+		"http://example.com/path?q=1":       "http://example.com/…",
+		"not-a-url":                          "[url]",
+		"":                                   "[url]",
+	}
+	for in, want := range cases {
+		t.Run(in, func(t *testing.T) {
+			if got := r.URL(in); got != want {
+				t.Fatalf("URL(%q): want %q, got %q", in, want, got)
+			}
+		})
+	}
+}
+
+func TestRedactor_URL_Debug(t *testing.T) {
+	r := &Redactor{Debug: true}
+	in := "https://mmg.whatsapp.net/v/abc123?token=secret"
+	if got := r.URL(in); got != in {
+		t.Fatalf("debug mode should pass through, got %q", got)
+	}
+}
+
+func TestRedactor_JID_DebugLast5(t *testing.T) {
+	r := &Redactor{Debug: true}
+	in := "15551234567@s.whatsapp.net"
+	want := "*****34567@s.whatsapp.net"
+	if got := r.JID(in); got != want {
+		t.Fatalf("JID(%q): want %q, got %q", in, want, got)
+	}
+}
+
+func TestRedactor_JID_DebugShortPassesThrough(t *testing.T) {
+	r := &Redactor{Debug: true}
+	in := "abcd@s.whatsapp.net"
+	if got := r.JID(in); got != in {
+		t.Fatalf("short user-part should pass through in debug, got %q", got)
 	}
 }

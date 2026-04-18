@@ -135,7 +135,7 @@ func (c *Client) attachMedia(ctx context.Context, msg *waProto.Message, mediaPat
 	if err != nil {
 		return fmt.Errorf("Error uploading media: %v", err)
 	}
-	c.log.Infof("Media uploaded: url=%s bytes=%d", resp.URL, resp.FileLength)
+	c.log.Infof("Media uploaded: url=%s bytes=%d", c.redactor.URL(resp.URL), resp.FileLength)
 
 	switch mediaType {
 	case whatsmeow.MediaImage:
