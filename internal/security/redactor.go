@@ -33,8 +33,9 @@ func (r *Redactor) JID(jid string) string {
 	if user == "" {
 		return "…"
 	}
-	if len(user) > 4 {
-		return "…" + user[len(user)-4:]
+	runes := []rune(user)
+	if len(runes) > 4 {
+		return "…" + string(runes[len(runes)-4:])
 	}
 	return "…" + user
 }

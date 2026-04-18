@@ -12,6 +12,8 @@ func TestRedactor_JID(t *testing.T) {
 		"12345":                      "…2345",
 		"120363040000000000@g.us":    "…0000",
 		"abcdef@lid":                 "…cdef",
+		"🔥ab@s.whatsapp.net":         "…🔥ab",
+		"a🔥bcd@s.whatsapp.net":       "…🔥bcd",
 	}
 	for in, want := range cases {
 		t.Run(in, func(t *testing.T) {
