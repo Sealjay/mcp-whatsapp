@@ -167,6 +167,8 @@ Once connected, you can interact with your WhatsApp contacts through Claude, lev
 | `delete_message` | Revoke (delete for everyone) a message |
 | `send_typing` | Set composing / recording presence |
 | `is_on_whatsapp` | Batch-check which phone numbers are registered on WhatsApp |
+| `mark_chat_read` | Ack the most recent incoming messages in a chat to clear the unread badge |
+| `get_status` | Report whether the bridge is connected and which account it's paired as |
 
 ### Media Handling Features
 

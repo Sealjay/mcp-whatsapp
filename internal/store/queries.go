@@ -82,7 +82,7 @@ func (s *Store) ListMessages(ctx context.Context, params ListMessagesParams) ([]
 
 	var result []Message
 	for rows.Next() {
-		m, err := scanListMessageRow(rows)
+		m, err := s.scanListMessageRow(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -238,6 +238,7 @@ func (s *Store) SearchContacts(ctx context.Context, query string) ([]Contact, er
 		FROM chats
 		WHERE (LOWER(name) LIKE LOWER(?) OR LOWER(jid) LIKE LOWER(?))
 		  AND jid NOT LIKE '%@g.us'
+		  AND jid NOT LIKE '%@lid'
 		ORDER BY name, jid
 		LIMIT 50`, pattern, pattern)
 	if err != nil {
@@ -305,6 +306,8 @@ func (s *Store) GetMessageContext(ctx context.Context, messageID string, before,
 		MediaType: mediaType.String,
 		ChatName:  chatName.String,
 	}
+	target.IsGroup = strings.HasSuffix(target.ChatJID, "@g.us")
+	target.SenderPhone = s.resolveSenderPhone(target.Sender, target.IsGroup)
 
 	beforeMsgs, err := s.queryContextWindow(ctx, msgChat, ts, before, false)
 	if err != nil {
@@ -335,6 +338,15 @@ func (s *Store) GetSenderName(ctx context.Context, senderJID string) string {
 	phonePart := senderJID
 	if idx := strings.Index(senderJID, "@"); idx >= 0 {
 		phonePart = senderJID[:idx]
+	}
+
+	// Prefer an exact direct-chat match on phone + @s.whatsapp.net before
+	// falling back to a LIKE — the LIKE can cross-match unrelated rows.
+	var nameExact sql.NullString
+	err = s.db.QueryRowContext(ctx,
+		"SELECT name FROM chats WHERE jid = ? LIMIT 1", phonePart+"@s.whatsapp.net").Scan(&nameExact)
+	if err == nil && nameExact.Valid && nameExact.String != "" {
+		return nameExact.String
 	}
 
 	var name2 sql.NullString
@@ -371,7 +383,7 @@ func (s *Store) queryContextWindow(ctx context.Context, chatJID string, anchor t
 
 	var out []Message
 	for rows.Next() {
-		m, err := scanListMessageRow(rows)
+		m, err := s.scanListMessageRow(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -382,7 +394,7 @@ func (s *Store) queryContextWindow(ctx context.Context, chatJID string, anchor t
 
 // scanListMessageRow scans the 8-column projection used by list_messages and
 // the context window queries.
-func scanListMessageRow(row interface {
+func (s *Store) scanListMessageRow(row interface {
 	Scan(dest ...any) error
 }) (Message, error) {
 	var (
@@ -398,7 +410,7 @@ func scanListMessageRow(row interface {
 	if err := row.Scan(&ts, &sender, &chatName, &content, &isFromMe, &chatJID, &id, &mediaType); err != nil {
 		return Message{}, err
 	}
-	return Message{
+	m := Message{
 		ID:        id,
 		ChatJID:   chatJID,
 		Sender:    sender,
@@ -407,7 +419,32 @@ func scanListMessageRow(row interface {
 		IsFromMe:  isFromMe,
 		MediaType: mediaType.String,
 		ChatName:  chatName.String,
-	}, nil
+	}
+	m.IsGroup = strings.HasSuffix(m.ChatJID, "@g.us")
+	m.SenderPhone = s.resolveSenderPhone(m.Sender, m.IsGroup)
+	return m, nil
+}
+
+// resolveSenderPhone returns a full phone (bare user part) for a message
+// sender. For direct chats the sender is already the bare phone. For groups,
+// we try to resolve via the LID map; if that fails we fall back to the stored
+// sender value.
+func (s *Store) resolveSenderPhone(sender string, isGroup bool) string {
+	if sender == "" || sender == "me" {
+		return sender
+	}
+	if !isGroup {
+		// In direct chats the sender is already the bare phone/user part.
+		return sender
+	}
+	// In groups the sender may be a bare user (phone or lid). Try the LID
+	// map first in case it's an @lid-style user part.
+	resolved := s.ResolveLIDToJID(sender + "@s.whatsapp.net")
+	parts := strings.Split(resolved, "@")
+	if len(parts) > 0 && parts[0] != "" {
+		return parts[0]
+	}
+	return sender
 }
 
 // scanChatRow scans the 6-column projection used by ListChats and GetChat.
@@ -435,5 +472,6 @@ func scanChatRow(row interface {
 	if lastTime.Valid {
 		c.LastMessageTime = lastTime.Time
 	}
+	c.IsGroup = strings.HasSuffix(c.JID, "@g.us")
 	return c, nil
 }

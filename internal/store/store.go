@@ -16,45 +16,45 @@ import (
 
 // Message mirrors the on-wire shape used by downstream consumers.
 type Message struct {
-	ID          string
-	ChatJID     string
-	Sender      string
-	Content     string
-	Timestamp   time.Time
-	IsFromMe    bool
-	MediaType   string
-	Filename    string
-	URL         string
-	ChatName    string
-	PhoneNumber string
+	ID          string    `json:"id"`
+	ChatJID     string    `json:"chat_jid"`
+	Sender      string    `json:"sender"`                  // bare phone/user part
+	SenderPhone string    `json:"sender_phone,omitempty"`  // full phone if resolvable
+	Content     string    `json:"content"`
+	Timestamp   time.Time `json:"timestamp"`
+	IsFromMe    bool      `json:"is_from_me"`
+	IsGroup     bool      `json:"is_group"`
+	MediaType   string    `json:"media_type,omitempty"`
+	Filename    string    `json:"filename,omitempty"`
+	URL         string    `json:"url,omitempty"`
+	ChatName    string    `json:"chat_name,omitempty"`
+	PhoneNumber string    `json:"phone_number,omitempty"`
 }
 
 // Chat is a cached WhatsApp chat.
 type Chat struct {
-	JID             string
-	Name            string
-	LastMessageTime time.Time
-	LastMessage     string
-	LastSender      string
-	LastIsFromMe    bool
-	PhoneNumber     string
+	JID             string    `json:"jid"`
+	Name            string    `json:"name"`
+	LastMessageTime time.Time `json:"last_message_time"`
+	LastMessage     string    `json:"last_message,omitempty"`
+	LastSender      string    `json:"last_sender,omitempty"`
+	LastIsFromMe    bool      `json:"last_is_from_me"`
+	PhoneNumber     string    `json:"phone_number,omitempty"`
+	IsGroup         bool      `json:"is_group"`
 }
-
-// IsGroup reports whether the chat JID belongs to a group.
-func (c Chat) IsGroup() bool { return hasSuffix(c.JID, "@g.us") }
 
 // Contact is a directory entry derived from chat history.
 type Contact struct {
-	PhoneNumber string
-	Name        string
-	JID         string
+	PhoneNumber string `json:"phone_number"`
+	Name        string `json:"name,omitempty"`
+	JID         string `json:"jid"`
 }
 
 // MessageContext wraps a target message with surrounding context.
 type MessageContext struct {
-	Message Message
-	Before  []Message
-	After   []Message
+	Message Message   `json:"message"`
+	Before  []Message `json:"before,omitempty"`
+	After   []Message `json:"after,omitempty"`
 }
 
 // Store handles the message cache and read-only access to whatsmeow's DB.
@@ -226,7 +226,3 @@ CREATE TABLE IF NOT EXISTS messages (
 	FOREIGN KEY (chat_jid) REFERENCES chats(jid)
 );
 `
-
-func hasSuffix(s, suffix string) bool {
-	return len(s) >= len(suffix) && s[len(s)-len(suffix):] == suffix
-}
