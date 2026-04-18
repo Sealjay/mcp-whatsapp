@@ -39,11 +39,11 @@ type blocklistMutationArgs struct {
 func (s *Server) registerBlockContact() {
 	tool := mcp.NewTool("block_contact",
 		mcp.WithDescription("Block a contact by phone number or JID."),
-		mcp.WithString("jid", mcp.Required()),
+		mcp.WithString("jid", mcp.Required(), mcp.Description(recipientDesc)),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a blocklistMutationArgs) (*mcp.CallToolResult, error) {
-		if a.JID == "" {
-			return mcp.NewToolResultError("jid is required"), nil
+		if r := requireNonEmpty("jid", a.JID); r != nil {
+			return r, nil
 		}
 		if err := s.client.BlockContact(ctx, a.JID); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
@@ -55,11 +55,11 @@ func (s *Server) registerBlockContact() {
 func (s *Server) registerUnblockContact() {
 	tool := mcp.NewTool("unblock_contact",
 		mcp.WithDescription("Unblock a contact by phone number or JID."),
-		mcp.WithString("jid", mcp.Required()),
+		mcp.WithString("jid", mcp.Required(), mcp.Description(recipientDesc)),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a blocklistMutationArgs) (*mcp.CallToolResult, error) {
-		if a.JID == "" {
-			return mcp.NewToolResultError("jid is required"), nil
+		if r := requireNonEmpty("jid", a.JID); r != nil {
+			return r, nil
 		}
 		if err := s.client.UnblockContact(ctx, a.JID); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
@@ -74,12 +74,12 @@ type sendPresenceArgs struct {
 
 func (s *Server) registerSendPresence() {
 	tool := mcp.NewTool("send_presence",
-		mcp.WithDescription("Set the user's own online availability. state must be one of: available, unavailable. This is different from send_typing, which affects per-chat composing presence."),
-		mcp.WithString("state", mcp.Required(), mcp.Description("One of: available, unavailable")),
+		mcp.WithDescription("Set the user's own online availability. Different from `send_typing`, which affects per-chat composing presence."),
+		mcp.WithString("state", mcp.Required(), mcp.Enum("available", "unavailable"), mcp.Description("own availability state")),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a sendPresenceArgs) (*mcp.CallToolResult, error) {
-		if a.State == "" {
-			return mcp.NewToolResultError("state is required"), nil
+		if r := requireNonEmpty("state", a.State); r != nil {
+			return r, nil
 		}
 		if err := s.client.SendPresence(ctx, a.State); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
@@ -101,6 +101,20 @@ func (s *Server) registerGetPrivacySettings() {
 	})
 }
 
+// privacySettingNames enumerates the knobs whatsmeow exposes. Kept as a
+// package-level var so the enum list is single-sourced.
+var privacySettingNames = []string{
+	"groupadd", "last", "status", "profile", "readreceipts",
+	"online", "calladd", "messages", "defense", "stickers",
+}
+
+// privacySettingValues enumerates the values those knobs accept. WhatsApp
+// rejects invalid combinations server-side.
+var privacySettingValues = []string{
+	"all", "contacts", "contact_allowlist", "contact_blacklist",
+	"match_last_seen", "known", "none", "on_standard", "off",
+}
+
 type setPrivacySettingArgs struct {
 	Name  string `json:"name"`
 	Value string `json:"value"`
@@ -108,13 +122,16 @@ type setPrivacySettingArgs struct {
 
 func (s *Server) registerSetPrivacySetting() {
 	tool := mcp.NewTool("set_privacy_setting",
-		mcp.WithDescription("Change a single privacy setting. name must be one of: groupadd, last, status, profile, readreceipts, online, calladd, messages, defense, stickers. value must be one of: all, contacts, contact_allowlist, contact_blacklist, match_last_seen, known, none, on_standard, off. Not every combination is valid on WhatsApp's side; invalid combinations are rejected by the server."),
-		mcp.WithString("name", mcp.Required(), mcp.Description("One of: groupadd, last, status, profile, readreceipts, online, calladd, messages, defense, stickers")),
-		mcp.WithString("value", mcp.Required(), mcp.Description("One of: all, contacts, contact_allowlist, contact_blacklist, match_last_seen, known, none, on_standard, off")),
+		mcp.WithDescription("Change a single privacy setting. Not every name/value combination is valid; WhatsApp rejects invalid combinations server-side."),
+		mcp.WithString("name", mcp.Required(), mcp.Enum(privacySettingNames...), mcp.Description("privacy knob to change")),
+		mcp.WithString("value", mcp.Required(), mcp.Enum(privacySettingValues...), mcp.Description("new value for the knob")),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a setPrivacySettingArgs) (*mcp.CallToolResult, error) {
-		if a.Name == "" || a.Value == "" {
-			return mcp.NewToolResultError("name and value are required"), nil
+		if r := requireNonEmpty("name", a.Name); r != nil {
+			return r, nil
+		}
+		if r := requireNonEmpty("value", a.Value); r != nil {
+			return r, nil
 		}
 		js, err := s.client.SetPrivacySetting(ctx, a.Name, a.Value)
 		if err != nil {
@@ -131,7 +148,7 @@ type setStatusMessageArgs struct {
 func (s *Server) registerSetStatusMessage() {
 	tool := mcp.NewTool("set_status_message",
 		mcp.WithDescription("Update the user's WhatsApp 'About' text (profile status message). Pass an empty string to clear it."),
-		mcp.WithString("text", mcp.Required()),
+		mcp.WithString("text", mcp.Required(), mcp.Description("new About text; empty string clears")),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a setStatusMessageArgs) (*mcp.CallToolResult, error) {
 		if err := s.client.SetStatusMessage(ctx, a.Text); err != nil {

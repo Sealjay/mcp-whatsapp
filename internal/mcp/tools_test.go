@@ -1,8 +1,13 @@
 package mcp
 
 import (
+	"context"
+	"fmt"
 	"sort"
+	"strings"
 	"testing"
+
+	"github.com/mark3labs/mcp-go/mcp"
 )
 
 // expectedToolNames is the full set of MCP tools this server must register.
@@ -118,5 +123,51 @@ func TestNewServer_ToolCount(t *testing.T) {
 	const want = 41
 	if got := len(s.MCP().ListTools()); got != want {
 		t.Errorf("tool count = %d, want %d", got, want)
+	}
+}
+
+// TestToolDescriptions_StyleGuide enforces the conventions documented in
+// internal/mcp/common.go: every tool has a non-empty description and every
+// description ends with a period. Helps catch drift when new tools are added.
+func TestToolDescriptions_StyleGuide(t *testing.T) {
+	s := NewServer(nil)
+	for name, st := range s.MCP().ListTools() {
+		if st == nil || st.Tool.Description == "" {
+			t.Errorf("tool %q: description is empty", name)
+			continue
+		}
+		if !strings.HasSuffix(st.Tool.Description, ".") {
+			t.Errorf("tool %q: description must end with '.', got %q", name, st.Tool.Description)
+		}
+	}
+}
+
+// TestRequestSyncRequiresChatJID confirms the handler rejects an empty
+// chat_jid with the standardised `<field>: required` error shape (rather
+// than the prior usage-hint-as-success fallback).
+func TestRequestSyncRequiresChatJID(t *testing.T) {
+	s := NewServer(nil)
+	st := s.MCP().GetTool("request_sync")
+	if st == nil {
+		t.Fatal("request_sync not registered")
+	}
+
+	req := mcp.CallToolRequest{}
+	req.Params.Name = "request_sync"
+	req.Params.Arguments = map[string]any{} // no chat_jid
+
+	res, err := st.Handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handler returned unexpected Go error: %v", err)
+	}
+	if res == nil {
+		t.Fatal("handler returned nil result")
+	}
+	if !res.IsError {
+		t.Fatalf("want error result, got success: %+v", res)
+	}
+	rendered := fmt.Sprintf("%+v", res)
+	if !strings.Contains(rendered, "chat_jid: required") {
+		t.Errorf("want `chat_jid: required` in error text, got: %s", rendered)
 	}
 }
