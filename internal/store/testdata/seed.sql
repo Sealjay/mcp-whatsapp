@@ -29,11 +29,13 @@ CREATE TABLE IF NOT EXISTS whatsmeow_lid_map (
     pn TEXT
 );
 
--- Chats: one direct, one group, one direct that was a LID chat originally
+-- Chats: one direct, one group, one direct that was a LID chat originally,
+-- plus an unresolved @lid chat that SearchContacts must filter out.
 INSERT INTO chats (jid, name, last_message_time) VALUES
     ('447700000001@s.whatsapp.net', 'Alice',        '2026-01-09 10:00:00'),
     ('123456789@g.us',              'Project Team', '2026-01-10 12:00:00'),
-    ('447700000002@s.whatsapp.net', 'Bob',          '2026-01-08 08:00:00');
+    ('447700000002@s.whatsapp.net', 'Bob',          '2026-01-08 08:00:00'),
+    ('55443322@lid',                'LidOnly',      '2026-01-07 07:00:00');
 
 -- Messages: 12 across the three chats, mixed is_from_me and media
 INSERT INTO messages

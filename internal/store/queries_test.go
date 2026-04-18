@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 )
@@ -135,8 +136,10 @@ func TestListChats_SortByLastActive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListChats: %v", err)
 	}
-	if len(chats) != 3 {
-		t.Fatalf("expected 3 chats, got %d", len(chats))
+	// Seed has 4 chats: Alice (direct), Project Team (group), Bob (direct),
+	// LidOnly (@lid). ListChats does not filter @lid.
+	if len(chats) != 4 {
+		t.Fatalf("expected 4 chats, got %d", len(chats))
 	}
 	for i := 1; i < len(chats); i++ {
 		if chats[i-1].LastMessageTime.Before(chats[i].LastMessageTime) {
@@ -279,6 +282,100 @@ func TestGetSenderName(t *testing.T) {
 	got := s.GetSenderName(ctx, "447700000001@s.whatsapp.net")
 	if got != "Alice" {
 		t.Fatalf("expected Alice, got %q", got)
+	}
+}
+
+func TestListChats_IsGroupField(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	chats, err := s.ListChats(ctx, "", 20, 0, true, "last_active")
+	if err != nil {
+		t.Fatalf("ListChats: %v", err)
+	}
+
+	var sawGroup, sawDirect bool
+	for _, c := range chats {
+		switch c.JID {
+		case "123456789@g.us":
+			sawGroup = true
+			if !c.IsGroup {
+				t.Fatalf("chat %q should have IsGroup=true", c.JID)
+			}
+		case "447700000001@s.whatsapp.net":
+			sawDirect = true
+			if c.IsGroup {
+				t.Fatalf("chat %q should have IsGroup=false", c.JID)
+			}
+		}
+	}
+	if !sawGroup {
+		t.Fatal("expected to see the @g.us chat in list")
+	}
+	if !sawDirect {
+		t.Fatal("expected to see a direct chat in list")
+	}
+}
+
+func TestListMessages_IsGroupField(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	// g1 lives in the Project Team group; a1 lives in a direct chat.
+	msgs, err := s.ListMessages(ctx, ListMessagesParams{
+		ChatJID: "123456789@g.us",
+		Limit:   50,
+	})
+	if err != nil {
+		t.Fatalf("ListMessages group: %v", err)
+	}
+	if len(msgs) == 0 {
+		t.Fatal("expected group messages")
+	}
+	for _, m := range msgs {
+		if !m.IsGroup {
+			t.Fatalf("group message %q should have IsGroup=true", m.ID)
+		}
+	}
+
+	direct, err := s.ListMessages(ctx, ListMessagesParams{
+		ChatJID: "447700000001@s.whatsapp.net",
+		Limit:   50,
+	})
+	if err != nil {
+		t.Fatalf("ListMessages direct: %v", err)
+	}
+	if len(direct) == 0 {
+		t.Fatal("expected direct messages")
+	}
+	for _, m := range direct {
+		if m.IsGroup {
+			t.Fatalf("direct message %q should have IsGroup=false", m.ID)
+		}
+	}
+}
+
+func TestSearchContacts_ExcludesLID(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	contacts, err := s.SearchContacts(ctx, "")
+	if err != nil {
+		t.Fatalf("SearchContacts: %v", err)
+	}
+	for _, c := range contacts {
+		if strings.HasSuffix(c.JID, "@lid") {
+			t.Fatalf("SearchContacts returned an @lid row: %+v", c)
+		}
+	}
+
+	// Searching by the LID-only name must also return nothing.
+	got, err := s.SearchContacts(ctx, "LidOnly")
+	if err != nil {
+		t.Fatalf("SearchContacts LidOnly: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected zero results for LidOnly query, got %+v", got)
 	}
 }
 
