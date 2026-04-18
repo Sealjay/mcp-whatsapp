@@ -114,6 +114,27 @@ func (c *Client) ValidateMediaPath(userPath string) (string, error) {
 	return security.ValidateMediaPath(userPath, c.allowedMediaRoot)
 }
 
+// IsLoggedIn reports whether the underlying whatsmeow device has a stored
+// session. A false return means the next Connect call will emit QR pairing
+// events instead of reconnecting.
+func (c *Client) IsLoggedIn() bool {
+	return c.wa.Store.ID != nil
+}
+
+// QRChannel exposes whatsmeow's pairing QR channel. Must be called before
+// Connect when the device is not yet paired. The channel emits QRChannelItem
+// events while pairing is in progress and closes on success.
+func (c *Client) QRChannel(ctx context.Context) (<-chan whatsmeow.QRChannelItem, error) {
+	return c.wa.GetQRChannel(ctx)
+}
+
+// Logout drops the currently paired device from WhatsApp's server and clears
+// the local session. After this call, IsLoggedIn returns false and the next
+// Connect will start a fresh pairing flow.
+func (c *Client) Logout(ctx context.Context) error {
+	return c.wa.Logout(ctx)
+}
+
 // Connect connects an already-paired device. Returns an error if not paired.
 func (c *Client) Connect(ctx context.Context) error {
 	if c.wa.Store.ID == nil {
@@ -174,9 +195,12 @@ func (c *Client) Disconnect() {
 	}
 }
 
-// IsConnected reports whether the underlying client is connected.
+// IsConnected reports whether the underlying whatsmeow client currently
+// holds a live WebSocket to WhatsApp. Used by the daemon state machine to
+// skip a second Connect call after a pairing-driven connect has already
+// established the session.
 func (c *Client) IsConnected() bool {
-	return c.wa != nil && c.wa.IsConnected()
+	return c.wa.IsConnected()
 }
 
 // WA exposes the underlying whatsmeow client for advanced callers.

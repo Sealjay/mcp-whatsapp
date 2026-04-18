@@ -73,7 +73,7 @@ func Open(dir string) (*Store, error) {
 	msgPath := filepath.Join(dir, "messages.db")
 	waPath := filepath.Join(dir, "whatsapp.db")
 
-	db, err := sql.Open("sqlite3", "file:"+msgPath+"?_foreign_keys=on")
+	db, err := sql.Open("sqlite3", "file:"+msgPath+"?_foreign_keys=on&_journal_mode=WAL&_busy_timeout=5000")
 	if err != nil {
 		return nil, fmt.Errorf("open messages db: %w", err)
 	}
