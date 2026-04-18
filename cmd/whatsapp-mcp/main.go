@@ -20,14 +20,18 @@ Usage:
   whatsapp-mcp <command> [flags]
 
 Commands:
-  login   Pair this device with your WhatsApp account via QR code
-  serve   Run the MCP stdio server (default for Claude Desktop etc.)
+  login   Pair this device with your WhatsApp account via QR code (terminal)
+  serve   Run the always-on HTTP MCP daemon (tracks events + serves MCP on 127.0.0.1:8765)
   smoke   Run a non-interactive boot check
   help    Show this help
 
 Global flags (before the command):
   -store DIR   Directory holding messages.db and whatsapp.db (default: ./store)
   -debug       Show full JIDs and message bodies in logs (default: redacted)
+
+Serve-specific flags (after 'serve'):
+  -addr host:port   HTTP bind address (default: 127.0.0.1:8765, env WHATSAPP_MCP_ADDR)
+  -allow-remote     Allow binding to a non-loopback address (dangerous)
 `
 
 func main() {

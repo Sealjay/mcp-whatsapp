@@ -15,6 +15,7 @@ import (
 	"go.mau.fi/whatsmeow"
 	wmstore "go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/store/sqlstore"
+	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
 
 	"github.com/sealjay/mcp-whatsapp/internal/security"
@@ -201,6 +202,18 @@ func (c *Client) Disconnect() {
 // established the session.
 func (c *Client) IsConnected() bool {
 	return c.wa.IsConnected()
+}
+
+// AddLoggedOutHandler registers a callback that fires when whatsmeow emits
+// an events.LoggedOut event (i.e. the remote device has revoked this
+// session). The callback runs in whatsmeow's event goroutine; keep it
+// non-blocking.
+func (c *Client) AddLoggedOutHandler(fn func(*events.LoggedOut)) {
+	c.wa.AddEventHandler(func(evt interface{}) {
+		if lo, ok := evt.(*events.LoggedOut); ok {
+			fn(lo)
+		}
+	})
 }
 
 // WA exposes the underlying whatsmeow client for advanced callers.
