@@ -35,8 +35,8 @@ type sendMessageArgs struct {
 func (s *Server) registerSendMessage() {
 	tool := mcp.NewTool("send_message",
 		mcp.WithDescription("Send a WhatsApp message to a person (phone number or JID) or group (JID)."),
-		mcp.WithString("recipient", mcp.Required()),
-		mcp.WithString("message", mcp.Required()),
+		mcp.WithString("recipient", mcp.Required(), mcp.Description(recipientDesc)),
+		mcp.WithString("message", mcp.Required(), mcp.Description("message body")),
 		mcp.WithBoolean("mark_chat_read", mcp.DefaultBool(false), mcp.Description("On successful send, ack recent incoming messages so the phone drops the unread badge.")),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a sendMessageArgs) (*mcp.CallToolResult, error) {
@@ -62,8 +62,8 @@ type sendFileArgs struct {
 func (s *Server) registerSendFile() {
 	tool := mcp.NewTool("send_file",
 		mcp.WithDescription("Send a picture, video, document, or raw audio via WhatsApp."),
-		mcp.WithString("recipient", mcp.Required()),
-		mcp.WithString("media_path", mcp.Required(), mcp.Description("Absolute path to the media file")),
+		mcp.WithString("recipient", mcp.Required(), mcp.Description(recipientDesc)),
+		mcp.WithString("media_path", mcp.Required(), mcp.Description("absolute path to the media file (must sit under the configured media root)")),
 		mcp.WithString("caption", mcp.Description("Optional caption for image/video/document")),
 		mcp.WithBoolean("mark_chat_read", mcp.DefaultBool(false), mcp.Description("On successful send, ack recent incoming messages so the phone drops the unread badge.")),
 		mcp.WithBoolean("view_once", mcp.DefaultBool(false), mcp.Description("If true, mark image/video/audio submessages as view-once. Silently ignored for documents.")),
@@ -99,8 +99,8 @@ type sendAudioArgs struct {
 func (s *Server) registerSendAudioMessage() {
 	tool := mcp.NewTool("send_audio_message",
 		mcp.WithDescription("Send any audio file as a WhatsApp voice note. Non-ogg inputs are converted via ffmpeg."),
-		mcp.WithString("recipient", mcp.Required()),
-		mcp.WithString("media_path", mcp.Required()),
+		mcp.WithString("recipient", mcp.Required(), mcp.Description(recipientDesc)),
+		mcp.WithString("media_path", mcp.Required(), mcp.Description("absolute path to the media file (must sit under the configured media root)")),
 		mcp.WithBoolean("mark_chat_read", mcp.DefaultBool(false), mcp.Description("On successful send, ack recent incoming messages so the phone drops the unread badge.")),
 		mcp.WithBoolean("view_once", mcp.DefaultBool(false), mcp.Description("If true, mark the voice note as view-once.")),
 	)
@@ -143,10 +143,10 @@ type sendReactionArgs struct {
 func (s *Server) registerSendReaction() {
 	tool := mcp.NewTool("send_reaction",
 		mcp.WithDescription("React to a message. Empty emoji clears an existing reaction."),
-		mcp.WithString("chat_jid", mcp.Required()),
-		mcp.WithString("message_id", mcp.Required()),
-		mcp.WithString("sender_jid", mcp.Description("Original sender; required for group messages")),
-		mcp.WithString("emoji"),
+		mcp.WithString("chat_jid", mcp.Required(), mcp.Description(jidDesc)),
+		mcp.WithString("message_id", mcp.Required(), mcp.Description("WhatsApp message ID")),
+		mcp.WithString("sender_jid", mcp.Description("original sender; required in group chats ("+jidDesc+")")),
+		mcp.WithString("emoji", mcp.Description("single emoji, or empty string to clear the reaction")),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a sendReactionArgs) (*mcp.CallToolResult, error) {
 		if err := s.client.SendReaction(ctx, a.ChatJID, a.MessageID, a.SenderJID, a.Emoji); err != nil {
@@ -168,10 +168,10 @@ type sendReplyArgs struct {
 func (s *Server) registerSendReply() {
 	tool := mcp.NewTool("send_reply",
 		mcp.WithDescription("Send a text reply that quotes a previous message."),
-		mcp.WithString("chat_jid", mcp.Required()),
-		mcp.WithString("target_message_id", mcp.Required()),
-		mcp.WithString("target_sender_jid", mcp.Description("Required in group chats")),
-		mcp.WithString("body", mcp.Required()),
+		mcp.WithString("chat_jid", mcp.Required(), mcp.Description(jidDesc)),
+		mcp.WithString("target_message_id", mcp.Required(), mcp.Description("WhatsApp message ID")),
+		mcp.WithString("target_sender_jid", mcp.Description("original sender; required in group chats ("+jidDesc+")")),
+		mcp.WithString("body", mcp.Required(), mcp.Description("reply text")),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a sendReplyArgs) (*mcp.CallToolResult, error) {
 		if err := s.client.SendReply(ctx, a.ChatJID, a.TargetMessageID, a.TargetSenderJID, a.Body); err != nil {
@@ -192,7 +192,7 @@ type sendTypingArgs struct {
 func (s *Server) registerSendTyping() {
 	tool := mcp.NewTool("send_typing",
 		mcp.WithDescription("Set typing/recording presence for a chat."),
-		mcp.WithString("chat_jid", mcp.Required()),
+		mcp.WithString("chat_jid", mcp.Required(), mcp.Description(jidDesc)),
 		mcp.WithBoolean("active", mcp.Required(), mcp.Description("True = composing/recording, false = paused")),
 		mcp.WithString("kind", mcp.Description("'' for text (default) or 'audio' for recording")),
 	)

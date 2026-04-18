@@ -31,9 +31,9 @@ type editMessageArgs struct {
 func (s *Server) registerEditMessage() {
 	tool := mcp.NewTool("edit_message",
 		mcp.WithDescription("Edit a previously-sent message."),
-		mcp.WithString("chat_jid", mcp.Required()),
-		mcp.WithString("message_id", mcp.Required()),
-		mcp.WithString("new_body", mcp.Required()),
+		mcp.WithString("chat_jid", mcp.Required(), mcp.Description(jidDesc)),
+		mcp.WithString("message_id", mcp.Required(), mcp.Description("WhatsApp message ID")),
+		mcp.WithString("new_body", mcp.Required(), mcp.Description("replacement text")),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a editMessageArgs) (*mcp.CallToolResult, error) {
 		if err := s.client.EditMessage(ctx, a.ChatJID, a.MessageID, a.NewBody); err != nil {
@@ -54,9 +54,9 @@ type deleteMessageArgs struct {
 func (s *Server) registerDeleteMessage() {
 	tool := mcp.NewTool("delete_message",
 		mcp.WithDescription("Revoke (delete for everyone) a message."),
-		mcp.WithString("chat_jid", mcp.Required()),
-		mcp.WithString("message_id", mcp.Required()),
-		mcp.WithString("sender_jid", mcp.Description("Original sender; leave empty when deleting your own messages")),
+		mcp.WithString("chat_jid", mcp.Required(), mcp.Description(jidDesc)),
+		mcp.WithString("message_id", mcp.Required(), mcp.Description("WhatsApp message ID")),
+		mcp.WithString("sender_jid", mcp.Description("original sender; leave empty when deleting your own messages ("+jidDesc+")")),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a deleteMessageArgs) (*mcp.CallToolResult, error) {
 		if err := s.client.DeleteMessage(ctx, a.ChatJID, a.MessageID, a.SenderJID); err != nil {
@@ -77,9 +77,9 @@ type markReadArgs struct {
 func (s *Server) registerMarkRead() {
 	tool := mcp.NewTool("mark_read",
 		mcp.WithDescription("Mark message IDs as read in a chat."),
-		mcp.WithString("chat_jid", mcp.Required()),
+		mcp.WithString("chat_jid", mcp.Required(), mcp.Description(jidDesc)),
 		mcp.WithArray("message_ids", mcp.Required(), mcp.Items(map[string]any{"type": "string"})),
-		mcp.WithString("sender_jid", mcp.Description("Required for group chats")),
+		mcp.WithString("sender_jid", mcp.Description("required for group chats ("+jidDesc+")")),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a markReadArgs) (*mcp.CallToolResult, error) {
 		if len(a.MessageIDs) == 0 {
@@ -102,7 +102,7 @@ type markChatReadArgs struct {
 func (s *Server) registerMarkChatRead() {
 	tool := mcp.NewTool("mark_chat_read",
 		mcp.WithDescription("Mark recent incoming messages in a chat as read — i.e. clear the phone's unread badge for that chat."),
-		mcp.WithString("chat_jid", mcp.Required()),
+		mcp.WithString("chat_jid", mcp.Required(), mcp.Description(jidDesc)),
 		mcp.WithNumber("limit", mcp.DefaultNumber(50), mcp.Description("How many of the most recent incoming messages to ack.")),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a markChatReadArgs) (*mcp.CallToolResult, error) {
@@ -127,7 +127,7 @@ type requestSyncArgs struct {
 func (s *Server) registerRequestSync() {
 	tool := mcp.NewTool("request_sync",
 		mcp.WithDescription("Ask WhatsApp to backfill history for a chat. If from_timestamp is omitted, anchors on the newest cached message."),
-		mcp.WithString("chat_jid"),
+		mcp.WithString("chat_jid", mcp.Description(jidDesc)),
 		mcp.WithString("from_timestamp", mcp.Description("ISO-8601 UTC timestamp")),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a requestSyncArgs) (*mcp.CallToolResult, error) {
@@ -160,8 +160,8 @@ type downloadMediaArgs struct {
 func (s *Server) registerDownloadMedia() {
 	tool := mcp.NewTool("download_media",
 		mcp.WithDescription("Download media from a WhatsApp message and return the local file path."),
-		mcp.WithString("message_id", mcp.Required()),
-		mcp.WithString("chat_jid", mcp.Required()),
+		mcp.WithString("message_id", mcp.Required(), mcp.Description("WhatsApp message ID")),
+		mcp.WithString("chat_jid", mcp.Required(), mcp.Description(jidDesc)),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a downloadMediaArgs) (*mcp.CallToolResult, error) {
 		if a.MessageID == "" || a.ChatJID == "" {

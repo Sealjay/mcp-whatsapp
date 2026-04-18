@@ -30,8 +30,8 @@ type searchContactsArgs struct {
 
 func (s *Server) registerSearchContacts() {
 	tool := mcp.NewTool("search_contacts",
-		mcp.WithDescription("Search WhatsApp contacts by name or phone number."),
-		mcp.WithString("query", mcp.Required(), mcp.Description("Search term")),
+		mcp.WithDescription(offlineSafePrefix+"Search WhatsApp contacts by name or phone number."),
+		mcp.WithString("query", mcp.Required(), mcp.Description("case-insensitive substring to match")),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a searchContactsArgs) (*mcp.CallToolResult, error) {
 		contacts, err := s.client.Store().SearchContacts(ctx, a.Query)
@@ -59,12 +59,12 @@ type listMessagesArgs struct {
 
 func (s *Server) registerListMessages() {
 	tool := mcp.NewTool("list_messages",
-		mcp.WithDescription("Get WhatsApp messages matching specified criteria with optional context. Returns a formatted text block."),
+		mcp.WithDescription(offlineSafePrefix+"Get WhatsApp messages matching specified criteria with optional context. Returns a formatted text block."),
 		mcp.WithString("after", mcp.Description("ISO-8601 lower bound")),
 		mcp.WithString("before", mcp.Description("ISO-8601 upper bound")),
-		mcp.WithString("sender_phone_number"),
-		mcp.WithString("chat_jid"),
-		mcp.WithString("query", mcp.Description("Substring match on content")),
+		mcp.WithString("sender_phone_number", mcp.Description(jidDesc)),
+		mcp.WithString("chat_jid", mcp.Description(jidDesc)),
+		mcp.WithString("query", mcp.Description("case-insensitive substring to match")),
 		mcp.WithNumber("limit", mcp.DefaultNumber(20)),
 		mcp.WithNumber("page", mcp.DefaultNumber(0)),
 		mcp.WithBoolean("include_context", mcp.DefaultBool(true)),
@@ -116,8 +116,8 @@ type listChatsArgs struct {
 
 func (s *Server) registerListChats() {
 	tool := mcp.NewTool("list_chats",
-		mcp.WithDescription("Get WhatsApp chats matching specified criteria."),
-		mcp.WithString("query"),
+		mcp.WithDescription(offlineSafePrefix+"Get WhatsApp chats matching specified criteria."),
+		mcp.WithString("query", mcp.Description("case-insensitive substring to match")),
 		mcp.WithNumber("limit", mcp.DefaultNumber(20)),
 		mcp.WithNumber("page", mcp.DefaultNumber(0)),
 		mcp.WithBoolean("include_last_message", mcp.DefaultBool(true)),
@@ -146,8 +146,8 @@ type getChatArgs struct {
 
 func (s *Server) registerGetChat() {
 	tool := mcp.NewTool("get_chat",
-		mcp.WithDescription("Get WhatsApp chat metadata by JID."),
-		mcp.WithString("chat_jid", mcp.Required()),
+		mcp.WithDescription(offlineSafePrefix+"Get WhatsApp chat metadata by JID."),
+		mcp.WithString("chat_jid", mcp.Required(), mcp.Description(jidDesc)),
 		mcp.WithBoolean("include_last_message", mcp.DefaultBool(true)),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a getChatArgs) (*mcp.CallToolResult, error) {
@@ -173,8 +173,8 @@ type getMessageContextArgs struct {
 
 func (s *Server) registerGetMessageContext() {
 	tool := mcp.NewTool("get_message_context",
-		mcp.WithDescription("Get context around a specific WhatsApp message."),
-		mcp.WithString("message_id", mcp.Required()),
+		mcp.WithDescription(offlineSafePrefix+"Get context around a specific WhatsApp message."),
+		mcp.WithString("message_id", mcp.Required(), mcp.Description("WhatsApp message ID")),
 		mcp.WithNumber("before", mcp.DefaultNumber(5)),
 		mcp.WithNumber("after", mcp.DefaultNumber(5)),
 	)
@@ -233,7 +233,7 @@ func (s *Server) registerGetStatus() {
 			status["paired"] = true
 		} else {
 			status["paired"] = false
-			status["hint"] = "Run 'whatsapp-mcp login' to pair this device."
+			status["hint"] = "Not paired. Open /pair on this server in a browser to scan QR (default: http://127.0.0.1:8765/pair)."
 		}
 		return resultJSON(status)
 	})

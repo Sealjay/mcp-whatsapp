@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/github/license/Sealjay/mcp-whatsapp)](LICENSE)
 [![GitHub issues](https://img.shields.io/github/issues/Sealjay/mcp-whatsapp)](https://github.com/Sealjay/mcp-whatsapp/issues)
 
-A single-binary Go [MCP](https://modelcontextprotocol.io/) server that wraps [whatsmeow](https://github.com/tulir/whatsmeow) to expose a personal WhatsApp account to LLMs. Your MCP client (Claude Desktop, Cursor, etc.) launches `whatsapp-mcp serve` over stdio on demand — no background daemon, no two-process bridge. Messages are cached in local SQLite and only travel to the model when the agent calls a tool.
+A single-binary Go [MCP](https://modelcontextprotocol.io/) server that wraps [whatsmeow](https://github.com/tulir/whatsmeow) to expose a personal WhatsApp account to LLMs. `whatsapp-mcp serve` runs as a lightweight HTTP daemon on `127.0.0.1:8765`; MCP clients (Claude Desktop, Cursor, Claude Code, etc.) connect to it via HTTP — no process spawning, no stdin/stdout juggling. Messages are cached in local SQLite and only travel to the model when the agent calls a tool.
 
 > **Unaffiliated.** This is an independent open-source project. It is not affiliated with, endorsed by, or otherwise associated with Meta Platforms, Inc., WhatsApp, or [whatsmeow](https://github.com/tulir/whatsmeow). "WhatsApp" is a trademark of Meta Platforms, Inc., used here nominatively to describe interoperability.
 
@@ -21,7 +21,7 @@ This started as a fork of [lharries/whatsapp-mcp](https://github.com/lharries/wh
 ### Prerequisites
 
 - Go 1.25+ (build-time only; runtime needs just the compiled binary).
-- An MCP client that speaks stdio (Claude Desktop, Cursor, etc.).
+- An MCP client that speaks HTTP (Claude Desktop, Cursor, Claude Code, etc.).
 - FFmpeg (_optional_) — required only for `send_audio_message` when the input is not already `.ogg` Opus. Without it, use `send_file` to send raw audio.
 - **Windows:** CGO must be enabled — see [docs/windows.md](docs/windows.md).
 
@@ -35,11 +35,16 @@ make build    # writes ./bin/whatsapp-mcp
 
 ### Pair your phone (first run only)
 
+Start the daemon, then open the pairing page in a browser:
+
 ```bash
-./bin/whatsapp-mcp login
+./bin/whatsapp-mcp serve          # starts on 127.0.0.1:8765
+open http://127.0.0.1:8765/pair   # macOS; or visit the URL manually
 ```
 
-Scan the QR code with WhatsApp on your phone (*Settings → Linked Devices → Link a Device*). The pairing persists to `./store/whatsapp.db`. Re-run `login` only when WhatsApp invalidates the session or you want to switch accounts.
+Scan the QR code with WhatsApp on your phone (*Settings → Linked Devices → Link a Device*). The pairing persists to `./store/whatsapp.db`. When WhatsApp invalidates the session (roughly every 20 days), visit `/pair` again and re-scan.
+
+**Alternative (headless / CI):** `./bin/whatsapp-mcp login` renders the QR in the terminal. Use this when a browser isn't available.
 
 ### Connect your MCP client
 
@@ -78,39 +83,35 @@ Restart the client. WhatsApp appears as an available integration. Closing and re
 
 `send_file` and `send_audio_message` accept a `media_path` argument pointing at the file to send. By default, the path must live under `./store/uploads/` (resolved relative to your `-store` directory). On first run, `serve` creates the directory automatically; drop files you intend to send into it.
 
-To allow a different directory, set `WHATSAPP_MCP_MEDIA_ROOT` (absolute path) in the MCP client's `env` block:
+To allow a different directory, set `WHATSAPP_MCP_MEDIA_ROOT` (absolute path) when starting the daemon:
 
-```json
-{
-  "mcpServers": {
-    "whatsapp": {
-      "command": "{{PATH_TO_REPO}}/bin/whatsapp-mcp",
-      "args": ["-store", "{{PATH_TO_REPO}}/store", "serve"],
-      "env": { "WHATSAPP_MCP_MEDIA_ROOT": "/Users/me/whatsapp-outbox" }
-    }
-  }
-}
+```bash
+WHATSAPP_MCP_MEDIA_ROOT=/Users/me/whatsapp-outbox ./bin/whatsapp-mcp serve
 ```
+
+Or add it to your launchd plist / systemd unit / shell profile so it persists across restarts.
 
 Paths outside the allowed root are rejected with a clear error so Claude can ask you to move the file or update the env var. Symlinks inside the root are resolved before the check, so a symlink that points out of the root is also rejected. Do not place secrets inside the allowed root — the allowlist bounds what the tool can read, but anything inside is fair game.
 
 ## Architecture
 
-One binary, five internal packages:
+One binary, seven internal packages:
 
 ```
 cmd/whatsapp-mcp/       login / serve / smoke subcommands
 internal/client/        whatsmeow client wrapper (send, download, events, history, features)
-internal/store/         SQLite cache, LID resolution, query layer
-internal/media/         ogg parsing, waveform synthesis, ffmpeg shell-out
+internal/daemon/        HTTP server, pairing state machine, /pair endpoint
 internal/mcp/           mark3labs/mcp-go server + tool registrations
+internal/media/         ogg parsing, waveform synthesis, ffmpeg shell-out
+internal/security/      path allowlisting, filename sanitisation, log redaction
+internal/store/         SQLite cache, LID resolution, query layer
 ```
 
 ### Process lifecycle
 
-`serve` starts when the MCP client needs it and exits when the client disconnects. A `flock(2)` on `store/.lock` prevents two instances racing on the same store (WhatsApp would kick one of the two linked-device connections anyway).
+`serve` runs as a long-lived HTTP daemon. MCP clients connect and disconnect freely; the daemon stays up and continues receiving WhatsApp events. A `flock(2)` on `store/.lock` prevents two instances racing on the same store (WhatsApp would kick one of the two linked-device connections anyway).
 
-The trade-off: events are persisted to SQLite **only while `serve` is running**. When the MCP client quits, the WhatsApp connection closes. On the next launch, whatsmeow emits `events.HistorySync` events that backfill conversations into SQLite, but the recovery window is governed by WhatsApp's server-side retention for multidevice clients — not by this codebase. Messages that arrive during a gap long enough to outlast WhatsApp's retention are not recoverable. For shorter, known gaps, the `request_sync` tool triggers a per-chat backfill on demand.
+The trade-off: events are persisted to SQLite **only while `serve` is running**. If the daemon stops, the WhatsApp connection closes. On the next start, whatsmeow emits `events.HistorySync` events that backfill conversations into SQLite, but the recovery window is governed by WhatsApp's server-side retention for multidevice clients — not by this codebase. Messages that arrive during a gap long enough to outlast WhatsApp's retention are not recoverable. For shorter, known gaps, the `request_sync` tool triggers a per-chat backfill on demand.
 
 ### Data storage
 
@@ -122,7 +123,7 @@ Everything lives under `./store/` (override with `-store DIR`):
 
 ### Data flow
 
-1. The client sends a JSON-RPC `tools/call` to `serve` over stdio.
+1. The client sends a JSON-RPC `tools/call` to `serve` over HTTP.
 2. The MCP layer dispatches to an internal handler.
 3. The handler either queries the local SQLite store or calls whatsmeow directly (send, download, reactions, etc.).
 4. Incoming WhatsApp events are persisted to the store in a background goroutine inside the same process, so query tools always see current state.
@@ -139,14 +140,15 @@ The daemon is designed to run independently of any MCP client. Three supported l
 
 **Manual.** `./bin/whatsapp-mcp serve -addr 127.0.0.1:8765` in any terminal. Ctrl-C to stop.
 
-First-time pairing happens in a browser: start the daemon, open `http://127.0.0.1:8765/pair`, scan the QR with your phone. No terminal required. WhatsApp's multidevice protocol rotates the linked-device session roughly every 20 days; when that happens, the `/pair` page serves a fresh QR automatically — visit it again and re-pair.
+First-time pairing happens in a browser: start the daemon, open `http://127.0.0.1:8765/pair`, scan the QR with your phone. No terminal required. WhatsApp's multidevice protocol rotates the linked-device session roughly every 20 days; when that happens, the `/pair` page serves a fresh QR automatically — visit it again and re-pair. The `/pair/*` endpoints are rate-limited (5 GET/min, 1 POST/min on `/pair/reset`) and CSRF-protected.
 
 Flags and environment variables for `serve`:
 
 - `-addr host:port` (env `WHATSAPP_MCP_ADDR`, default `127.0.0.1:8765`).
-- `-allow-remote` (explicit opt-in to bind a non-loopback address).
+- `-allow-remote` (explicit opt-in to bind a non-loopback address; requires `WHATSAPP_MCP_TOKEN`).
+- `WHATSAPP_MCP_TOKEN` — bearer token for `/mcp` and `/pair/*` when `-allow-remote` is set. Required; `serve` exits if missing.
 - `WHATSAPP_MCP_MEDIA_ROOT` — allowed root for `send_file` / `send_audio_message` paths.
-- `WHATSAPP_MCP_DEBUG=1` — disable JID/body redaction in logs.
+- `WHATSAPP_MCP_DEBUG=1` — enable verbose logging with partial phone-number redaction (last 5 digits visible).
 
 ## Tools
 
@@ -244,7 +246,7 @@ Intentionally not exposed yet:
 - **Single instance per store:** only one `whatsapp-mcp serve` can hold the store lock. Parallel MCP clients must point at different `-store` directories (and therefore different paired sessions).
 - **Windows:** requires CGO and a C compiler — see [docs/windows.md](docs/windows.md).
 - **Upstream bounds:** message fetch/send is bounded by what [whatsmeow](https://github.com/tulir/whatsmeow) supports against the WhatsApp web multidevice API.
-- **Log redaction is obfuscation, not anonymisation.** Partial knowledge of your contacts allows correlation from `…last4`. Symlinks inside `./store/uploads/` are resolved before the path check so they cannot escape, but the root itself is a trust boundary — only place files you intend to send inside it.
+- **Log redaction is obfuscation, not anonymisation.** Partial knowledge of your contacts allows correlation from the last 5 visible digits. Symlinks inside `./store/uploads/` are resolved before the path check so they cannot escape, but the root itself is a trust boundary — only place files you intend to send inside it.
 
 ## Development
 
@@ -252,7 +254,7 @@ Intentionally not exposed yet:
 make test          # unit tests
 make test-race     # with -race
 make vet           # go vet
-make e2e           # build + JSON-RPC smoke over stdio (requires -tags=e2e)
+make e2e           # build + JSON-RPC smoke over HTTP (requires -tags=e2e)
 make smoke         # boot-test the server without connecting to WhatsApp
 ```
 
@@ -270,7 +272,7 @@ This bumps `go.mau.fi/whatsmeow@main`, re-tidies, builds, and tests. If green, c
 
 ## Troubleshooting
 
-- **`connect failed …` on `serve`** — run `./bin/whatsapp-mcp login` first. `serve` cannot display a QR because its stdout is reserved for MCP JSON-RPC.
+- **`connect failed …` on `serve`** — the daemon is not paired. Open `http://127.0.0.1:8765/pair` in a browser and scan the QR. Alternatively, run `./bin/whatsapp-mcp login` in a terminal.
 - **`another whatsapp-mcp instance is already running`** — only one `serve` can hold the store lock. Check for a stray process (`ps aux | grep whatsapp-mcp`) or another MCP client pointed at the same `-store` directory.
 - **QR doesn't display** — the terminal doesn't render half-block Unicode. Try iTerm2, Windows Terminal, or similar.
 - **Device limit reached** — WhatsApp caps linked devices. Remove one from *Settings → Linked Devices* on your phone.
@@ -280,7 +282,7 @@ This bumps `go.mau.fi/whatsmeow@main`, re-tidies, builds, and tests. If green, c
 
 ### Debug logging
 
-By default, JIDs in stderr logs are redacted to `…<last-4-chars-of-user-part>` and message bodies are summarised as `[<length>B: text|url|command]`. To see full content while actively debugging:
+By default, JIDs in stderr logs are redacted to `…<last-4-chars-of-user-part>` and message bodies are summarised as `[<length>B: text|url|command]`. Media CDN URLs are collapsed to `<scheme>://<host>/…`. To see message content while actively debugging:
 
 - As a flag: `./bin/whatsapp-mcp -debug serve`
 - As an env var in your MCP client config:
@@ -289,9 +291,9 @@ By default, JIDs in stderr logs are redacted to `…<last-4-chars-of-user-part>`
   "env": { "WHATSAPP_MCP_DEBUG": "1" }
   ```
 
-Turn it back off once you're done — redaction is there so shared log snippets don't leak conversation content.
+Even with debug mode on, phone-number-shaped digit sequences in bodies and JIDs are partially masked — only the last 5 digits are visible (e.g. `+15551234567` → `****34567`). This means debug logs are safe to share in bug reports without leaking full phone numbers.
 
-**Honesty disclaimer.** The `…last4` scheme is obfuscation for log-reader convenience, not anonymisation. Someone with independent knowledge of your contacts can still correlate `…4567` with a specific phone number. Treat redacted logs as "probably safe to paste into a GitHub issue", not "anonymised".
+**Honesty disclaimer.** The partial-redaction scheme is obfuscation for log-reader convenience, not anonymisation. Someone with independent knowledge of your contacts can still correlate the last 5 digits with a specific phone number. Treat redacted logs as "probably safe to paste into a GitHub issue", not "anonymised".
 
 For Claude Desktop integration issues, see the [MCP documentation](https://modelcontextprotocol.io/quickstart/server#claude-for-desktop-integration-issues).
 

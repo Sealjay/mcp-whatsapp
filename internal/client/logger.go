@@ -1,6 +1,5 @@
 // Package client wraps go.mau.fi/whatsmeow and persists messages to the local
-// message cache in internal/store. It deliberately writes all logs to stderr
-// so that stdout remains clean for MCP's stdio transport.
+// message cache in internal/store. All logs are written to stderr.
 package client
 
 import (
@@ -29,8 +28,7 @@ var (
 )
 
 // stderrLogger is a copy of whatsmeow's stdout logger that writes to an
-// io.Writer (typically os.Stderr) instead of os.Stdout. Writing to stdout
-// would corrupt MCP's JSON-RPC stream.
+// io.Writer (typically os.Stderr) instead of os.Stdout.
 type stderrLogger struct {
 	out   io.Writer
 	mod   string

@@ -8,7 +8,7 @@ This repository is an MCP (Model Context Protocol) server that **wraps the [what
 
 - A local SQLite store for message history
 - LID resolution, disappearing-message handling, and targeted history sync
-- An MCP surface served directly over stdio
+- An MCP surface served over HTTP via a lightweight daemon
 
 When making changes, keep this framing in mind: anything related to the underlying WhatsApp protocol, session management, or media upload/download should usually be solved upstream in whatsmeow, not reimplemented here.
 

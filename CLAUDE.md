@@ -28,7 +28,7 @@ Data lives under `./store/` (override with `-store DIR`). Binary is `bin/whatsap
 ```bash
 make test          # unit tests
 make test-race     # with -race
-make e2e           # spawn the binary, speak JSON-RPC over stdio
+make e2e           # spawn the binary, speak JSON-RPC over HTTP
 make smoke         # boot-test without connecting to WhatsApp
 make vet           # go vet
 ```
