@@ -37,6 +37,10 @@ func (s *Server) registerTools() {
 	s.registerSendTyping()
 	s.registerIsOnWhatsApp()
 	s.registerGetStatus()
+
+	// Phase 1 — group management + blocklist.
+	s.registerGroupTools()
+	s.registerPrivacyTools()
 }
 
 // -- query tools ---------------------------------------------------------

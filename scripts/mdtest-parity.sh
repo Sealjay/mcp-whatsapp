@@ -33,6 +33,18 @@ methods=(
   Disconnect
   Logout
   IsConnected
+  CreateGroup
+  LeaveGroup
+  GetJoinedGroups
+  UpdateGroupParticipants
+  SetGroupName
+  SetGroupTopic
+  SetGroupAnnounce
+  SetGroupLocked
+  GetGroupInviteLink
+  JoinGroupWithLink
+  GetBlocklist
+  UpdateBlocklist
 )
 
 missing=()

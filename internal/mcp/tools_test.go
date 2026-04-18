@@ -9,14 +9,22 @@ import (
 // Keeping it as a sorted slice makes diff output easy to read when registration
 // drifts.
 var expectedToolNames = []string{
+	"block_contact",
+	"create_group",
 	"delete_message",
 	"download_media",
 	"edit_message",
+	"get_blocklist",
 	"get_chat",
+	"get_group_info",
+	"get_group_invite_link",
 	"get_message_context",
 	"get_status",
 	"is_on_whatsapp",
+	"join_group_with_link",
+	"leave_group",
 	"list_chats",
+	"list_groups",
 	"list_messages",
 	"mark_chat_read",
 	"mark_read",
@@ -28,6 +36,12 @@ var expectedToolNames = []string{
 	"send_reaction",
 	"send_reply",
 	"send_typing",
+	"set_group_announce",
+	"set_group_locked",
+	"set_group_name",
+	"set_group_topic",
+	"unblock_contact",
+	"update_group_participants",
 }
 
 func TestNewServer_RegistersAllTools(t *testing.T) {
@@ -93,7 +107,7 @@ func TestNewServer_RegistersAllTools(t *testing.T) {
 
 func TestNewServer_ToolCount(t *testing.T) {
 	s := NewServer(nil)
-	const want = 19
+	const want = 33
 	if got := len(s.MCP().ListTools()); got != want {
 		t.Errorf("tool count = %d, want %d", got, want)
 	}
