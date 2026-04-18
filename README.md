@@ -1,6 +1,6 @@
 # WhatsApp MCP Server
 
-> **Fork Notice**: This is a private fork of [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp) with additional enhancements:
+> **Origin**: This started as a fork of [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp) and is now an updated implementation that uses similar ideas, with additional enhancements:
 >
 > - **LID Resolution**: Resolves WhatsApp Linked IDs (LIDs) to real phone numbers for accurate contact matching
 > - **Sent Message Storage**: Stores messages sent via the MCP server in the local database for complete conversation history
@@ -16,8 +16,6 @@ It connects to your **personal WhatsApp account** directly via the Whatsapp web 
 Here's an example of what you can do when it's connected to Claude.
 
 ![WhatsApp MCP](./example-use.png)
-
-> To get updates on this and other projects I work on [enter your email here](https://docs.google.com/forms/d/1rTF9wMBTN0vPfzWuQa2BjfGKdKIpTbyeKxhPMcEzgyI/preview)
 
 > *Caution:* as with many MCP servers, the WhatsApp MCP is subject to [the lethal trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/). This means that project injection could lead to private data exfiltration.
 
