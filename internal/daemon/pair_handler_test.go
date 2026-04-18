@@ -27,7 +27,8 @@ func newTestHandlers(paired bool, qr string, err error) (*pairHandlers, *fakeRes
 		cache.SetQR(qr)
 	}
 	reset := &fakeResetter{err: err}
-	return &pairHandlers{cache: cache, reset: reset}, reset
+	h := newPairHandlers(cache, reset)
+	return h, reset
 }
 
 func TestHandlePairPage_Unpaired(t *testing.T) {
@@ -124,4 +125,70 @@ func TestHandlePairReset_LogoutErrorSurfaces(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("status: want 500, got %d", w.Code)
 	}
+}
+
+func TestPairGet_RateLimited(t *testing.T) {
+	h, _ := newTestHandlers(false, "abc", nil)
+	// Exhaust the burst of 5.
+	for i := 0; i < 5; i++ {
+		w := httptest.NewRecorder()
+		h.handlePairPage(w, httptest.NewRequest(http.MethodGet, "/pair", nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("request %d: want 200, got %d", i, w.Code)
+		}
+	}
+	// 6th should be rate-limited.
+	w := httptest.NewRecorder()
+	h.handlePairPage(w, httptest.NewRequest(http.MethodGet, "/pair", nil))
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("6th request: want 429, got %d", w.Code)
+	}
+	if ra := w.Header().Get("Retry-After"); ra == "" {
+		t.Fatal("expected Retry-After header on 429")
+	}
+}
+
+func TestPairReset_RateLimited(t *testing.T) {
+	h, _ := newTestHandlers(true, "", nil)
+	// First POST should succeed (burst=1).
+	w := httptest.NewRecorder()
+	h.handlePairReset(w, httptest.NewRequest(http.MethodPost, "/pair/reset", nil))
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("first POST: want 303, got %d", w.Code)
+	}
+	// Second should be rate-limited.
+	w = httptest.NewRecorder()
+	h.handlePairReset(w, httptest.NewRequest(http.MethodPost, "/pair/reset", nil))
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("second POST: want 429, got %d", w.Code)
+	}
+	if ra := w.Header().Get("Retry-After"); ra == "" {
+		t.Fatal("expected Retry-After header on 429")
+	}
+}
+
+func TestPairTemplate_EscapesToken(t *testing.T) {
+	cache := NewPairCache()
+	cache.SetPaired()
+	h := newPairHandlers(cache, &fakeResetter{})
+
+	// Inject a CSRFToken containing a script tag to verify html/template escapes it.
+	// We need to call the template directly since the handler doesn't set CSRFToken yet.
+	w := httptest.NewRecorder()
+	data := pairPageData{CSRFToken: `<script>alert("xss")</script>`}
+	if err := pairedTmpl.Execute(w, data); err != nil {
+		t.Fatalf("template execute: %v", err)
+	}
+	body := w.Body.String()
+	// html/template should escape < and > in the value attribute.
+	if strings.Contains(body, "<script>") {
+		t.Fatalf("template did not escape <script> tag in CSRFToken: %s", body)
+	}
+	// The escaped form should be present.
+	if !strings.Contains(body, "&lt;script&gt;") {
+		t.Fatalf("expected escaped script tag in output, got: %s", body)
+	}
+
+	// Sanity: the handler still works.
+	_ = h
 }

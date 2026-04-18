@@ -2,13 +2,28 @@ package daemon
 
 import (
 	"context"
+	"embed"
 	"fmt"
+	"html/template"
 	"net/http"
+)
+
+//go:embed templates/*.tmpl
+var templateFS embed.FS
+
+var (
+	pairTmpl    = template.Must(template.ParseFS(templateFS, "templates/pair.html.tmpl"))
+	pairedTmpl  = template.Must(template.ParseFS(templateFS, "templates/pair_success.html.tmpl"))
 )
 
 const (
 	qrPNGSize = 256
 )
+
+// pairPageData is the template context for pair pages.
+type pairPageData struct {
+	CSRFToken string
+}
 
 // resetter is the dependency `handlePairReset` needs. Production wiring
 // satisfies it via *client.Client; tests substitute a fake.
@@ -22,6 +37,22 @@ type pairHandlers struct {
 	cache   *PairCache
 	reset   resetter
 	onReset func() // optional hook invoked after a successful Logout
+
+	// Rate limiters keyed by endpoint path.
+	pairGetLimiter   *Limiter
+	pairQRLimiter    *Limiter
+	pairResetLimiter *Limiter
+}
+
+// newPairHandlers constructs handlers with default rate limiters.
+func newPairHandlers(cache *PairCache, reset resetter) *pairHandlers {
+	return &pairHandlers{
+		cache:            cache,
+		reset:            reset,
+		pairGetLimiter:   NewLimiter(5.0/60.0, 5),   // 5/min, burst 5
+		pairQRLimiter:    NewLimiter(10.0/60.0, 10),  // 10/min, burst 10
+		pairResetLimiter: NewLimiter(1.0/60.0, 1),    // 1/min, burst 1
+	}
 }
 
 func (h *pairHandlers) mount(mux *http.ServeMux) {
@@ -31,15 +62,30 @@ func (h *pairHandlers) mount(mux *http.ServeMux) {
 }
 
 func (h *pairHandlers) handlePairPage(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if h.cache.Paired() {
-		fmt.Fprint(w, pairedPage)
+	if !h.pairGetLimiter.Allow("/pair") {
+		w.Header().Set("Retry-After", "12")
+		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 		return
 	}
-	fmt.Fprint(w, pairingPage)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	data := pairPageData{}
+	if h.cache.Paired() {
+		if err := pairedTmpl.Execute(w, data); err != nil {
+			http.Error(w, "template error", http.StatusInternalServerError)
+		}
+		return
+	}
+	if err := pairTmpl.Execute(w, data); err != nil {
+		http.Error(w, "template error", http.StatusInternalServerError)
+	}
 }
 
 func (h *pairHandlers) handlePairQR(w http.ResponseWriter, r *http.Request) {
+	if !h.pairQRLimiter.Allow("/pair/qr.png") {
+		w.Header().Set("Retry-After", "6")
+		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+		return
+	}
 	qr := h.cache.QR()
 	if qr == "" {
 		http.NotFound(w, r)
@@ -60,6 +106,11 @@ func (h *pairHandlers) handlePairReset(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
+	if !h.pairResetLimiter.Allow("/pair/reset") {
+		w.Header().Set("Retry-After", "60")
+		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+		return
+	}
 	if err := h.reset.Logout(r.Context()); err != nil {
 		http.Error(w, fmt.Sprintf("logout failed: %v", err), http.StatusInternalServerError)
 		return
@@ -70,30 +121,3 @@ func (h *pairHandlers) handlePairReset(w http.ResponseWriter, r *http.Request) {
 	}
 	http.Redirect(w, r, "/pair", http.StatusSeeOther)
 }
-
-const pairingPage = `<!doctype html>
-<html><head>
-<meta charset="utf-8">
-<meta http-equiv="refresh" content="5">
-<title>Pair WhatsApp</title>
-<style>body{font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem}</style>
-</head><body>
-<h1>Pair WhatsApp</h1>
-<p>Open WhatsApp on your phone → <em>Settings</em> → <em>Linked Devices</em> → <em>Link a Device</em>, then scan:</p>
-<p><img src="/pair/qr.png" alt="WhatsApp pairing QR"></p>
-<p><small>This page auto-refreshes every 5 seconds while the QR rotates.</small></p>
-</body></html>`
-
-const pairedPage = `<!doctype html>
-<html><head>
-<meta charset="utf-8">
-<title>Paired</title>
-<style>body{font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem}</style>
-</head><body>
-<h1>Already paired</h1>
-<p>This daemon is connected to WhatsApp. You can close this tab.</p>
-<form method="post" action="/pair/reset">
-  <p><button type="submit">Force re-pair</button></p>
-</form>
-<p><small>"Force re-pair" disconnects this device from WhatsApp and starts a fresh pairing flow. Use it if you want to switch accounts.</small></p>
-</body></html>`
