@@ -5,6 +5,8 @@
 
 A single-binary Go [MCP](https://modelcontextprotocol.io/) server that wraps [whatsmeow](https://github.com/tulir/whatsmeow) to expose a personal WhatsApp account to LLMs. Your MCP client (Claude Desktop, Cursor, etc.) launches `whatsapp-mcp serve` over stdio on demand — no background daemon, no two-process bridge. Messages are cached in local SQLite and only travel to the model when the agent calls a tool.
 
+> **Unaffiliated.** This is an independent open-source project. It is not affiliated with, endorsed by, or otherwise associated with Meta Platforms, Inc., WhatsApp, or [whatsmeow](https://github.com/tulir/whatsmeow). "WhatsApp" is a trademark of Meta Platforms, Inc., used here nominatively to describe interoperability.
+
 This started as a fork of [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp) and has since been rewritten as a single Go binary. What it adds over the original:
 
 - **LID resolution** — normalises `@lid` JIDs to real phone numbers for accurate contact matching.
@@ -60,6 +62,26 @@ Config file locations:
 - **Cursor:** `~/.cursor/mcp.json`
 
 Restart the client. WhatsApp will appear as an available integration; the client starts `whatsapp-mcp serve` automatically when it needs tools and terminates it when the session ends.
+
+### Sending files
+
+`send_file` and `send_audio_message` accept a `media_path` argument pointing at the file to send. By default, the path must live under `./store/uploads/` (resolved relative to your `-store` directory). On first run, `serve` creates the directory automatically; drop files you intend to send into it.
+
+To allow a different directory, set `WHATSAPP_MCP_MEDIA_ROOT` (absolute path) in the MCP client's `env` block:
+
+```json
+{
+  "mcpServers": {
+    "whatsapp": {
+      "command": "{{PATH_TO_REPO}}/bin/whatsapp-mcp",
+      "args": ["-store", "{{PATH_TO_REPO}}/store", "serve"],
+      "env": { "WHATSAPP_MCP_MEDIA_ROOT": "/Users/me/whatsapp-outbox" }
+    }
+  }
+}
+```
+
+Paths outside the allowed root are rejected with a clear error so Claude can ask you to move the file or update the env var. Symlinks inside the root are resolved before the check, so a symlink that points out of the root is also rejected. Do not place secrets inside the allowed root — the allowlist bounds what the tool can read, but anything inside is fair game.
 
 ## Architecture
 
@@ -267,6 +289,7 @@ Intentionally not exposed yet:
 - **Single instance per store:** only one `whatsapp-mcp serve` can hold the store lock. Parallel MCP clients must point at different `-store` directories (and therefore different paired sessions).
 - **Windows:** requires CGO and a C compiler — see [docs/windows.md](docs/windows.md).
 - **Upstream bounds:** message fetch/send is bounded by what [whatsmeow](https://github.com/tulir/whatsmeow) supports against the WhatsApp web multidevice API.
+- **Log redaction is obfuscation, not anonymisation.** Partial knowledge of your contacts allows correlation from `…last4`. Symlinks inside `./store/uploads/` are resolved before the path check so they cannot escape, but the root itself is a trust boundary — only place files you intend to send inside it.
 
 ## Development
 
@@ -299,6 +322,21 @@ This bumps `go.mau.fi/whatsmeow@main`, re-tidies, builds, and tests. If green, c
 - **No messages loading** — after initial auth, it can take several minutes for history to backfill. Use `request_sync` to target a specific chat.
 - **WhatsApp out of sync** — delete both database files (`store/messages.db` and `store/whatsapp.db`) and re-run `login`.
 - **`ffmpeg not found`** — `send_audio_message` needs ffmpeg on `PATH` to convert non-Opus audio. Use `send_file` for raw audio instead.
+
+### Debug logging
+
+By default, JIDs in stderr logs are redacted to `…<last-4-chars-of-user-part>` and message bodies are summarised as `[<length>B: text|url|command]`. To see full content while actively debugging:
+
+- As a flag: `./bin/whatsapp-mcp -debug serve`
+- As an env var in your MCP client config:
+
+  ```json
+  "env": { "WHATSAPP_MCP_DEBUG": "1" }
+  ```
+
+Turn it back off once you're done — redaction is there so shared log snippets don't leak conversation content.
+
+**Honesty disclaimer.** The `…last4` scheme is obfuscation for log-reader convenience, not anonymisation. Someone with independent knowledge of your contacts can still correlate `…4567` with a specific phone number. Treat redacted logs as "probably safe to paste into a GitHub issue", not "anonymised".
 
 For Claude Desktop integration issues, see the [MCP documentation](https://modelcontextprotocol.io/quickstart/server#claude-for-desktop-integration-issues).
 

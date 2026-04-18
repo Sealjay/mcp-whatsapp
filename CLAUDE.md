@@ -7,9 +7,10 @@ Single Go binary that speaks MCP over stdio and wraps [whatsmeow](https://github
 ```
 cmd/whatsapp-mcp/       login, serve, smoke subcommands
 internal/client/        whatsmeow client wrapper (send, download, events, history, features)
-internal/store/         SQLite cache + queries + LID resolution + formatters
-internal/media/         ogg analysis + ffmpeg shell-out
 internal/mcp/           mark3labs/mcp-go server + tool registrations
+internal/media/         ogg analysis + ffmpeg shell-out
+internal/security/      path allowlisting, filename sanitisation, log redaction
+internal/store/         SQLite cache + queries + LID resolution + formatters
 scripts/mdtest-parity.sh  whatsmeow API drift canary
 ```
 
