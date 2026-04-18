@@ -3,12 +3,12 @@ package client
 import (
 	"bytes"
 	"context"
-	"reflect"
 	"strings"
 	"time"
 
 	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
+	"go.mau.fi/whatsmeow/proto/waHistorySync"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 
@@ -47,31 +47,106 @@ func (c *Client) StartEventHandler() {
 	c.handlerInstalled = true
 }
 
-// handleMessage persists an incoming message and its chat metadata.
-func (c *Client) handleMessage(msg *events.Message) {
-	rawChatJID := msg.Info.Chat.String()
-	rawSender := msg.Info.Sender.String()
+// normalizedMessage holds the result of normalizeIncomingMessage: the
+// store-ready Message plus the raw media crypto fields and the full
+// post-LID-resolution sender JID (used for poll-vote keying).
+type normalizedMessage struct {
+	msg            store.Message
+	mediaKey       []byte
+	fileSHA256     []byte
+	fileEncSHA256  []byte
+	fileLength     uint64
+	senderFullJID  string // post-LID sender as "user@server"
+	chatJID        string // post-LID-normalised chat JID
+}
 
-	// Normalize chat JID: convert LID to standard JID for direct chats.
+// normalizeIncomingMessage resolves sender and chat JIDs (LID → phone),
+// extracts text/media content, and returns a store-ready normalizedMessage.
+// It covers the logic shared between handleMessage and handleHistorySync.
+//
+// Parameters:
+//   - rawChatJID: the raw chat JID string (may be @lid for DMs).
+//   - rawSenderJID: the raw sender JID string (may be @lid).
+//   - senderUser: the user-part of the sender JID (fallback when no
+//     participant is available).
+//   - isGroup: true when rawChatJID ends with @g.us.
+//   - isFromMe: whether the message was sent by the local device.
+//   - ownID: the local device's user-part (used when isFromMe is true and
+//     no participant is set).
+//   - msgID: the message ID.
+//   - timestamp: the message timestamp.
+//   - raw: the protobuf Message payload.
+func (c *Client) normalizeIncomingMessage(
+	rawChatJID, rawSenderJID, senderUser string,
+	isGroup, isFromMe bool,
+	ownID string,
+	msgID string,
+	timestamp time.Time,
+	raw *waProto.Message,
+) normalizedMessage {
+	// Normalise chat JID: convert LID to standard JID for direct chats.
 	chatJID := rawChatJID
-	if !strings.HasSuffix(rawChatJID, "@g.us") {
+	if !isGroup {
 		chatJID = c.store.ResolveLIDToJID(rawChatJID)
 		if chatJID != rawChatJID {
 			c.log.Infof("Normalized chat JID: %s -> %s", c.redactor.JID(rawChatJID), c.redactor.JID(chatJID))
 		}
 	}
 
-	// Normalize sender (may be in LID form inside groups).
-	sender := msg.Info.Sender.User
-	normalizedSender := c.store.ResolveLIDToJID(rawSender)
-	if normalizedSender != rawSender {
+	// Normalise sender (may be in LID form inside groups).
+	sender := senderUser
+	normalizedSender := c.store.ResolveLIDToJID(rawSenderJID)
+	if normalizedSender != rawSenderJID {
 		sender = strings.Split(normalizedSender, "@")[0]
-		c.log.Infof("Normalized sender: %s -> %s", c.redactor.JID(msg.Info.Sender.User), c.redactor.JID(sender))
+		c.log.Infof("Normalized sender: %s -> %s", c.redactor.JID(senderUser), c.redactor.JID(sender))
 	}
 
-	name := c.GetChatName(msg.Info.Chat, chatJID, nil, sender)
+	// If the message is from us and we have no better sender, use ownID.
+	if isFromMe && sender == "" && ownID != "" {
+		sender = ownID
+	}
 
-	if err := c.store.StoreChat(chatJID, name, msg.Info.Timestamp); err != nil {
+	content := extractTextContent(raw)
+	mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength := extractMediaInfo(raw)
+
+	return normalizedMessage{
+		msg: store.Message{
+			ID:        msgID,
+			ChatJID:   chatJID,
+			Sender:    sender,
+			Content:   content,
+			Timestamp: timestamp,
+			IsFromMe:  isFromMe,
+			MediaType: mediaType,
+			Filename:  filename,
+			URL:       url,
+		},
+		mediaKey:      mediaKey,
+		fileSHA256:    fileSHA256,
+		fileEncSHA256: fileEncSHA256,
+		fileLength:    fileLength,
+		senderFullJID: normalizedSender,
+		chatJID:       chatJID,
+	}
+}
+
+// handleMessage persists an incoming message and its chat metadata.
+func (c *Client) handleMessage(msg *events.Message) {
+	nm := c.normalizeIncomingMessage(
+		msg.Info.Chat.String(),
+		msg.Info.Sender.String(),
+		msg.Info.Sender.User,
+		strings.HasSuffix(msg.Info.Chat.String(), "@g.us"),
+		msg.Info.IsFromMe,
+		"", // ownID not needed for live messages — sender is always set
+		msg.Info.ID,
+		msg.Info.Timestamp,
+		msg.Message,
+	)
+
+	name := c.GetChatName(msg.Info.Chat, nm.chatJID, nil, nm.msg.Sender)
+
+	if err := c.store.StoreChat(nm.chatJID, name, msg.Info.Timestamp); err != nil {
 		c.log.Warnf("Failed to store chat: %v", err)
 	}
 
@@ -79,16 +154,13 @@ func (c *Client) handleMessage(msg *events.Message) {
 	// tally into the local cache, and return. We pass the post-LID-resolution
 	// full JID so StorePollVote's primary key never collides across servers.
 	if msg.Message != nil && msg.Message.GetPollUpdateMessage() != nil {
-		voterFullJID := normalizedSender
+		voterFullJID := nm.senderFullJID
 		if voterFullJID == "" {
 			voterFullJID = msg.Info.Sender.String()
 		}
-		c.handlePollVote(msg, chatJID, voterFullJID)
+		c.handlePollVote(msg, nm.chatJID, voterFullJID)
 		return
 	}
-
-	content := extractTextContent(msg.Message)
-	mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength := extractMediaInfo(msg.Message)
 
 	// Poll creation — store a "[poll] <question>" row for readability and
 	// cache the option names so we can decode vote SHA-256 hashes later.
@@ -96,30 +168,20 @@ func (c *Client) handleMessage(msg *events.Message) {
 	if msg.Message != nil {
 		if pc := msg.Message.GetPollCreationMessage(); pc != nil {
 			pollOptions = extractPollOptionNames(pc)
-			if content == "" {
-				content = "[poll] " + pc.GetName()
+			if nm.msg.Content == "" {
+				nm.msg.Content = "[poll] " + pc.GetName()
 			}
 		}
 	}
 
-	if content == "" && mediaType == "" {
+	if nm.msg.Content == "" && nm.msg.MediaType == "" {
 		return
 	}
 
-	err := c.store.StoreMessage(context.Background(), store.Message{
-		ID:        msg.Info.ID,
-		ChatJID:   chatJID,
-		Sender:    sender,
-		Content:   content,
-		Timestamp: msg.Info.Timestamp,
-		IsFromMe:  msg.Info.IsFromMe,
-		MediaType: mediaType,
-		Filename:  filename,
-		URL:       url,
-	}, mediaKey, fileSHA256, fileEncSHA256, fileLength)
+	err := c.store.StoreMessage(context.Background(), nm.msg, nm.mediaKey, nm.fileSHA256, nm.fileEncSHA256, nm.fileLength)
 
 	if err == nil && len(pollOptions) > 0 {
-		if perr := c.store.StorePollMetadata(context.Background(), msg.Info.ID, chatJID, pollOptions); perr != nil {
+		if perr := c.store.StorePollMetadata(context.Background(), msg.Info.ID, nm.chatJID, pollOptions); perr != nil {
 			c.log.Warnf("Failed to store poll metadata for %s: %v", msg.Info.ID, perr)
 		}
 	}
@@ -134,10 +196,10 @@ func (c *Client) handleMessage(msg *events.Message) {
 		direction = "->"
 	}
 	ts := msg.Info.Timestamp.Format("2006-01-02 15:04:05")
-	if mediaType != "" {
-		c.log.Infof("[%s] %s %s: [%s: %s] %s", ts, direction, c.redactor.JID(sender), mediaType, filename, c.redactor.Body(content))
-	} else if content != "" {
-		c.log.Infof("[%s] %s %s: %s", ts, direction, c.redactor.JID(sender), c.redactor.Body(content))
+	if nm.msg.MediaType != "" {
+		c.log.Infof("[%s] %s %s: [%s: %s] %s", ts, direction, c.redactor.JID(nm.msg.Sender), nm.msg.MediaType, nm.msg.Filename, c.redactor.Body(nm.msg.Content))
+	} else if nm.msg.Content != "" {
+		c.log.Infof("[%s] %s %s: %s", ts, direction, c.redactor.JID(nm.msg.Sender), c.redactor.Body(nm.msg.Content))
 	}
 }
 
@@ -170,8 +232,13 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 			continue
 		}
 
+		isGroup := strings.HasSuffix(rawChatJID, "@g.us")
+
+		// Resolve the chat JID once for the conversation header. We
+		// normalise it here so GetChatName and StoreChat use the
+		// phone-number-based JID.
 		chatJID := rawChatJID
-		if !strings.HasSuffix(rawChatJID, "@g.us") {
+		if !isGroup {
 			chatJID = c.store.ResolveLIDToJID(rawChatJID)
 			if chatJID != rawChatJID {
 				c.log.Infof("History sync: Normalized chat JID: %s -> %s", c.redactor.JID(rawChatJID), c.redactor.JID(chatJID))
@@ -200,49 +267,32 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 				continue
 			}
 
-			var content string
-			if msg.Message.Message != nil {
-				if conv := msg.Message.Message.GetConversation(); conv != "" {
-					content = conv
-				} else if ext := msg.Message.Message.GetExtendedTextMessage(); ext != nil {
-					content = ext.GetText()
-				}
-			}
-
-			var mediaType, filename, url string
-			var mediaKey, fileSHA256, fileEncSHA256 []byte
-			var fileLength uint64
-			if msg.Message.Message != nil {
-				mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength = extractMediaInfo(msg.Message.Message)
-			}
-
-			c.log.Infof("Message content: %s, Media Type: %s", c.redactor.Body(content), mediaType)
-			if content == "" && mediaType == "" {
+			msgTS := msg.Message.GetMessageTimestamp()
+			if msgTS == 0 {
 				continue
 			}
+			timestamp := time.Unix(int64(msgTS), 0)
 
-			// Determine sender.
-			var sender string
+			// Determine sender and isFromMe from the message key.
+			var rawSenderJID, senderUser string
 			isFromMe := false
 			if msg.Message.Key != nil {
 				if msg.Message.Key.FromMe != nil {
 					isFromMe = *msg.Message.Key.FromMe
 				}
 				if !isFromMe && msg.Message.Key.Participant != nil && *msg.Message.Key.Participant != "" {
-					rawSender := *msg.Message.Key.Participant
-					normalizedSender := c.store.ResolveLIDToJID(rawSender)
-					if normalizedSender != rawSender {
-						sender = strings.Split(normalizedSender, "@")[0]
-					} else {
-						sender = strings.Split(rawSender, "@")[0]
-					}
+					rawSenderJID = *msg.Message.Key.Participant
+					senderUser = strings.Split(rawSenderJID, "@")[0]
 				} else if isFromMe {
-					sender = ownID
+					rawSenderJID = ownID + "@s.whatsapp.net"
+					senderUser = ownID
 				} else {
-					sender = jid.User
+					rawSenderJID = jid.String()
+					senderUser = jid.User
 				}
 			} else {
-				sender = jid.User
+				rawSenderJID = jid.String()
+				senderUser = jid.User
 			}
 
 			msgID := ""
@@ -250,34 +300,32 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 				msgID = *msg.Message.Key.ID
 			}
 
-			msgTS := msg.Message.GetMessageTimestamp()
-			if msgTS == 0 {
+			nm := c.normalizeIncomingMessage(
+				rawChatJID, rawSenderJID, senderUser,
+				isGroup, isFromMe, ownID,
+				msgID, timestamp, msg.Message.Message,
+			)
+
+			c.log.Infof("Message content: %s, Media Type: %s", c.redactor.Body(nm.msg.Content), nm.msg.MediaType)
+			if nm.msg.Content == "" && nm.msg.MediaType == "" {
 				continue
 			}
-			timestamp := time.Unix(int64(msgTS), 0)
 
-			err := c.store.StoreMessage(ctx, store.Message{
-				ID:        msgID,
-				ChatJID:   chatJID,
-				Sender:    sender,
-				Content:   content,
-				Timestamp: timestamp,
-				IsFromMe:  isFromMe,
-				MediaType: mediaType,
-				Filename:  filename,
-				URL:       url,
-			}, mediaKey, fileSHA256, fileEncSHA256, fileLength)
-			if err != nil {
+			// Override chatJID to the already-resolved one from the
+			// conversation header — avoids re-resolving per message.
+			nm.msg.ChatJID = chatJID
+
+			if err := c.store.StoreMessage(ctx, nm.msg, nm.mediaKey, nm.fileSHA256, nm.fileEncSHA256, nm.fileLength); err != nil {
 				c.log.Warnf("Failed to store history message: %v", err)
 				continue
 			}
 			syncedCount++
-			if mediaType != "" {
+			if nm.msg.MediaType != "" {
 				c.log.Infof("Stored message: [%s] %s -> %s: [%s: %s] %s",
-					timestamp.Format("2006-01-02 15:04:05"), c.redactor.JID(sender), c.redactor.JID(chatJID), mediaType, filename, c.redactor.Body(content))
+					timestamp.Format("2006-01-02 15:04:05"), c.redactor.JID(nm.msg.Sender), c.redactor.JID(chatJID), nm.msg.MediaType, nm.msg.Filename, c.redactor.Body(nm.msg.Content))
 			} else {
 				c.log.Infof("Stored message: [%s] %s -> %s: %s",
-					timestamp.Format("2006-01-02 15:04:05"), c.redactor.JID(sender), c.redactor.JID(chatJID), c.redactor.Body(content))
+					timestamp.Format("2006-01-02 15:04:05"), c.redactor.JID(nm.msg.Sender), c.redactor.JID(chatJID), c.redactor.Body(nm.msg.Content))
 			}
 		}
 	}
@@ -288,7 +336,9 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 // GetChatName determines the appropriate name for a chat. It checks the
 // existing database entry first, then falls back to conversation metadata
 // (for history sync), contact store lookups, and finally the JID.
-func (c *Client) GetChatName(jid types.JID, chatJID string, conversation interface{}, sender string) string {
+// The conversation parameter is the typed whatsmeow Conversation from a
+// history-sync payload; pass nil for live messages.
+func (c *Client) GetChatName(jid types.JID, chatJID string, conversation *waHistorySync.Conversation, sender string) string {
 	if existing := c.store.FindChatName(chatJID); existing != "" {
 		c.log.Infof("Using existing chat name for %s: %s", chatJID, existing)
 		return existing
@@ -300,25 +350,10 @@ func (c *Client) GetChatName(jid types.JID, chatJID string, conversation interfa
 		c.log.Infof("Getting name for group: %s", chatJID)
 
 		if conversation != nil {
-			// Try to extract DisplayName or Name from whatever conversation
-			// type was passed in.
-			var displayName, convName *string
-			v := reflect.ValueOf(conversation)
-			if v.Kind() == reflect.Ptr && !v.IsNil() {
-				v = v.Elem()
-				if f := v.FieldByName("DisplayName"); f.IsValid() && f.Kind() == reflect.Ptr && !f.IsNil() {
-					s := f.Elem().String()
-					displayName = &s
-				}
-				if f := v.FieldByName("Name"); f.IsValid() && f.Kind() == reflect.Ptr && !f.IsNil() {
-					s := f.Elem().String()
-					convName = &s
-				}
-			}
-			if displayName != nil && *displayName != "" {
-				name = *displayName
-			} else if convName != nil && *convName != "" {
-				name = *convName
+			if dn := conversation.GetDisplayName(); dn != "" {
+				name = dn
+			} else if cn := conversation.GetName(); cn != "" {
+				name = cn
 			}
 		}
 
