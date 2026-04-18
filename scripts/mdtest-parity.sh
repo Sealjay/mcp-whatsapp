@@ -45,6 +45,10 @@ methods=(
   JoinGroupWithLink
   GetBlocklist
   UpdateBlocklist
+  SendPresence
+  GetPrivacySettings
+  SetPrivacySetting
+  SetStatusMessage
 )
 
 missing=()
