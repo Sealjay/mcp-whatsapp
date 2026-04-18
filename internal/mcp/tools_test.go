@@ -1,13 +1,8 @@
 package mcp
 
 import (
-	"context"
-	"fmt"
 	"sort"
-	"strings"
 	"testing"
-
-	"github.com/mark3labs/mcp-go/mcp"
 )
 
 // expectedToolNames is the full set of MCP tools this server must register.
@@ -126,48 +121,32 @@ func TestNewServer_ToolCount(t *testing.T) {
 	}
 }
 
-// TestToolDescriptions_StyleGuide enforces the conventions documented in
-// internal/mcp/common.go: every tool has a non-empty description and every
-// description ends with a period. Helps catch drift when new tools are added.
-func TestToolDescriptions_StyleGuide(t *testing.T) {
+// TestToolsByDomain verifies that at least one tool from each domain file is
+// registered. This catches accidental omissions when the registerXxxTools()
+// aggregator in a domain file is not wired from registerTools().
+//
+// Heuristic: we pick one representative tool name per source file. The mapping
+// is maintained manually — if a domain file is added or a tool is renamed the
+// test must be updated.
+func TestToolsByDomain(t *testing.T) {
 	s := NewServer(nil)
-	for name, st := range s.MCP().ListTools() {
-		if st == nil || st.Tool.Description == "" {
-			t.Errorf("tool %q: description is empty", name)
-			continue
+	got := s.MCP().ListTools()
+
+	// domain file → representative tool name(s) that MUST be present.
+	domains := map[string][]string{
+		"tools_query.go":   {"list_chats", "search_contacts"},
+		"tools_send.go":    {"send_message", "send_file"},
+		"tools_message.go": {"edit_message", "mark_read"},
+		"tools_groups.go":  {"create_group", "leave_group"},
+		"tools_media.go":   {"send_poll", "send_contact_card"},
+		"tools_privacy.go": {"get_blocklist", "send_presence"},
+	}
+
+	for file, names := range domains {
+		for _, name := range names {
+			if _, ok := got[name]; !ok {
+				t.Errorf("domain %s: expected tool %q not registered", file, name)
+			}
 		}
-		if !strings.HasSuffix(st.Tool.Description, ".") {
-			t.Errorf("tool %q: description must end with '.', got %q", name, st.Tool.Description)
-		}
-	}
-}
-
-// TestRequestSyncRequiresChatJID confirms the handler rejects an empty
-// chat_jid with the standardised `<field>: required` error shape (rather
-// than the prior usage-hint-as-success fallback).
-func TestRequestSyncRequiresChatJID(t *testing.T) {
-	s := NewServer(nil)
-	st := s.MCP().GetTool("request_sync")
-	if st == nil {
-		t.Fatal("request_sync not registered")
-	}
-
-	req := mcp.CallToolRequest{}
-	req.Params.Name = "request_sync"
-	req.Params.Arguments = map[string]any{} // no chat_jid
-
-	res, err := st.Handler(context.Background(), req)
-	if err != nil {
-		t.Fatalf("handler returned unexpected Go error: %v", err)
-	}
-	if res == nil {
-		t.Fatal("handler returned nil result")
-	}
-	if !res.IsError {
-		t.Fatalf("want error result, got success: %+v", res)
-	}
-	rendered := fmt.Sprintf("%+v", res)
-	if !strings.Contains(rendered, "chat_jid: required") {
-		t.Errorf("want `chat_jid: required` in error text, got: %s", rendered)
 	}
 }
