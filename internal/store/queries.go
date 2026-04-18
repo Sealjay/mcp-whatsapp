@@ -105,7 +105,7 @@ func (s *Store) ListMessages(ctx context.Context, params ListMessagesParams) ([]
 		after = 1
 	}
 
-	// Match the Python concatenation byte-for-byte: before (DESC), match, after (ASC).
+	// Expand context: before messages (DESC), the match, after messages (ASC).
 	var expanded []Message
 	for _, m := range result {
 		c, err := s.GetMessageContext(ctx, m.ID, before, after)

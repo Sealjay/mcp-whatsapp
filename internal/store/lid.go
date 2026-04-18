@@ -23,7 +23,7 @@ func (s *Store) ResolveLIDToJID(jid string) string {
 	return jid
 }
 
-// ResolveJIDToPhone mirrors the Python helper: extracts the phone number from
+// ResolveJIDToPhone extracts the phone number from
 // a WhatsApp JID. Returns empty string if the JID is a group or unresolvable.
 func (s *Store) ResolveJIDToPhone(jid string) string {
 	if jid == "" {

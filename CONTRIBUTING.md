@@ -8,7 +8,7 @@ This repository is an MCP (Model Context Protocol) server that **wraps the [what
 
 - A local SQLite store for message history
 - LID resolution, disappearing-message handling, and targeted history sync
-- An HTTP surface consumed by the Python MCP server
+- An MCP surface served directly over stdio
 
 When making changes, keep this framing in mind: anything related to the underlying WhatsApp protocol, session management, or media upload/download should usually be solved upstream in whatsmeow, not reimplemented here.
 
@@ -16,20 +16,28 @@ When making changes, keep this framing in mind: anything related to the underlyi
 
 - Open an issue before starting non-trivial work so we can agree on scope.
 - One logical change per pull request. Keep diffs focused and reviewable.
-- Match existing code style in both Go (`whatsapp-bridge/`) and Python (`whatsapp-mcp-server/`).
+- Match existing code style in Go (`cmd/`, `internal/`).
 - Do not commit `.env` files, database files (`*.db`), session state, or media.
 
 ## Development workflow
 
 1. Fork the repo and create a branch off `main`.
-2. Run the Go bridge locally:
+2. Build and test:
 
    ```bash
-   cd whatsapp-bridge
-   go run main.go
+   make build        # writes ./bin/whatsapp-mcp
+   make test         # unit tests
+   make test-race    # race detector
+   make vet          # go vet
+   make upgrade-check  # bump go.mau.fi/whatsmeow, re-tidy, build, test
    ```
 
-3. Run the Python MCP server against it (see the setup instructions in [README.md](README.md)).
+3. Pair your phone for integration testing:
+
+   ```bash
+   ./bin/whatsapp-mcp login
+   ```
+
 4. Test against a real WhatsApp account — there is no offline fixture for whatsmeow sessions.
 
 ## Pull requests

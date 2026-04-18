@@ -9,7 +9,7 @@
 
 > A Model Context Protocol (MCP) server that wraps the [whatsmeow](https://github.com/tulir/whatsmeow) Go library to give LLMs safe, local access to your personal WhatsApp account.
 
-This started as a fork of [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp) and is now an updated implementation that uses similar ideas. It has been rebuilt as a **single Go binary** that speaks MCP directly over stdio — the separate Python MCP server and the always-on REST bridge from earlier iterations are gone. There is no long-running background daemon to manage: your MCP client (Claude Desktop, Cursor, etc.) launches the binary on demand, it stays alive for the duration of the session, and it exits when the client disconnects.
+This started as a fork of [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp) and is now an updated implementation that uses similar ideas. It has been rebuilt as a **single Go binary** that speaks MCP directly over stdio — the two-process architecture (a long-lived bridge plus a separate MCP server) from earlier iterations is gone. There is no long-running background daemon to manage: your MCP client (Claude Desktop, Cursor, etc.) launches the binary on demand, it stays alive for the duration of the session, and it exits when the client disconnects.
 
 Enhancements over the original fork:
 
@@ -118,14 +118,14 @@ One binary, five internal packages:
 ```
 cmd/whatsapp-mcp/       login / serve / smoke subcommands
 internal/client/        whatsmeow client wrapper (send, download, events, history, features)
-internal/store/         SQLite cache, LID resolution, query layer (ported from the old Python MCP server)
+internal/store/         SQLite cache, LID resolution, query layer
 internal/media/         ogg parsing, waveform synthesis, ffmpeg shell-out
 internal/mcp/           mark3labs/mcp-go server + tool registrations
 ```
 
 ### Process lifecycle
 
-`whatsapp-mcp serve` is started by your MCP client (Claude Desktop, Cursor, etc.) when it needs WhatsApp tools, and it exits when the client disconnects. There is **no constantly-running background daemon**: the old two-process architecture (long-lived Go bridge + Python MCP server) is gone. Only one instance can run at a time against a given store directory — a `flock(2)` on `store/.lock` makes the second `serve` fail fast with a clear error message, which prevents two processes from racing on `whatsapp.db` (WhatsApp would kick one of the two connections anyway).
+`whatsapp-mcp serve` is started by your MCP client (Claude Desktop, Cursor, etc.) when it needs WhatsApp tools, and it exits when the client disconnects. There is **no constantly-running background daemon**: the old two-process architecture (long-lived bridge + separate MCP server) is gone. Only one instance can run at a time against a given store directory — a `flock(2)` on `store/.lock` makes the second `serve` fail fast with a clear error message, which prevents two processes from racing on `whatsapp.db` (WhatsApp would kick one of the two connections anyway).
 
 ### Data Storage
 
