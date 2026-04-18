@@ -11,10 +11,11 @@ import (
 
 	"github.com/sealjay/mcp-whatsapp/internal/client"
 	mcpsrv "github.com/sealjay/mcp-whatsapp/internal/mcp"
+	"github.com/sealjay/mcp-whatsapp/internal/security"
 	"github.com/sealjay/mcp-whatsapp/internal/store"
 )
 
-func runServe(storeDir string, args []string) int {
+func runServe(storeDir string, redactor *security.Redactor, args []string) int {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	if err := fs.Parse(args); err != nil {
@@ -58,6 +59,7 @@ func runServe(storeDir string, args []string) int {
 		Store:            st,
 		Logger:           client.NewStderrLogger("Client", "INFO", false),
 		AllowedMediaRoot: allowedMediaRoot,
+		Redactor:         redactor,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "init client: %v\n", err)

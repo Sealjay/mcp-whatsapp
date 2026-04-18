@@ -9,10 +9,11 @@ import (
 	"syscall"
 
 	"github.com/sealjay/mcp-whatsapp/internal/client"
+	"github.com/sealjay/mcp-whatsapp/internal/security"
 	"github.com/sealjay/mcp-whatsapp/internal/store"
 )
 
-func runLogin(storeDir string, args []string) int {
+func runLogin(storeDir string, redactor *security.Redactor, args []string) int {
 	fs := flag.NewFlagSet("login", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	if err := fs.Parse(args); err != nil {
@@ -40,7 +41,8 @@ func runLogin(storeDir string, args []string) int {
 		StoreDir: storeDir,
 		Store:    st,
 		// login flow logs normally to stderr; the QR itself goes to stdout.
-		Logger: client.NewStderrLogger("Client", "INFO", true),
+		Logger:   client.NewStderrLogger("Client", "INFO", true),
+		Redactor: redactor,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "init client: %v\n", err)

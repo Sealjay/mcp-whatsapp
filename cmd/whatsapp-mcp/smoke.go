@@ -8,12 +8,13 @@ import (
 
 	"github.com/sealjay/mcp-whatsapp/internal/client"
 	mcpsrv "github.com/sealjay/mcp-whatsapp/internal/mcp"
+	"github.com/sealjay/mcp-whatsapp/internal/security"
 	"github.com/sealjay/mcp-whatsapp/internal/store"
 )
 
 // runSmoke boots the store + client (without connecting to WhatsApp servers)
 // and constructs the MCP server. Used by CI to catch wire-up regressions.
-func runSmoke(storeDir string, args []string) int {
+func runSmoke(storeDir string, redactor *security.Redactor, args []string) int {
 	fs := flag.NewFlagSet("smoke", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	if err := fs.Parse(args); err != nil {
@@ -33,6 +34,7 @@ func runSmoke(storeDir string, args []string) int {
 		StoreDir: storeDir,
 		Store:    st,
 		Logger:   client.NewStderrLogger("Smoke", "WARN", false),
+		Redactor: redactor,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "init client: %v\n", err)

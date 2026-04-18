@@ -57,7 +57,7 @@ func (c *Client) handleMessage(msg *events.Message) {
 	if !strings.HasSuffix(rawChatJID, "@g.us") {
 		chatJID = c.store.ResolveLIDToJID(rawChatJID)
 		if chatJID != rawChatJID {
-			c.log.Infof("Normalized chat JID: %s -> %s", rawChatJID, chatJID)
+			c.log.Infof("Normalized chat JID: %s -> %s", c.redactor.JID(rawChatJID), c.redactor.JID(chatJID))
 		}
 	}
 
@@ -66,7 +66,7 @@ func (c *Client) handleMessage(msg *events.Message) {
 	normalizedSender := c.store.ResolveLIDToJID(rawSender)
 	if normalizedSender != rawSender {
 		sender = strings.Split(normalizedSender, "@")[0]
-		c.log.Infof("Normalized sender: %s -> %s", msg.Info.Sender.User, sender)
+		c.log.Infof("Normalized sender: %s -> %s", c.redactor.JID(msg.Info.Sender.User), c.redactor.JID(sender))
 	}
 
 	name := c.GetChatName(msg.Info.Chat, chatJID, nil, sender)
@@ -135,9 +135,9 @@ func (c *Client) handleMessage(msg *events.Message) {
 	}
 	ts := msg.Info.Timestamp.Format("2006-01-02 15:04:05")
 	if mediaType != "" {
-		c.log.Infof("[%s] %s %s: [%s: %s] %s", ts, direction, sender, mediaType, filename, content)
+		c.log.Infof("[%s] %s %s: [%s: %s] %s", ts, direction, c.redactor.JID(sender), mediaType, filename, c.redactor.Body(content))
 	} else if content != "" {
-		c.log.Infof("[%s] %s %s: %s", ts, direction, sender, content)
+		c.log.Infof("[%s] %s %s: %s", ts, direction, c.redactor.JID(sender), c.redactor.Body(content))
 	}
 }
 
@@ -174,7 +174,7 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 		if !strings.HasSuffix(rawChatJID, "@g.us") {
 			chatJID = c.store.ResolveLIDToJID(rawChatJID)
 			if chatJID != rawChatJID {
-				c.log.Infof("History sync: Normalized chat JID: %s -> %s", rawChatJID, chatJID)
+				c.log.Infof("History sync: Normalized chat JID: %s -> %s", c.redactor.JID(rawChatJID), c.redactor.JID(chatJID))
 			}
 		}
 
@@ -216,7 +216,7 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 				mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength = extractMediaInfo(msg.Message.Message)
 			}
 
-			c.log.Infof("Message content: %v, Media Type: %v", content, mediaType)
+			c.log.Infof("Message content: %s, Media Type: %s", c.redactor.Body(content), mediaType)
 			if content == "" && mediaType == "" {
 				continue
 			}
@@ -274,10 +274,10 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 			syncedCount++
 			if mediaType != "" {
 				c.log.Infof("Stored message: [%s] %s -> %s: [%s: %s] %s",
-					timestamp.Format("2006-01-02 15:04:05"), sender, chatJID, mediaType, filename, content)
+					timestamp.Format("2006-01-02 15:04:05"), c.redactor.JID(sender), c.redactor.JID(chatJID), mediaType, filename, c.redactor.Body(content))
 			} else {
 				c.log.Infof("Stored message: [%s] %s -> %s: %s",
-					timestamp.Format("2006-01-02 15:04:05"), sender, chatJID, content)
+					timestamp.Format("2006-01-02 15:04:05"), c.redactor.JID(sender), c.redactor.JID(chatJID), c.redactor.Body(content))
 			}
 		}
 	}

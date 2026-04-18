@@ -12,6 +12,7 @@ import (
 	waProto "go.mau.fi/whatsmeow/binary/proto"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/sealjay/mcp-whatsapp/internal/security"
 	"github.com/sealjay/mcp-whatsapp/internal/store"
 )
 
@@ -21,8 +22,9 @@ import (
 func newClientWithStore(t *testing.T, s *store.Store) *Client {
 	t.Helper()
 	return &Client{
-		store: s,
-		log:   NewStderrLogger("test", "ERROR", false),
+		store:    s,
+		log:      NewStderrLogger("test", "ERROR", false),
+		redactor: &security.Redactor{},
 	}
 }
 
