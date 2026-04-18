@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-This is a private fork of [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp) with enhancements for downstream integrations.
+This is a fork of [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp) with additional enhancements.
 
 ## Upstream Tracking
 
