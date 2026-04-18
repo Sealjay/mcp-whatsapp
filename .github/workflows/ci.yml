@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main, 'claude/**']
+  pull_request:
+  schedule:
+    - cron: '17 6 * * 1'  # weekly whatsmeow upgrade probe
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: go mod download
+      - name: gofmt
+        run: |
+          diff=$(gofmt -l .)
+          if [ -n "$diff" ]; then
+            echo "gofmt differences:"
+            echo "$diff"
+            gofmt -d .
+            exit 1
+          fi
+      - run: go vet ./...
+      - run: go test -race -coverprofile=cover.out ./...
+      - run: go tool cover -func=cover.out | tail -1
+      - run: go build ./...
+
+  mdtest-parity:
+    # Fails the build if a whatsmeow method we call disappears from mdtest,
+    # which is an early signal that upstream removed or renamed the API.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+      - run: go mod download
+      - name: mdtest parity grep
+        run: bash ./scripts/mdtest-parity.sh
+
+  upgrade-check:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: go get go.mau.fi/whatsmeow@main
+      - run: go mod tidy
+      - run: go build ./...
+      - run: go test ./...
+      - name: Summarise
+        run: |
+          echo "whatsmeow @main builds and tests green."
+          echo "Open a PR with the go.mod/go.sum changes if you want to accept the bump."
