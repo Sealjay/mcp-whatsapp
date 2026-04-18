@@ -1,0 +1,14 @@
+<!doctype html>
+<html><head>
+<meta charset="utf-8">
+<title>Paired</title>
+<style>body{font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem}</style>
+</head><body>
+<h1>Already paired</h1>
+<p>This daemon is connected to WhatsApp. You can close this tab.</p>
+<form method="post" action="/pair/reset">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <p><button type="submit">Force re-pair</button></p>
+</form>
+<p><small>&ldquo;Force re-pair&rdquo; disconnects this device from WhatsApp and starts a fresh pairing flow. Use it if you want to switch accounts.</small></p>
+</body></html>

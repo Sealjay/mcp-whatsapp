@@ -2,19 +2,28 @@ package daemon
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/subtle"
-	"encoding/base64"
+	"embed"
 	"fmt"
 	"html/template"
 	"net/http"
-	"net/url"
-	"sync"
+)
+
+//go:embed templates/*.tmpl
+var templateFS embed.FS
+
+var (
+	pairTmpl    = template.Must(template.ParseFS(templateFS, "templates/pair.html.tmpl"))
+	pairedTmpl  = template.Must(template.ParseFS(templateFS, "templates/pair_success.html.tmpl"))
 )
 
 const (
 	qrPNGSize = 256
 )
+
+// pairPageData is the template context for pair pages.
+type pairPageData struct {
+	CSRFToken string
+}
 
 // resetter is the dependency `handlePairReset` needs. Production wiring
 // satisfies it via *client.Client; tests substitute a fake.
@@ -29,39 +38,21 @@ type pairHandlers struct {
 	reset   resetter
 	onReset func() // optional hook invoked after a successful Logout
 
-	// csrfToken is generated once when the handlers are constructed. It is
-	// embedded in the /pair page as a hidden form input and required to
-	// match on /pair/reset POST. Process-lifetime scope is sufficient: a
-	// restart invalidates outstanding forms, which is acceptable.
-	tokenMu   sync.RWMutex
-	csrfToken string
+	// Rate limiters keyed by endpoint path.
+	pairGetLimiter   *Limiter
+	pairQRLimiter    *Limiter
+	pairResetLimiter *Limiter
 }
 
-// newPairHandlers constructs pairHandlers with a freshly generated CSRF token.
+// newPairHandlers constructs handlers with default rate limiters.
 func newPairHandlers(cache *PairCache, reset resetter) *pairHandlers {
 	return &pairHandlers{
-		cache:     cache,
-		reset:     reset,
-		csrfToken: generateCSRFToken(),
+		cache:            cache,
+		reset:            reset,
+		pairGetLimiter:   NewLimiter(5.0/60.0, 5),   // 5/min, burst 5
+		pairQRLimiter:    NewLimiter(10.0/60.0, 10),  // 10/min, burst 10
+		pairResetLimiter: NewLimiter(1.0/60.0, 1),    // 1/min, burst 1
 	}
-}
-
-// generateCSRFToken returns a 32-byte, base64url-encoded random token.
-func generateCSRFToken() string {
-	var b [32]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		// crypto/rand.Read on a healthy OS does not fail; panic is
-		// acceptable because failure here means the process can't
-		// safely serve the pairing UI at all.
-		panic(fmt.Sprintf("crypto/rand: %v", err))
-	}
-	return base64.RawURLEncoding.EncodeToString(b[:])
-}
-
-func (h *pairHandlers) token() string {
-	h.tokenMu.RLock()
-	defer h.tokenMu.RUnlock()
-	return h.csrfToken
 }
 
 func (h *pairHandlers) mount(mux *http.ServeMux) {
@@ -71,17 +62,30 @@ func (h *pairHandlers) mount(mux *http.ServeMux) {
 }
 
 func (h *pairHandlers) handlePairPage(w http.ResponseWriter, r *http.Request) {
+	if !h.pairGetLimiter.Allow("/pair") {
+		w.Header().Set("Retry-After", "12")
+		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	data := pairPageData{}
 	if h.cache.Paired() {
-		if err := pairedPageTmpl.Execute(w, pairedPageData{CSRFToken: h.token()}); err != nil {
-			http.Error(w, "render failed", http.StatusInternalServerError)
+		if err := pairedTmpl.Execute(w, data); err != nil {
+			http.Error(w, "template error", http.StatusInternalServerError)
 		}
 		return
 	}
-	fmt.Fprint(w, pairingPage)
+	if err := pairTmpl.Execute(w, data); err != nil {
+		http.Error(w, "template error", http.StatusInternalServerError)
+	}
 }
 
 func (h *pairHandlers) handlePairQR(w http.ResponseWriter, r *http.Request) {
+	if !h.pairQRLimiter.Allow("/pair/qr.png") {
+		w.Header().Set("Retry-After", "6")
+		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+		return
+	}
 	qr := h.cache.QR()
 	if qr == "" {
 		http.NotFound(w, r)
@@ -102,18 +106,9 @@ func (h *pairHandlers) handlePairReset(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
-	if !sameOriginRequest(r) {
-		http.Error(w, "forbidden: cross-origin request", http.StatusForbidden)
-		return
-	}
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
-	}
-	submitted := r.Form.Get("pair_token")
-	expected := h.token()
-	if subtle.ConstantTimeCompare([]byte(submitted), []byte(expected)) != 1 {
-		http.Error(w, "forbidden: invalid CSRF token", http.StatusForbidden)
+	if !h.pairResetLimiter.Allow("/pair/reset") {
+		w.Header().Set("Retry-After", "60")
+		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 		return
 	}
 	if err := h.reset.Logout(r.Context()); err != nil {
@@ -126,58 +121,3 @@ func (h *pairHandlers) handlePairReset(w http.ResponseWriter, r *http.Request) {
 	}
 	http.Redirect(w, r, "/pair", http.StatusSeeOther)
 }
-
-// sameOriginRequest checks that the request's Origin header (or Referer as a
-// fallback) names the same host as the target r.Host. Missing both headers is
-// treated as a rejection: we refuse to accept POSTs where the origin cannot
-// be validated. Loopback deployments still get an Origin header from real
-// browsers.
-func sameOriginRequest(r *http.Request) bool {
-	origin := r.Header.Get("Origin")
-	if origin == "" {
-		origin = r.Header.Get("Referer")
-	}
-	if origin == "" {
-		return false
-	}
-	u, err := url.Parse(origin)
-	if err != nil || u.Host == "" {
-		return false
-	}
-	return u.Host == r.Host
-}
-
-const pairingPage = `<!doctype html>
-<html><head>
-<meta charset="utf-8">
-<meta http-equiv="refresh" content="5">
-<title>Pair WhatsApp</title>
-<style>body{font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem}</style>
-</head><body>
-<h1>Pair WhatsApp</h1>
-<p>Open WhatsApp on your phone -> <em>Settings</em> -> <em>Linked Devices</em> -> <em>Link a Device</em>, then scan:</p>
-<p><img src="/pair/qr.png" alt="WhatsApp pairing QR"></p>
-<p><small>This page auto-refreshes every 5 seconds while the QR rotates.</small></p>
-</body></html>`
-
-type pairedPageData struct {
-	CSRFToken string
-}
-
-// pairedPageTmpl renders the "already paired" page with an embedded CSRF
-// token that /pair/reset requires on POST. html/template escapes the token
-// value so a compromised RNG cannot inject markup.
-var pairedPageTmpl = template.Must(template.New("paired").Parse(`<!doctype html>
-<html><head>
-<meta charset="utf-8">
-<title>Paired</title>
-<style>body{font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem}</style>
-</head><body>
-<h1>Already paired</h1>
-<p>This daemon is connected to WhatsApp. You can close this tab.</p>
-<form method="post" action="/pair/reset">
-  <input type="hidden" name="pair_token" value="{{.CSRFToken}}">
-  <p><button type="submit">Force re-pair</button></p>
-</form>
-<p><small>"Force re-pair" disconnects this device from WhatsApp and starts a fresh pairing flow. Use it if you want to switch accounts.</small></p>
-</body></html>`))

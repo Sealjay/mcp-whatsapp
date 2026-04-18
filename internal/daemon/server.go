@@ -36,8 +36,7 @@ type pairDriver interface {
 //
 // AuthToken, if non-empty, gates /mcp and /pair/* behind the HTTP header
 // `Authorization: Bearer <token>`. Loopback-bound operation passes an
-// empty token and leaves these routes unauthenticated — the local-only
-// bind is itself the access control.
+// empty token and leaves these routes unauthenticated.
 type Config struct {
 	Addr      string
 	Driver    pairDriver
@@ -98,9 +97,6 @@ func (s *Server) Run(ctx context.Context) error {
 		})
 	}
 
-	// Wrap /mcp and /pair/* in a bearer-token gate when a token is
-	// configured (i.e. -allow-remote mode). Loopback-bound runs leave the
-	// token empty and the wrapper is a no-op pass-through.
 	rootHandler := authMiddleware(mux, s.cfg.AuthToken)
 
 	ln, err := net.Listen("tcp", s.cfg.Addr)
@@ -185,10 +181,6 @@ type driverLogout struct{ d pairDriver }
 
 func (d driverLogout) Logout(ctx context.Context) error { return d.d.Logout(ctx) }
 
-// authMiddleware wraps next with a bearer-token gate on /mcp and /pair/*.
-// When token is empty the middleware is a pass-through: loopback-bound
-// operation is intentionally unauthenticated because the bind itself is
-// the access control.
 func authMiddleware(next http.Handler, token string) http.Handler {
 	if token == "" {
 		return next
@@ -207,9 +199,6 @@ func authMiddleware(next http.Handler, token string) http.Handler {
 	})
 }
 
-// requiresAuth reports whether the given request path is behind the bearer
-// token gate. /mcp and everything under /pair* is gated; anything else
-// (currently nothing, but we leave room) is not.
 func requiresAuth(path string) bool {
 	if path == "/mcp" || strings.HasPrefix(path, "/mcp/") {
 		return true
