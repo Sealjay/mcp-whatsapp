@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Single Go binary that speaks MCP over stdio and wraps [whatsmeow](https://github.com/tulir/whatsmeow) to expose a personal WhatsApp account as MCP tools. No background daemon — the MCP client launches it on demand.
+Single Go binary that speaks MCP over stdio and wraps [whatsmeow](https://github.com/tulir/whatsmeow) to expose a personal WhatsApp account as MCP tools. By default the MCP client launches it on demand; see the README's *Running continuously* section for optional keep-alive patterns and their caveats.
 
 ## Structure
 
@@ -18,7 +18,7 @@ Data lives under `./store/` (override with `-store DIR`). Binary is `bin/whatsap
 ## Subcommands
 
 - `login` — pair the device via QR, write session to `store/whatsapp.db`.
-- `serve` — start the MCP stdio server. Takes a `flock` on `store/.lock`.
+- `serve` — start the MCP stdio server. Takes a `flock` on `store/.lock`; holding the lock is mutually exclusive with any other `serve` instance using the same store directory.
 - `smoke` — boot-test without connecting to WhatsApp.
 
 ## Testing
