@@ -144,6 +144,16 @@ func (c *Client) Connect(ctx context.Context) error {
 	return c.wa.ConnectContext(ctx)
 }
 
+// ConnectForPairing opens the whatsmeow connection without the "must be
+// paired" guard that Connect enforces. Used by the daemon pairing flow:
+// when the device isn't yet paired, calling whatsmeow's ConnectContext is
+// what starts the QR pairing state machine (new QR events flow through the
+// channel returned by QRChannel). Do not call this from code that expects
+// a paired device.
+func (c *Client) ConnectForPairing(ctx context.Context) error {
+	return c.wa.ConnectContext(ctx)
+}
+
 // Login runs the QR-code pairing flow. Writes the QR code to qrOut (stdout
 // for the `login` subcommand). Blocks until pairing completes or ctx is done.
 func (c *Client) Login(ctx context.Context, qrOut io.Writer) error {
