@@ -1,0 +1,23 @@
+# whatsapp-mcp systemd user unit template.
+#
+# 1. Copy this file to ~/.config/systemd/user/whatsapp-mcp.service
+# 2. Replace {{PATH_TO_REPO}} and {{STORE_DIR}} with absolute paths.
+# 3. (Optional) adjust WHATSAPP_MCP_ADDR / WHATSAPP_MCP_MEDIA_ROOT / WHATSAPP_MCP_DEBUG.
+# 4. systemctl --user daemon-reload
+# 5. systemctl --user enable --now whatsapp-mcp
+# 6. On first install, open http://127.0.0.1:8765/pair in a browser.
+
+[Unit]
+Description=whatsapp-mcp daemon (HTTP MCP + event tracker)
+After=network-online.target
+
+[Service]
+Type=exec
+ExecStart={{PATH_TO_REPO}}/bin/whatsapp-mcp -store {{STORE_DIR}} serve
+Environment=WHATSAPP_MCP_ADDR=127.0.0.1:8765
+Environment=WHATSAPP_MCP_MEDIA_ROOT={{STORE_DIR}}/uploads
+Restart=on-failure
+RestartSec=10s
+
+[Install]
+WantedBy=default.target

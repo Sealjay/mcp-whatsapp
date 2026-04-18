@@ -1,0 +1,9 @@
+#!/bin/bash
+# whatsapp-mcp SessionEnd hook (OPTIONAL).
+#
+# Copy this file to .claude/hooks/cleanup.sh (drop the .example) if you want
+# the daemon to die when you close Claude Code. If you run the daemon under
+# launchd/systemd or want it to persist across Claude Code sessions, DO NOT
+# install this.
+
+pkill -TERM -f "whatsapp-mcp .*serve" 2>/dev/null || true

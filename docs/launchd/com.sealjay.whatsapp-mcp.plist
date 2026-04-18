@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  whatsapp-mcp launchd agent template.
+
+  1. Copy this file to ~/Library/LaunchAgents/.
+  2. Replace {{PATH_TO_REPO}} and {{STORE_DIR}} with absolute paths.
+  3. (Optional) adjust WHATSAPP_MCP_ADDR / WHATSAPP_MCP_MEDIA_ROOT / WHATSAPP_MCP_DEBUG.
+  4. launchctl load ~/Library/LaunchAgents/com.sealjay.whatsapp-mcp.plist
+  5. On first install, open http://127.0.0.1:8765/pair in a browser.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.sealjay.whatsapp-mcp</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>{{PATH_TO_REPO}}/bin/whatsapp-mcp</string>
+        <string>-store</string>
+        <string>{{STORE_DIR}}</string>
+        <string>serve</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>WHATSAPP_MCP_ADDR</key>
+        <string>127.0.0.1:8765</string>
+        <key>WHATSAPP_MCP_MEDIA_ROOT</key>
+        <string>{{STORE_DIR}}/uploads</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>Crashed</key>
+        <true/>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>{{HOME}}/Library/Logs/whatsapp-mcp/stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>{{HOME}}/Library/Logs/whatsapp-mcp/stderr.log</string>
+</dict>
+</plist>
