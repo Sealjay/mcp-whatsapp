@@ -31,8 +31,10 @@ var expectedToolNames = []string{
 	"request_sync",
 	"search_contacts",
 	"send_audio_message",
+	"send_contact_card",
 	"send_file",
 	"send_message",
+	"send_poll",
 	"send_reaction",
 	"send_reply",
 	"send_typing",
@@ -107,7 +109,7 @@ func TestNewServer_RegistersAllTools(t *testing.T) {
 
 func TestNewServer_ToolCount(t *testing.T) {
 	s := NewServer(nil)
-	const want = 33
+	const want = 35
 	if got := len(s.MCP().ListTools()); got != want {
 		t.Errorf("tool count = %d, want %d", got, want)
 	}

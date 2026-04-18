@@ -41,6 +41,9 @@ func (s *Server) registerTools() {
 	// Phase 1 — group management + blocklist.
 	s.registerGroupTools()
 	s.registerPrivacyTools()
+
+	// Phase 2 — polls + contact cards.
+	s.registerMediaTools()
 }
 
 // -- query tools ---------------------------------------------------------
@@ -237,6 +240,7 @@ type sendFileArgs struct {
 	MediaPath    string `json:"media_path"`
 	Caption      string `json:"caption,omitempty"`
 	MarkChatRead bool   `json:"mark_chat_read,omitempty"`
+	ViewOnce     bool   `json:"view_once,omitempty"`
 }
 
 func (s *Server) registerSendFile() {
@@ -246,6 +250,7 @@ func (s *Server) registerSendFile() {
 		mcp.WithString("media_path", mcp.Required(), mcp.Description("Absolute path to the media file")),
 		mcp.WithString("caption", mcp.Description("Optional caption for image/video/document")),
 		mcp.WithBoolean("mark_chat_read", mcp.DefaultBool(false), mcp.Description("On successful send, ack recent incoming messages so the phone drops the unread badge.")),
+		mcp.WithBoolean("view_once", mcp.DefaultBool(false), mcp.Description("If true, mark image/video/audio submessages as view-once. Silently ignored for documents.")),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a sendFileArgs) (*mcp.CallToolResult, error) {
 		if a.Recipient == "" || a.MediaPath == "" {
@@ -254,7 +259,12 @@ func (s *Server) registerSendFile() {
 		if _, err := os.Stat(a.MediaPath); err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("media file not found: %s", a.MediaPath)), nil
 		}
-		r := s.client.SendMedia(ctx, a.Recipient, a.Caption, a.MediaPath)
+		r := s.client.SendMediaWithOptions(ctx, client.SendMediaOptions{
+			Recipient: a.Recipient,
+			Caption:   a.Caption,
+			MediaPath: a.MediaPath,
+			ViewOnce:  a.ViewOnce,
+		})
 		s.maybeMarkChatRead(ctx, r, a.Recipient, a.MarkChatRead)
 		return resultJSON(r)
 	}))
@@ -264,6 +274,7 @@ type sendAudioArgs struct {
 	Recipient    string `json:"recipient"`
 	MediaPath    string `json:"media_path"`
 	MarkChatRead bool   `json:"mark_chat_read,omitempty"`
+	ViewOnce     bool   `json:"view_once,omitempty"`
 }
 
 func (s *Server) registerSendAudioMessage() {
@@ -272,6 +283,7 @@ func (s *Server) registerSendAudioMessage() {
 		mcp.WithString("recipient", mcp.Required()),
 		mcp.WithString("media_path", mcp.Required()),
 		mcp.WithBoolean("mark_chat_read", mcp.DefaultBool(false), mcp.Description("On successful send, ack recent incoming messages so the phone drops the unread badge.")),
+		mcp.WithBoolean("view_once", mcp.DefaultBool(false), mcp.Description("If true, mark the voice note as view-once.")),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a sendAudioArgs) (*mcp.CallToolResult, error) {
 		if a.Recipient == "" || a.MediaPath == "" {
@@ -289,7 +301,11 @@ func (s *Server) registerSendAudioMessage() {
 			defer os.Remove(converted)
 			path = converted
 		}
-		r := s.client.SendMedia(ctx, a.Recipient, "", path)
+		r := s.client.SendMediaWithOptions(ctx, client.SendMediaOptions{
+			Recipient: a.Recipient,
+			MediaPath: path,
+			ViewOnce:  a.ViewOnce,
+		})
 		s.maybeMarkChatRead(ctx, r, a.Recipient, a.MarkChatRead)
 		return resultJSON(r)
 	}))
