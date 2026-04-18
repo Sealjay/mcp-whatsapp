@@ -172,6 +172,35 @@ func (s *Store) FindChatName(jid string) string {
 	return name
 }
 
+// RecentIncomingMessages returns up to `limit` recent incoming message IDs +
+// their sender JIDs for the given chat. Used to drive the "mark whole chat as
+// read" helper — we don't track per-message read state locally, so we treat
+// recent incoming messages as the candidates to ack.
+func (s *Store) RecentIncomingMessages(ctx context.Context, chatJID string, limit int) (ids []string, senders []string, err error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, sender
+		FROM messages
+		WHERE chat_jid = ? AND is_from_me = 0
+		ORDER BY timestamp DESC
+		LIMIT ?`, chatJID, limit)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, sender string
+		if err := rows.Scan(&id, &sender); err != nil {
+			return nil, nil, err
+		}
+		ids = append(ids, id)
+		senders = append(senders, sender)
+	}
+	return ids, senders, rows.Err()
+}
+
 const schema = `
 CREATE TABLE IF NOT EXISTS chats (
 	jid TEXT PRIMARY KEY,

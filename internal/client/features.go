@@ -43,6 +43,48 @@ func (c *Client) MarkRead(ctx context.Context, chatJID string, messageIDs []stri
 	return c.wa.MarkRead(ctx, ids, time.Now(), chat, sender)
 }
 
+// MarkChatRead acks recent incoming messages in a chat so the phone stops
+// showing unread badges. Returns the number of messages acked.
+func (c *Client) MarkChatRead(ctx context.Context, chatJID string, limit int) (int, error) {
+	if !c.wa.IsConnected() {
+		return 0, errors.New("not connected to WhatsApp")
+	}
+	chat, err := types.ParseJID(chatJID)
+	if err != nil {
+		return 0, fmt.Errorf("invalid chat JID: %w", err)
+	}
+	rawIDs, rawSenders, err := c.store.RecentIncomingMessages(ctx, chatJID, limit)
+	if err != nil {
+		return 0, fmt.Errorf("load recent messages: %w", err)
+	}
+	if len(rawIDs) == 0 {
+		return 0, nil
+	}
+	// Group by sender JID: MarkRead is batched per (chat, sender).
+	bySender := map[string][]types.MessageID{}
+	for i, id := range rawIDs {
+		bySender[rawSenders[i]] = append(bySender[rawSenders[i]], types.MessageID(id))
+	}
+	count := 0
+	for senderRaw, ids := range bySender {
+		var sender types.JID
+		if senderRaw != "" {
+			parsed, err := types.ParseJID(senderRaw)
+			if err == nil {
+				sender = parsed
+			} else {
+				// Sender stored as bare phone number; fall back to default user server.
+				sender = types.JID{User: senderRaw, Server: types.DefaultUserServer}
+			}
+		}
+		if err := c.wa.MarkRead(ctx, ids, time.Now(), chat, sender); err != nil {
+			return count, fmt.Errorf("mark read (sender=%s): %w", senderRaw, err)
+		}
+		count += len(ids)
+	}
+	return count, nil
+}
+
 // SendReaction adds (or clears, if emoji is empty) a reaction to a message.
 func (c *Client) SendReaction(ctx context.Context, chatJID, messageID, senderJID, emoji string) error {
 	if !c.wa.IsConnected() {

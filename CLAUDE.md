@@ -1,64 +1,72 @@
 # CLAUDE.md
 
-This is a private fork of [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp) with enhancements for downstream integrations.
+Private fork of [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp). Rebuilt as a single Go binary speaking MCP over stdio. The Python MCP server and the REST bridge are gone — everything now lives in one process calling [whatsmeow](https://github.com/tulir/whatsmeow) directly.
 
-## Upstream Tracking
+## Structure
 
-**Check periodically for upstream updates** using:
-
-```bash
-git fetch upstream
-git log HEAD..upstream/main --oneline
+```
+cmd/whatsapp-mcp/       login, serve, smoke subcommands
+internal/client/        whatsmeow client wrapper (send, download, events, history, features)
+internal/store/         SQLite cache + queries (ported from the old Python layer) + LID resolution + formatters
+internal/media/         ogg analysis + ffmpeg shell-out
+internal/mcp/           mark3labs/mcp-go server + tool registrations
+scripts/mdtest-parity.sh  whatsmeow API drift canary
 ```
 
-To merge upstream changes:
+Data lives under `./store/` (override with `-store DIR`). Binary is `bin/whatsapp-mcp`.
+
+## whatsmeow upgrade cadence
+
+Bump roughly every 30 days:
 
 ```bash
-git merge upstream/main
+make upgrade-check
 ```
 
-Note: This fork is more advanced than upstream in several areas, so merge conflicts may occur in the enhanced features.
+`.github/workflows/ci.yml` also runs this on a weekly schedule to surface compatible bumps automatically. The `mdtest-parity` job fails if any method on `*whatsmeow.Client` that we call disappears upstream — it's the earliest possible warning for API drift.
 
-## Key Enhancements Over Upstream
+Current pin: see `go.mod` (`go.mau.fi/whatsmeow`).
 
-### 1. LID Resolution (Go Bridge)
+## Key enhancements preserved from upstream-parent
 
-WhatsApp uses Linked IDs (LIDs) internally for some contacts. This fork resolves LIDs to real phone numbers, enabling accurate contact matching for downstream integrations.
+1. **LID Resolution** — `internal/store/lid.go`. Normalises `@lid` JIDs to real phone numbers via the `whatsmeow_lid_map` table for downstream/downstream contact matching.
+2. **Sent message storage** — `internal/client/send.go` persists outgoing messages after `SendMessage` returns.
+3. **Disappearing-message timers** — `internal/client/send.go` auto-detects group ephemeral timers via `GetGroupInfo` and sets `MessageContextInfo.MessageAddOnDurationInSecs`. Individual-chat timers are not exposed by whatsmeow's store API.
+4. **Targeted history sync** — `internal/client/history.go`: `RequestHistorySync(ctx, chatJID, fromTimestamp)`. Zero timestamp anchors on the newest cached message. Note: `BuildHistorySyncRequest` had a Unix/UnixMilli bug in whatsmeow until April 2026; now fixed upstream, this call now works as intended without any workaround on our side.
 
-**Files**: `whatsapp-bridge/main.go` - `resolveLID()` function
+## New features added in this refactor (Phase 6)
 
-### 2. Sent Message Storage (Go Bridge)
+All are exposed as MCP tools — see README for the full tool table:
 
-Messages sent via the MCP server are now stored in the local SQLite database, providing complete conversation history for both sent and received messages.
+- `mark_read`, `send_reaction`, `send_reply`, `edit_message`, `delete_message`, `send_typing`, `is_on_whatsapp`.
 
-**Files**: `whatsapp-bridge/main.go` - message storage after `SendMessage()`
+Implementation lives in `internal/client/features.go`. Each method wraps the corresponding whatsmeow builder (e.g., `BuildReaction`, `BuildEdit`, `BuildRevoke`) or one-shot call (`MarkRead`, `SendChatPresence`, `IsOnWhatsApp`).
 
-### 3. Disappearing Message Support (Go Bridge + Python MCP)
-
-Queries chat settings to determine if disappearing messages are enabled, then sends messages with appropriate ephemeral timers. Prevents sent messages from persisting longer than the chat's configured timer.
-
-**Files**:
-- `whatsapp-bridge/main.go` - `/chat-settings` endpoint, `EphemeralExpiration` in `SendMessage`
-- `whatsapp-mcp-server/main.py` - `get_chat_settings()` function, `ephemeral_expiration` parameter
-
-### 4. Targeted History Sync (Go Bridge)
-
-Requests specific chat history on demand via the `/request-history` endpoint, rather than waiting for WhatsApp's background sync which can be slow or incomplete.
-
-**Files**: `whatsapp-bridge/main.go` - `/request-history` endpoint
-
-## Running the Bridge
+## Testing
 
 ```bash
-cd whatsapp-bridge
-go run main.go
+make test          # unit tests
+make test-race     # with -race
+make e2e           # spawn the binary, speak JSON-RPC over stdio
+make smoke         # boot-test without connecting to WhatsApp
 ```
 
-First run requires QR code scan. Re-authentication needed approximately every 20 days.
+Fixtures: `internal/store/testdata/seed.sql` seeds three chats + ~12 messages with a mix of direct/group, media, is_from_me, and LID-originated variants. Used by all store tests via `openTestStore(t)` in `internal/store/testutil_test.go`.
 
-## Database Location
+## Running
 
-- Messages: `whatsapp-bridge/store/messages.db`
-- WhatsApp session: `whatsapp-bridge/store/whatsapp.db`
+First time only:
 
-To force re-sync, delete both files and restart the bridge.
+```bash
+make build
+./bin/whatsapp-mcp login
+```
+
+Afterward, point your MCP client at `./bin/whatsapp-mcp -store ./store serve`.
+
+## Database location
+
+- Messages: `store/messages.db`
+- WhatsApp session: `store/whatsapp.db`
+
+To force re-sync: delete both files and re-run `login`.
