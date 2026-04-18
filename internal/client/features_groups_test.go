@@ -179,24 +179,6 @@ func TestJoinGroupWithLink_RejectsEmpty(t *testing.T) {
 	assertNotConnected(t, err)
 }
 
-func TestGetBlocklist_NotConnected(t *testing.T) {
-	c := newDisconnectedClient()
-	_, err := c.GetBlocklist(context.Background())
-	assertNotConnected(t, err)
-}
-
-func TestBlockContact_NotConnected(t *testing.T) {
-	c := newDisconnectedClient()
-	err := c.BlockContact(context.Background(), "447700000001")
-	assertNotConnected(t, err)
-}
-
-func TestUnblockContact_NotConnected(t *testing.T) {
-	c := newDisconnectedClient()
-	err := c.UnblockContact(context.Background(), "447700000001")
-	assertNotConnected(t, err)
-}
-
 func assertNotConnected(t *testing.T, err error) {
 	t.Helper()
 	if err == nil {

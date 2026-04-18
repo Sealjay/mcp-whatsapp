@@ -17,6 +17,10 @@ import (
 func runSmoke(storeDir string, redactor *security.Redactor, args []string) int {
 	fs := flag.NewFlagSet("smoke", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "whatsapp-mcp smoke: (CI) construct MCP server without connecting to WhatsApp; fails fast on wiring regressions.")
+		fmt.Fprintln(os.Stderr, "\nUsage: whatsapp-mcp [-store DIR] smoke")
+	}
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
