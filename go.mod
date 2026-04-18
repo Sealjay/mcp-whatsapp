@@ -3,6 +3,7 @@ module github.com/sealjay/mcp-whatsapp
 go 1.25.0
 
 require (
+	github.com/mark3labs/mcp-go v0.48.0
 	github.com/mattn/go-sqlite3 v1.14.42
 	github.com/mdp/qrterminal v1.0.1
 	go.mau.fi/whatsmeow v0.0.0-20260416104156-3ff20cd3462a
@@ -10,13 +11,12 @@ require (
 )
 
 require (
-	filippo.io/edwards25519 v1.1.0 // indirect
+	filippo.io/edwards25519 v1.1.1 // indirect
 	github.com/beeper/argo-go v1.1.2 // indirect
 	github.com/coder/websocket v1.8.14 // indirect
 	github.com/elliotchance/orderedmap/v3 v3.1.0 // indirect
 	github.com/google/jsonschema-go v0.4.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/mark3labs/mcp-go v0.48.0 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/petermattis/goid v0.0.0-20260330135022-df67b199bc81 // indirect
