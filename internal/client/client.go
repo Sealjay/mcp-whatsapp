@@ -29,10 +29,10 @@ type Config struct {
 
 // Client wraps a whatsmeow.Client together with the message cache and logger.
 type Client struct {
-	wa       *whatsmeow.Client
-	store    *store.Store
-	log      waLog.Logger
-	handlerID uint32
+	wa               *whatsmeow.Client
+	store            *store.Store
+	log              waLog.Logger
+	handlerID        uint32
 	handlerInstalled bool
 }
 

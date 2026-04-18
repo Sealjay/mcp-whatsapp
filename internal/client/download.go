@@ -30,12 +30,12 @@ type MediaDownloader struct {
 	MediaType     whatsmeow.MediaType
 }
 
-func (d *MediaDownloader) GetDirectPath() string         { return d.DirectPath }
-func (d *MediaDownloader) GetURL() string                { return d.URL }
-func (d *MediaDownloader) GetMediaKey() []byte           { return d.MediaKey }
-func (d *MediaDownloader) GetFileLength() uint64         { return d.FileLength }
-func (d *MediaDownloader) GetFileSHA256() []byte         { return d.FileSHA256 }
-func (d *MediaDownloader) GetFileEncSHA256() []byte      { return d.FileEncSHA256 }
+func (d *MediaDownloader) GetDirectPath() string    { return d.DirectPath }
+func (d *MediaDownloader) GetURL() string           { return d.URL }
+func (d *MediaDownloader) GetMediaKey() []byte      { return d.MediaKey }
+func (d *MediaDownloader) GetFileLength() uint64    { return d.FileLength }
+func (d *MediaDownloader) GetFileSHA256() []byte    { return d.FileSHA256 }
+func (d *MediaDownloader) GetFileEncSHA256() []byte { return d.FileEncSHA256 }
 func (d *MediaDownloader) GetMediaType() whatsmeow.MediaType {
 	return d.MediaType
 }

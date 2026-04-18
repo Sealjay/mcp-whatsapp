@@ -28,9 +28,9 @@ func (c *Client) RequestHistorySync(ctx context.Context, chatJID string, fromTim
 	}
 
 	var (
-		msgID     string
-		timestamp time.Time
-		isFromMe  bool
+		msgID      string
+		timestamp  time.Time
+		isFromMe   bool
 		requestJID = jid
 	)
 

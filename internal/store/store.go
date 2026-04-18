@@ -18,8 +18,8 @@ import (
 type Message struct {
 	ID          string    `json:"id"`
 	ChatJID     string    `json:"chat_jid"`
-	Sender      string    `json:"sender"`                  // bare phone/user part
-	SenderPhone string    `json:"sender_phone,omitempty"`  // full phone if resolvable
+	Sender      string    `json:"sender"`                 // bare phone/user part
+	SenderPhone string    `json:"sender_phone,omitempty"` // full phone if resolvable
 	Content     string    `json:"content"`
 	Timestamp   time.Time `json:"timestamp"`
 	IsFromMe    bool      `json:"is_from_me"`
