@@ -163,10 +163,7 @@ func ConvertToOpusOgg(ctx context.Context, inputPath string) (outputPath string,
 		"-y",
 		tmpPath,
 	)
-	// Restrict child environment to PATH only so that credentials, tokens,
-	// and other sensitive variables present in the parent process are not
-	// inherited by the ffmpeg subprocess.
-	cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
+	cmd.Env = minimalEnv()
 
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -207,6 +204,21 @@ func sanitizeFFmpegInputPath(p string) string {
 		return "./" + p
 	}
 	return p
+}
+
+var safeEnvKeys = []string{"PATH", "TMPDIR", "TEMP", "TMP", "HOME"}
+
+// minimalEnv returns a restricted environment for child processes, carrying
+// only the variables ffmpeg needs (path resolution, temp dirs, home for codec
+// config) while excluding credentials, tokens, and other sensitive values.
+func minimalEnv() []string {
+	env := make([]string, 0, len(safeEnvKeys))
+	for _, k := range safeEnvKeys {
+		if v := os.Getenv(k); v != "" {
+			env = append(env, k+"="+v)
+		}
+	}
+	return env
 }
 
 // absPathRe matches absolute file paths (Unix-style).

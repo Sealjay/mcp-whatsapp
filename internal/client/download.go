@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/sealjay/mcp-whatsapp/internal/security"
 	"go.mau.fi/whatsmeow"
 )
 
@@ -60,11 +61,17 @@ func (c *Client) Download(ctx context.Context, messageID, chatJID string) Downlo
 	}
 
 	chatDir := filepath.Join(c.store.Dir(), strings.ReplaceAll(chatJID, ":", "_"))
+	chatDir = filepath.Clean(chatDir)
+	storeDir, _ := filepath.Abs(c.store.Dir())
+	if !strings.HasPrefix(chatDir, filepath.Clean(storeDir)+string(filepath.Separator)) {
+		return DownloadResult{Success: false, Message: "invalid chat directory: path escapes store"}
+	}
 	if err := os.MkdirAll(chatDir, 0o700); err != nil {
 		return DownloadResult{Success: false, Message: fmt.Sprintf("failed to create chat directory: %v", err)}
 	}
 
-	localPath := filepath.Join(chatDir, filepath.Base(filename))
+	safeName := security.SafeFilename(filename)
+	localPath := filepath.Join(chatDir, safeName)
 	absPath, err := filepath.Abs(localPath)
 	if err != nil {
 		return DownloadResult{Success: false, Message: fmt.Sprintf("failed to get absolute path: %v", err)}

@@ -239,18 +239,28 @@ func TestConvertToOpusOgg(t *testing.T) {
 	}
 }
 
-// TestConvertToOpusOgg_EnvIsolation verifies that the ffmpeg child process is
-// launched with a minimal environment (PATH only) rather than inheriting the
-// full parent process environment.  The test injects a sentinel variable into
-// the parent environment and confirms it is NOT visible to ffmpeg by asking
-// ffmpeg to output its env via -hide_banner and checking the output.
-//
-// Because exec.CommandContext.Env controls the child env directly, we test the
-// behaviour by checking that os.Getenv of a known-absent variable stays absent
-// after the call (the parent env is unchanged) and that the cmd.Env field is
-// set on the command.  The functional guarantee is exercised by the fact that
-// ConvertToOpusOgg succeeds above without inheriting any parent env vars that
-// could interfere with ffmpeg.
+func TestMinimalEnv(t *testing.T) {
+	const sentinel = "MCP_WHATSAPP_TEST_SENTINEL_12345"
+	t.Setenv(sentinel, "should-not-appear")
+
+	env := minimalEnv()
+	for _, entry := range env {
+		if strings.HasPrefix(entry, sentinel+"=") {
+			t.Fatalf("minimalEnv leaked sentinel variable: %s", entry)
+		}
+	}
+
+	hasPath := false
+	for _, entry := range env {
+		if strings.HasPrefix(entry, "PATH=") {
+			hasPath = true
+		}
+	}
+	if !hasPath {
+		t.Fatal("minimalEnv must include PATH")
+	}
+}
+
 func TestConvertToOpusOgg_EnvIsolation(t *testing.T) {
 	if _, err := exec.LookPath("ffmpeg"); err != nil {
 		t.Skip("ffmpeg not available; skipping env isolation test")
@@ -268,8 +278,6 @@ func TestConvertToOpusOgg_EnvIsolation(t *testing.T) {
 	}
 	defer os.Remove(out)
 
-	// Confirm the output file was still produced: if env isolation broke
-	// ffmpeg entirely the call above would have errored.
 	info, err := os.Stat(out)
 	if err != nil || info.Size() == 0 {
 		t.Fatalf("expected valid output file after env-isolated run, stat=%v size=%d", err, info.Size())
