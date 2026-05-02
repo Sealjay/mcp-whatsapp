@@ -59,6 +59,32 @@ Tool surface is 41 tools, registered from `internal/mcp/tools.go` + `tools_group
 8. **Polls + contact cards + view-once flag** — `internal/client/features_media.go` (poll send / vote / tally + contact-card send paths) plus `internal/client/vcard.go` (vCard 3.0 synthesis when no override supplied) and the `ViewOnce` option plumbed through `SendMediaOptions` in `internal/client/send.go`. `SendPoll` now uses `wa.BuildPollCreation` so the required `MessageSecret` is attached (without it, votes cannot be decrypted — this was silently broken before). Vote ingest + tally live in `internal/client/events.go::handlePollVote` and `internal/store/poll.go` (the new `poll_votes` table + `messages.poll_options_json` column).
 9. **Presence / privacy / status message** — `internal/client/features_privacy.go`. `SendPresence` (own availability), `GetPrivacySettings` / `SetPrivacySetting` with strict enum validation, `SetStatusMessage` for the "About" text.
 
+## Versioning
+
+This project uses **semantic versioning** (semver). Releases are driven by git tags.
+
+### Workflow
+
+1. Tag the commit: `git tag v<MAJOR>.<MINOR>.<PATCH>` (e.g. `v0.2.0`).
+2. Push the tag: `git push origin v<MAJOR>.<MINOR>.<PATCH>`.
+3. Create a GitHub release: `gh release create v<MAJOR>.<MINOR>.<PATCH> --generate-notes`.
+
+The Makefile injects the version from `git describe --tags` into the binary via `-ldflags`. No separate version file is needed.
+
+### When to bump
+
+- **PATCH** (v0.1.x): bug fixes, dependency bumps, docs.
+- **MINOR** (v0.x.0): new MCP tools, new features, non-breaking changes.
+- **MAJOR** (vX.0.0): breaking changes to the MCP tool surface, config format, or store schema that requires user action.
+
+While pre-1.0, minor bumps may include breaking changes (per semver spec).
+
+### Release checklist
+
+- All CI checks pass (`make lint test`).
+- CHANGELOG entry or rely on `--generate-notes` for auto-generated notes.
+- Tag must be on `main` branch.
+
 ## Database location
 
 - Messages: `store/messages.db`

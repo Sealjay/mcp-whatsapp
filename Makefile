@@ -3,10 +3,12 @@
 BIN := ./bin/whatsapp-mcp
 PKGS := ./...
 GO := go
+VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+LDFLAGS := -X main.Version=$(VERSION)
 
 build:
 	mkdir -p bin
-	$(GO) build -o $(BIN) ./cmd/whatsapp-mcp
+	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/whatsapp-mcp
 
 test:
 	$(GO) test $(PKGS)
