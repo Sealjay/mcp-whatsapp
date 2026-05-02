@@ -60,7 +60,7 @@ func (c *Client) Download(ctx context.Context, messageID, chatJID string) Downlo
 	}
 
 	chatDir := filepath.Join(c.store.Dir(), strings.ReplaceAll(chatJID, ":", "_"))
-	if err := os.MkdirAll(chatDir, 0o755); err != nil {
+	if err := os.MkdirAll(chatDir, 0o700); err != nil {
 		return DownloadResult{Success: false, Message: fmt.Sprintf("failed to create chat directory: %v", err)}
 	}
 
@@ -85,7 +85,7 @@ func (c *Client) Download(ctx context.Context, messageID, chatJID string) Downlo
 		return DownloadResult{Success: false, Message: "incomplete media information for download"}
 	}
 
-	c.log.Infof("Attempting to download media for message %s in chat %s...", messageID, chatJID)
+	c.log.Infof("Attempting to download media for message %s in chat %s...", c.redactor.MsgID(messageID), c.redactor.JID(chatJID))
 
 	var waMediaType whatsmeow.MediaType
 	switch mediaType {
@@ -120,7 +120,7 @@ func (c *Client) Download(ctx context.Context, messageID, chatJID string) Downlo
 		return DownloadResult{Success: false, Message: fmt.Sprintf("failed to save media file: %v", err)}
 	}
 
-	c.log.Infof("Successfully downloaded %s media to %s (%d bytes)", mediaType, absPath, len(data))
+	c.log.Infof("Successfully downloaded %s media (%d bytes)", mediaType, len(data))
 	return DownloadResult{
 		Success:   true,
 		Message:   fmt.Sprintf("Successfully downloaded %s media", mediaType),

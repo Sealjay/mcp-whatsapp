@@ -112,3 +112,37 @@ func TestRedactor_JID_DebugShortPassesThrough(t *testing.T) {
 		t.Fatalf("short user-part should pass through in debug, got %q", got)
 	}
 }
+
+func TestRedactor_MsgID_NonDebug(t *testing.T) {
+	r := &Redactor{}
+	cases := map[string]string{
+		"":                 "…",
+		"ABC":              "…ABC",
+		"ABCDEF":           "…ABCDEF",
+		"ABCDEFG":          "…BCDEFG",
+		"3EB0123456789ABC": "…789ABC",
+		"3EB0ABCDE12345F6": "…2345F6",
+	}
+	for in, want := range cases {
+		t.Run(in, func(t *testing.T) {
+			if got := r.MsgID(in); got != want {
+				t.Fatalf("MsgID(%q): want %q, got %q", in, want, got)
+			}
+		})
+	}
+}
+
+func TestRedactor_MsgID_Debug(t *testing.T) {
+	r := &Redactor{Debug: true}
+	in := "3EB0123456789ABCDEF"
+	if got := r.MsgID(in); got != in {
+		t.Fatalf("MsgID debug mode should pass through, got %q", got)
+	}
+}
+
+func TestRedactor_MsgID_EmptyDebug(t *testing.T) {
+	r := &Redactor{Debug: true}
+	if got := r.MsgID(""); got != "" {
+		t.Fatalf("MsgID debug mode empty string should be empty, got %q", got)
+	}
+}

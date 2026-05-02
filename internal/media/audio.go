@@ -163,6 +163,10 @@ func ConvertToOpusOgg(ctx context.Context, inputPath string) (outputPath string,
 		"-y",
 		tmpPath,
 	)
+	// Restrict child environment to PATH only so that credentials, tokens,
+	// and other sensitive variables present in the parent process are not
+	// inherited by the ffmpeg subprocess.
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
 
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr

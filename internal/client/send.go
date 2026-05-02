@@ -297,5 +297,5 @@ func (c *Client) persistSent(ctx context.Context, recipientJID types.JID, msgID,
 		c.log.Warnf("Failed to store sent message: %v", err)
 		return
 	}
-	c.log.Infof("[%s] -> %s: %s", now.Format("2006-01-02 15:04:05"), c.redactor.JID(chatJID), c.redactor.Body(message))
+	c.log.Infof("[%s] -> %s [%s]: %s", now.Format("2006-01-02 15:04:05"), c.redactor.JID(chatJID), c.redactor.MsgID(msgID), c.redactor.Body(message))
 }

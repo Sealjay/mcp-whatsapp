@@ -94,6 +94,22 @@ func (r *Redactor) URL(raw string) string {
 	return fmt.Sprintf("%s://%s/…", u.Scheme, u.Host)
 }
 
+// MsgID redacts a message ID for log output. Non-debug: "…" + last 6 chars.
+// Debug: returns the full ID unchanged.
+func (r *Redactor) MsgID(id string) string {
+	if r.Debug {
+		return id
+	}
+	if id == "" {
+		return "…"
+	}
+	runes := []rune(id)
+	if len(runes) > 6 {
+		return "…" + string(runes[len(runes)-6:])
+	}
+	return "…" + id
+}
+
 // maskPhones replaces phone digit runs with "****" + last 5 characters.
 func maskPhones(s string) string {
 	return phoneDigitRun.ReplaceAllStringFunc(s, func(match string) string {
