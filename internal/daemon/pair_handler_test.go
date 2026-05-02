@@ -93,8 +93,13 @@ func TestHandlePairQR_NoQR(t *testing.T) {
 
 func TestHandlePairReset_POST_CallsLogoutAndRedirects(t *testing.T) {
 	h, rst := newTestHandlers(true, "", nil)
+	// Generate a valid CSRF token (as the GET handler would).
+	token := h.generateCSRFToken()
+	body := strings.NewReader("csrf_token=" + token)
+	req := httptest.NewRequest(http.MethodPost, "/pair/reset", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
-	h.handlePairReset(w, httptest.NewRequest(http.MethodPost, "/pair/reset", nil))
+	h.handlePairReset(w, req)
 	if !rst.called {
 		t.Fatal("Logout was not called")
 	}
@@ -109,6 +114,60 @@ func TestHandlePairReset_POST_CallsLogoutAndRedirects(t *testing.T) {
 	}
 }
 
+func TestHandlePairReset_POST_RejectsMissingCSRF(t *testing.T) {
+	h, rst := newTestHandlers(true, "", nil)
+	w := httptest.NewRecorder()
+	h.handlePairReset(w, httptest.NewRequest(http.MethodPost, "/pair/reset", nil))
+	if rst.called {
+		t.Fatal("Logout should not be called without a valid CSRF token")
+	}
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status: want 403, got %d", w.Code)
+	}
+}
+
+func TestHandlePairReset_POST_RejectsInvalidCSRF(t *testing.T) {
+	h, rst := newTestHandlers(true, "", nil)
+	_ = h.generateCSRFToken() // generate a real one
+	body := strings.NewReader("csrf_token=wrong-token")
+	req := httptest.NewRequest(http.MethodPost, "/pair/reset", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	h.handlePairReset(w, req)
+	if rst.called {
+		t.Fatal("Logout should not be called with an invalid CSRF token")
+	}
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status: want 403, got %d", w.Code)
+	}
+}
+
+func TestHandlePairReset_POST_CSRFTokenIsSingleUse(t *testing.T) {
+	h, _ := newTestHandlers(true, "", nil)
+	token := h.generateCSRFToken()
+
+	// First use should succeed.
+	body := strings.NewReader("csrf_token=" + token)
+	req := httptest.NewRequest(http.MethodPost, "/pair/reset", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	h.handlePairReset(w, req)
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("first POST: want 303, got %d", w.Code)
+	}
+
+	// Replaying the same token should fail. Need fresh rate-limit bucket.
+	h.pairResetLimiter = NewLimiter(100, 100)
+	body = strings.NewReader("csrf_token=" + token)
+	req = httptest.NewRequest(http.MethodPost, "/pair/reset", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w = httptest.NewRecorder()
+	h.handlePairReset(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("replayed token: want 403, got %d", w.Code)
+	}
+}
+
 func TestHandlePairReset_RejectsGET(t *testing.T) {
 	h, _ := newTestHandlers(true, "", nil)
 	w := httptest.NewRecorder()
@@ -120,8 +179,12 @@ func TestHandlePairReset_RejectsGET(t *testing.T) {
 
 func TestHandlePairReset_LogoutErrorSurfaces(t *testing.T) {
 	h, _ := newTestHandlers(true, "", errors.New("boom"))
+	token := h.generateCSRFToken()
+	body := strings.NewReader("csrf_token=" + token)
+	req := httptest.NewRequest(http.MethodPost, "/pair/reset", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
-	h.handlePairReset(w, httptest.NewRequest(http.MethodPost, "/pair/reset", nil))
+	h.handlePairReset(w, req)
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("status: want 500, got %d", w.Code)
 	}
@@ -151,14 +214,22 @@ func TestPairGet_RateLimited(t *testing.T) {
 func TestPairReset_RateLimited(t *testing.T) {
 	h, _ := newTestHandlers(true, "", nil)
 	// First POST should succeed (burst=1).
+	token := h.generateCSRFToken()
+	body := strings.NewReader("csrf_token=" + token)
+	req := httptest.NewRequest(http.MethodPost, "/pair/reset", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
-	h.handlePairReset(w, httptest.NewRequest(http.MethodPost, "/pair/reset", nil))
+	h.handlePairReset(w, req)
 	if w.Code != http.StatusSeeOther {
 		t.Fatalf("first POST: want 303, got %d", w.Code)
 	}
-	// Second should be rate-limited.
+	// Second should be rate-limited (rate limiter fires before CSRF check).
+	token2 := h.generateCSRFToken()
+	body2 := strings.NewReader("csrf_token=" + token2)
+	req2 := httptest.NewRequest(http.MethodPost, "/pair/reset", body2)
+	req2.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w = httptest.NewRecorder()
-	h.handlePairReset(w, httptest.NewRequest(http.MethodPost, "/pair/reset", nil))
+	h.handlePairReset(w, req2)
 	if w.Code != http.StatusTooManyRequests {
 		t.Fatalf("second POST: want 429, got %d", w.Code)
 	}

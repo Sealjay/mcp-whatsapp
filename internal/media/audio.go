@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -168,7 +169,7 @@ func ConvertToOpusOgg(ctx context.Context, inputPath string) (outputPath string,
 
 	if err := cmd.Run(); err != nil {
 		os.Remove(tmpPath)
-		return "", fmt.Errorf("ffmpeg conversion failed: %w: %s", err, stderr.String())
+		return "", fmt.Errorf("ffmpeg conversion failed: %w: %s", err, sanitizeStderr(stderr.String()))
 	}
 
 	return tmpPath, nil
@@ -202,4 +203,18 @@ func sanitizeFFmpegInputPath(p string) string {
 		return "./" + p
 	}
 	return p
+}
+
+// absPathRe matches absolute file paths (Unix-style).
+var absPathRe = regexp.MustCompile(`/[\w/.\-]+`)
+
+// sanitizeStderr strips absolute file paths from ffmpeg stderr output and
+// truncates to a maximum of 200 characters. This prevents leaking local
+// filesystem layout to MCP callers.
+func sanitizeStderr(s string) string {
+	s = absPathRe.ReplaceAllString(s, "<path>")
+	if len(s) > 200 {
+		s = s[:200]
+	}
+	return s
 }

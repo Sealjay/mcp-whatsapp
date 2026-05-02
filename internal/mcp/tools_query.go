@@ -80,15 +80,28 @@ func (s *Server) registerListMessages() {
 		mcp.WithOpenWorldHintAnnotation(false),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a listMessagesArgs) (*mcp.CallToolResult, error) {
+		// Clamp parameters to server-side upper bounds.
+		limit := a.Limit
+		if limit > 100 {
+			limit = 100
+		}
+		ctxBefore := a.ContextBefore
+		if ctxBefore > 20 {
+			ctxBefore = 20
+		}
+		ctxAfter := a.ContextAfter
+		if ctxAfter > 20 {
+			ctxAfter = 20
+		}
 		params := store.ListMessagesParams{
 			SenderPhone:    a.SenderPhoneNumber,
 			ChatJID:        a.ChatJID,
 			Query:          a.Query,
-			Limit:          a.Limit,
+			Limit:          limit,
 			Page:           a.Page,
 			IncludeContext: a.IncludeContext == nil || *a.IncludeContext,
-			ContextBefore:  a.ContextBefore,
-			ContextAfter:   a.ContextAfter,
+			ContextBefore:  ctxBefore,
+			ContextAfter:   ctxAfter,
 		}
 		if a.After != "" {
 			t, err := parseTimestamp(a.After)

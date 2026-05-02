@@ -116,7 +116,7 @@ func (c *Client) Download(ctx context.Context, messageID, chatJID string) Downlo
 		return DownloadResult{Success: false, Message: fmt.Sprintf("failed to download media: %v", err)}
 	}
 
-	if err := os.WriteFile(localPath, data, 0o644); err != nil {
+	if err := os.WriteFile(localPath, data, 0o600); err != nil {
 		return DownloadResult{Success: false, Message: fmt.Sprintf("failed to save media file: %v", err)}
 	}
 

@@ -132,19 +132,29 @@ func resolveAddr(flagValue string) string {
 	return "127.0.0.1:8765"
 }
 
-// isLoopbackAddr reports whether addr's host resolves to a loopback IP or
-// is the string "localhost". Non-loopback binds require -allow-remote.
+// isLoopbackAddr reports whether addr's host resolves to a loopback IP.
+// Hostnames (including "localhost") are resolved via DNS; all returned
+// addresses must be loopback for the check to pass. Non-loopback binds
+// require -allow-remote.
 func isLoopbackAddr(addr string) bool {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
 		return false
 	}
-	if host == "localhost" {
-		return true
+	// If it parses directly as an IP, check without DNS.
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
 	}
-	ip := net.ParseIP(host)
-	if ip == nil {
+	// Resolve hostname and require every address to be loopback.
+	addrs, err := net.LookupHost(host)
+	if err != nil || len(addrs) == 0 {
 		return false
 	}
-	return ip.IsLoopback()
+	for _, a := range addrs {
+		ip := net.ParseIP(a)
+		if ip == nil || !ip.IsLoopback() {
+			return false
+		}
+	}
+	return true
 }
