@@ -22,6 +22,9 @@ func (s *Server) registerPrivacyTools() {
 func (s *Server) registerGetBlocklist() {
 	tool := mcp.NewTool("get_blocklist",
 		mcp.WithDescription("Return the user's current WhatsApp blocklist as JSON."),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(true),
 	)
 	s.mcp.AddTool(tool, func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		js, err := s.client.GetBlocklist(ctx)
@@ -38,8 +41,9 @@ type blocklistMutationArgs struct {
 
 func (s *Server) registerBlockContact() {
 	tool := mcp.NewTool("block_contact",
-		mcp.WithDescription("Block a contact by phone number or JID."),
+		mcp.WithDescription("Block a contact so they can no longer send you messages or see your last seen, profile photo, and status. Idempotent if already blocked. Use unblock_contact to reverse."),
 		mcp.WithString("jid", mcp.Required(), mcp.Description(recipientDesc)),
+		mcp.WithIdempotentHintAnnotation(true),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a blocklistMutationArgs) (*mcp.CallToolResult, error) {
 		if r := requireNonEmpty("jid", a.JID); r != nil {
@@ -56,6 +60,8 @@ func (s *Server) registerUnblockContact() {
 	tool := mcp.NewTool("unblock_contact",
 		mcp.WithDescription("Unblock a contact by phone number or JID."),
 		mcp.WithString("jid", mcp.Required(), mcp.Description(recipientDesc)),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(true),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a blocklistMutationArgs) (*mcp.CallToolResult, error) {
 		if r := requireNonEmpty("jid", a.JID); r != nil {
@@ -76,6 +82,8 @@ func (s *Server) registerSendPresence() {
 	tool := mcp.NewTool("send_presence",
 		mcp.WithDescription("Set the user's own online availability. Different from `send_typing`, which affects per-chat composing presence."),
 		mcp.WithString("state", mcp.Required(), mcp.Enum("available", "unavailable"), mcp.Description("own availability state")),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(true),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a sendPresenceArgs) (*mcp.CallToolResult, error) {
 		if r := requireNonEmpty("state", a.State); r != nil {
@@ -90,7 +98,10 @@ func (s *Server) registerSendPresence() {
 
 func (s *Server) registerGetPrivacySettings() {
 	tool := mcp.NewTool("get_privacy_settings",
-		mcp.WithDescription("Return the user's current WhatsApp privacy settings as JSON."),
+		mcp.WithDescription("Return the user's current WhatsApp privacy settings as a JSON object with keys like groupadd, last, status, profile, readreceipts, online. Read-only; use set_privacy_setting to change individual values."),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(true),
 	)
 	s.mcp.AddTool(tool, func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		js, err := s.client.GetPrivacySettings(ctx)
@@ -122,9 +133,11 @@ type setPrivacySettingArgs struct {
 
 func (s *Server) registerSetPrivacySetting() {
 	tool := mcp.NewTool("set_privacy_setting",
-		mcp.WithDescription("Change a single privacy setting. Not every name/value combination is valid; WhatsApp rejects invalid combinations server-side."),
+		mcp.WithDescription("Change a single privacy setting. Not every name/value combination is valid; WhatsApp rejects invalid combinations server-side. Use get_privacy_settings to view current values first."),
 		mcp.WithString("name", mcp.Required(), mcp.Enum(privacySettingNames...), mcp.Description("privacy knob to change")),
 		mcp.WithString("value", mcp.Required(), mcp.Enum(privacySettingValues...), mcp.Description("new value for the knob")),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(true),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a setPrivacySettingArgs) (*mcp.CallToolResult, error) {
 		if r := requireNonEmpty("name", a.Name); r != nil {
@@ -149,6 +162,8 @@ func (s *Server) registerSetStatusMessage() {
 	tool := mcp.NewTool("set_status_message",
 		mcp.WithDescription("Update the user's WhatsApp 'About' text (profile status message). Pass an empty string to clear it."),
 		mcp.WithString("text", mcp.Required(), mcp.Description("new About text; empty string clears")),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(true),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a setStatusMessageArgs) (*mcp.CallToolResult, error) {
 		if err := s.client.SetStatusMessage(ctx, a.Text); err != nil {

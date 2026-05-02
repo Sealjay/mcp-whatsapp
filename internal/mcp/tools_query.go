@@ -32,6 +32,10 @@ func (s *Server) registerSearchContacts() {
 	tool := mcp.NewTool("search_contacts",
 		mcp.WithDescription(offlineSafePrefix+"Search WhatsApp contacts by name or phone number."),
 		mcp.WithString("query", mcp.Required(), mcp.Description("case-insensitive substring to match")),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(false),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a searchContactsArgs) (*mcp.CallToolResult, error) {
 		contacts, err := s.client.Store().SearchContacts(ctx, a.Query)
@@ -70,6 +74,10 @@ func (s *Server) registerListMessages() {
 		mcp.WithBoolean("include_context", mcp.DefaultBool(true)),
 		mcp.WithNumber("context_before", mcp.DefaultNumber(1)),
 		mcp.WithNumber("context_after", mcp.DefaultNumber(1)),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(false),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a listMessagesArgs) (*mcp.CallToolResult, error) {
 		params := store.ListMessagesParams{
@@ -122,6 +130,10 @@ func (s *Server) registerListChats() {
 		mcp.WithNumber("page", mcp.DefaultNumber(0)),
 		mcp.WithBoolean("include_last_message", mcp.DefaultBool(true)),
 		mcp.WithString("sort_by", mcp.DefaultString("last_active"), mcp.Description("last_active or name")),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(false),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a listChatsArgs) (*mcp.CallToolResult, error) {
 		sortBy := a.SortBy
@@ -149,6 +161,10 @@ func (s *Server) registerGetChat() {
 		mcp.WithDescription(offlineSafePrefix+"Get WhatsApp chat metadata by JID."),
 		mcp.WithString("chat_jid", mcp.Required(), mcp.Description(jidDesc)),
 		mcp.WithBoolean("include_last_message", mcp.DefaultBool(true)),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(false),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a getChatArgs) (*mcp.CallToolResult, error) {
 		include := a.IncludeLastMessage == nil || *a.IncludeLastMessage
@@ -177,6 +193,10 @@ func (s *Server) registerGetMessageContext() {
 		mcp.WithString("message_id", mcp.Required(), mcp.Description("WhatsApp message ID")),
 		mcp.WithNumber("before", mcp.DefaultNumber(5)),
 		mcp.WithNumber("after", mcp.DefaultNumber(5)),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(false),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a getMessageContextArgs) (*mcp.CallToolResult, error) {
 		before, after := a.Before, a.After
@@ -204,6 +224,9 @@ func (s *Server) registerIsOnWhatsApp() {
 	tool := mcp.NewTool("is_on_whatsapp",
 		mcp.WithDescription("Check which phone numbers are registered on WhatsApp. Input: digits only (no +)."),
 		mcp.WithArray("phones", mcp.Required(), mcp.Items(map[string]any{"type": "string"})),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(true),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a isOnWhatsAppArgs) (*mcp.CallToolResult, error) {
 		if len(a.Phones) == 0 {
@@ -222,6 +245,10 @@ func (s *Server) registerIsOnWhatsApp() {
 func (s *Server) registerGetStatus() {
 	tool := mcp.NewTool("get_status",
 		mcp.WithDescription("Report whether the WhatsApp bridge inside this MCP server is connected, and who we're paired as."),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(false),
 	)
 	s.mcp.AddTool(tool, func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		status := map[string]any{

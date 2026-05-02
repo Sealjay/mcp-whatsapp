@@ -38,6 +38,7 @@ func (s *Server) registerSendMessage() {
 		mcp.WithString("recipient", mcp.Required(), mcp.Description(recipientDesc)),
 		mcp.WithString("message", mcp.Required(), mcp.Description("message body")),
 		mcp.WithBoolean("mark_chat_read", mcp.DefaultBool(false), mcp.Description("On successful send, ack recent incoming messages so the phone drops the unread badge.")),
+		mcp.WithDestructiveHintAnnotation(false),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a sendMessageArgs) (*mcp.CallToolResult, error) {
 		if a.Recipient == "" {
@@ -67,6 +68,7 @@ func (s *Server) registerSendFile() {
 		mcp.WithString("caption", mcp.Description("Optional caption for image/video/document")),
 		mcp.WithBoolean("mark_chat_read", mcp.DefaultBool(false), mcp.Description("On successful send, ack recent incoming messages so the phone drops the unread badge.")),
 		mcp.WithBoolean("view_once", mcp.DefaultBool(false), mcp.Description("If true, mark image/video/audio submessages as view-once. Silently ignored for documents.")),
+		mcp.WithDestructiveHintAnnotation(false),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a sendFileArgs) (*mcp.CallToolResult, error) {
 		if a.Recipient == "" || a.MediaPath == "" {
@@ -103,6 +105,7 @@ func (s *Server) registerSendAudioMessage() {
 		mcp.WithString("media_path", mcp.Required(), mcp.Description("absolute path to the media file (must sit under the configured media root)")),
 		mcp.WithBoolean("mark_chat_read", mcp.DefaultBool(false), mcp.Description("On successful send, ack recent incoming messages so the phone drops the unread badge.")),
 		mcp.WithBoolean("view_once", mcp.DefaultBool(false), mcp.Description("If true, mark the voice note as view-once.")),
+		mcp.WithDestructiveHintAnnotation(false),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a sendAudioArgs) (*mcp.CallToolResult, error) {
 		if a.Recipient == "" || a.MediaPath == "" {
@@ -147,6 +150,8 @@ func (s *Server) registerSendReaction() {
 		mcp.WithString("message_id", mcp.Required(), mcp.Description("WhatsApp message ID")),
 		mcp.WithString("sender_jid", mcp.Description("original sender; required in group chats ("+jidDesc+")")),
 		mcp.WithString("emoji", mcp.Description("single emoji, or empty string to clear the reaction")),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(true),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a sendReactionArgs) (*mcp.CallToolResult, error) {
 		if err := s.client.SendReaction(ctx, a.ChatJID, a.MessageID, a.SenderJID, a.Emoji); err != nil {
@@ -172,6 +177,7 @@ func (s *Server) registerSendReply() {
 		mcp.WithString("target_message_id", mcp.Required(), mcp.Description("WhatsApp message ID")),
 		mcp.WithString("target_sender_jid", mcp.Description("original sender; required in group chats ("+jidDesc+")")),
 		mcp.WithString("body", mcp.Required(), mcp.Description("reply text")),
+		mcp.WithDestructiveHintAnnotation(false),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a sendReplyArgs) (*mcp.CallToolResult, error) {
 		if err := s.client.SendReply(ctx, a.ChatJID, a.TargetMessageID, a.TargetSenderJID, a.Body); err != nil {
@@ -191,10 +197,12 @@ type sendTypingArgs struct {
 
 func (s *Server) registerSendTyping() {
 	tool := mcp.NewTool("send_typing",
-		mcp.WithDescription("Set typing/recording presence for a chat."),
+		mcp.WithDescription("Show or hide a typing/recording indicator in a specific chat. The indicator auto-expires after ~25 seconds. Use send_presence for global online/offline status instead."),
 		mcp.WithString("chat_jid", mcp.Required(), mcp.Description(jidDesc)),
 		mcp.WithBoolean("active", mcp.Required(), mcp.Description("True = composing/recording, false = paused")),
 		mcp.WithString("kind", mcp.Description("'' for text (default) or 'audio' for recording")),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(true),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a sendTypingArgs) (*mcp.CallToolResult, error) {
 		if err := s.client.SendTyping(ctx, a.ChatJID, a.Active, a.Kind); err != nil {

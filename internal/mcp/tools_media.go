@@ -30,6 +30,7 @@ func (s *Server) registerSendPoll() {
 		mcp.WithString("question", mcp.Required(), mcp.Description("poll question")),
 		mcp.WithArray("options", mcp.Required(), mcp.Items(map[string]any{"type": "string"}), mcp.Description("poll options (2–32)")),
 		mcp.WithNumber("selectable_count", mcp.DefaultNumber(1), mcp.Description("how many options each voter may pick; 1 = single-choice")),
+		mcp.WithDestructiveHintAnnotation(false),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a sendPollArgs) (*mcp.CallToolResult, error) {
 		if r := requireNonEmpty("recipient", a.Recipient); r != nil {
@@ -61,6 +62,8 @@ func (s *Server) registerSendPollVote() {
 		mcp.WithString("chat_jid", mcp.Required(), mcp.Description(jidDesc)),
 		mcp.WithString("poll_message_id", mcp.Required(), mcp.Description("ID of the poll message to vote on")),
 		mcp.WithArray("options", mcp.Required(), mcp.Items(map[string]any{"type": "string"}), mcp.Description("option names to pick (1–32); must match the poll exactly")),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(true),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a sendPollVoteArgs) (*mcp.CallToolResult, error) {
 		if r := requireNonEmpty("chat_jid", a.ChatJID); r != nil {
@@ -90,6 +93,10 @@ func (s *Server) registerGetPollResults() {
 		mcp.WithDescription(offlineSafePrefix+"Return the current tally for a cached poll. Zero-vote options are included."),
 		mcp.WithString("chat_jid", mcp.Required(), mcp.Description(jidDesc)),
 		mcp.WithString("poll_message_id", mcp.Required(), mcp.Description("ID of the poll message to tally")),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(false),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a getPollResultsArgs) (*mcp.CallToolResult, error) {
 		if r := requireNonEmpty("chat_jid", a.ChatJID); r != nil {
@@ -123,6 +130,7 @@ func (s *Server) registerSendContactCard() {
 		mcp.WithString("name", mcp.Required(), mcp.Description("contact display name (also used for the synthesised vCard)")),
 		mcp.WithString("phone", mcp.Description("phone number (digits preferred); used to synthesise the vCard when `vcard` is not supplied")),
 		mcp.WithString("vcard", mcp.Description("raw vCard 3.0 string; when set, name+phone synthesis is skipped")),
+		mcp.WithDestructiveHintAnnotation(false),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a sendContactCardArgs) (*mcp.CallToolResult, error) {
 		if r := requireNonEmpty("recipient", a.Recipient); r != nil {
