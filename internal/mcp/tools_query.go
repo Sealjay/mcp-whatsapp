@@ -235,7 +235,7 @@ type isOnWhatsAppArgs struct {
 
 func (s *Server) registerIsOnWhatsApp() {
 	tool := mcp.NewTool("is_on_whatsapp",
-		mcp.WithDescription("Check which phone numbers are registered on WhatsApp. Input: digits only (no +)."),
+		mcp.WithDescription("Check which phone numbers are registered on WhatsApp. Returns each number's registration status and JID. Use before send_message when you have a phone number but need to verify the contact exists. Input: digits only, no '+' prefix (e.g. \"447700900000\")."),
 		mcp.WithArray("phones", mcp.Required(), mcp.Items(map[string]any{"type": "string"})),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithDestructiveHintAnnotation(false),

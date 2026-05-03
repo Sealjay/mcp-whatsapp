@@ -34,7 +34,7 @@ type sendMessageArgs struct {
 
 func (s *Server) registerSendMessage() {
 	tool := mcp.NewTool("send_message",
-		mcp.WithDescription("Send a WhatsApp message to a person (phone number or JID) or group (JID)."),
+		mcp.WithDescription("Send a new WhatsApp text message to a person or group. For replying to a specific message use send_reply; for emoji reactions use send_reaction. The recipient sees this as a normal message from the paired account."),
 		mcp.WithString("recipient", mcp.Required(), mcp.Description(recipientDesc)),
 		mcp.WithString("message", mcp.Required(), mcp.Description("message body")),
 		mcp.WithBoolean("mark_chat_read", mcp.DefaultBool(false), mcp.Description("On successful send, ack recent incoming messages so the phone drops the unread badge.")),

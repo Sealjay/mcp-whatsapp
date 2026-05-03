@@ -55,7 +55,7 @@ type leaveGroupArgs struct {
 
 func (s *Server) registerLeaveGroup() {
 	tool := mcp.NewTool("leave_group",
-		mcp.WithDescription("Leave a WhatsApp group."),
+		mcp.WithDescription("Permanently leave a WhatsApp group. You will lose access to future messages and must be re-invited to rejoin. Irreversible — prefer muting notifications if you only want silence."),
 		mcp.WithString("chat_jid", mcp.Required(), mcp.Description(jidDesc)),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a leaveGroupArgs) (*mcp.CallToolResult, error) {

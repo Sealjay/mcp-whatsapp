@@ -58,7 +58,7 @@ func (s *Server) registerBlockContact() {
 
 func (s *Server) registerUnblockContact() {
 	tool := mcp.NewTool("unblock_contact",
-		mcp.WithDescription("Unblock a contact by phone number or JID."),
+		mcp.WithDescription("Unblock a previously blocked contact, restoring their ability to message you and see your last seen/profile/status. Idempotent if already unblocked. The contact is not notified. Use get_blocklist to see who is currently blocked."),
 		mcp.WithString("jid", mcp.Required(), mcp.Description(recipientDesc)),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),

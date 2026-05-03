@@ -54,7 +54,7 @@ type deleteMessageArgs struct {
 
 func (s *Server) registerDeleteMessage() {
 	tool := mcp.NewTool("delete_message",
-		mcp.WithDescription("Revoke (delete for everyone) a message."),
+		mcp.WithDescription("Revoke (delete for everyone) a message. Irreversible — recipients see a 'message was deleted' notice. You can only delete your own messages unless you are a group admin. Use edit_message if you just want to correct text."),
 		mcp.WithString("chat_jid", mcp.Required(), mcp.Description(jidDesc)),
 		mcp.WithString("message_id", mcp.Required(), mcp.Description("WhatsApp message ID")),
 		mcp.WithString("sender_jid", mcp.Description("original sender; leave empty when deleting your own messages ("+jidDesc+")")),
@@ -77,9 +77,9 @@ type markReadArgs struct {
 
 func (s *Server) registerMarkRead() {
 	tool := mcp.NewTool("mark_read",
-		mcp.WithDescription("Mark message IDs as read in a chat."),
+		mcp.WithDescription("Mark specific messages as read (sends read receipts to senders). Use mark_chat_read instead to clear the unread badge for an entire chat without specifying IDs."),
 		mcp.WithString("chat_jid", mcp.Required(), mcp.Description(jidDesc)),
-		mcp.WithArray("message_ids", mcp.Required(), mcp.Items(map[string]any{"type": "string"})),
+		mcp.WithArray("message_ids", mcp.Required(), mcp.Description("WhatsApp message IDs to mark as read"), mcp.Items(map[string]any{"type": "string"})),
 		mcp.WithString("sender_jid", mcp.Description("required for group chats ("+jidDesc+")")),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
@@ -165,7 +165,7 @@ type downloadMediaArgs struct {
 
 func (s *Server) registerDownloadMedia() {
 	tool := mcp.NewTool("download_media",
-		mcp.WithDescription("Download media from a WhatsApp message and return the local file path."),
+		mcp.WithDescription("Download media (image, video, audio, document) from a message to a local file and return its path. The message must contain media — use list_messages to find media message IDs. Files are saved under the store directory; repeated calls for the same message return the cached file."),
 		mcp.WithString("message_id", mcp.Required(), mcp.Description("WhatsApp message ID")),
 		mcp.WithString("chat_jid", mcp.Required(), mcp.Description(jidDesc)),
 		mcp.WithDestructiveHintAnnotation(false),
