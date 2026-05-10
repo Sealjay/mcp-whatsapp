@@ -25,11 +25,11 @@ type sendPollArgs struct {
 
 func (s *Server) registerSendPoll() {
 	tool := mcp.NewTool("send_poll",
-		mcp.WithDescription("Send a poll message with between 2 and 32 options. `selectable_count` controls how many options each voter may pick."),
+		mcp.WithDescription("Send a new WhatsApp poll message with 2 to 32 options; recipients see a votable poll card and an outgoing row plus poll metadata is persisted locally so votes can be tallied. Reversible via delete_message (revoke). Use send_poll_vote to cast votes and get_poll_results to read tallies. Returns a JSON object `{Success, Message, ID}` where `ID` is the poll message ID on success."),
 		mcp.WithString("recipient", mcp.Required(), mcp.Description(recipientDesc)),
-		mcp.WithString("question", mcp.Required(), mcp.Description("poll question")),
-		mcp.WithArray("options", mcp.Required(), mcp.Items(map[string]any{"type": "string"}), mcp.Description("poll options (2–32)")),
-		mcp.WithNumber("selectable_count", mcp.DefaultNumber(1), mcp.Description("how many options each voter may pick; 1 = single-choice")),
+		mcp.WithString("question", mcp.Required(), mcp.Description("poll question text shown above the options")),
+		mcp.WithArray("options", mcp.Required(), mcp.Items(map[string]any{"type": "string"}), mcp.Description("poll option labels; must contain between 2 and 32 entries")),
+		mcp.WithNumber("selectable_count", mcp.DefaultNumber(1), mcp.Description("how many options each voter may pick; 1 = single-choice (default), higher = multi-select up to this cap")),
 		mcp.WithDestructiveHintAnnotation(false),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a sendPollArgs) (*mcp.CallToolResult, error) {
@@ -58,10 +58,10 @@ type sendPollVoteArgs struct {
 
 func (s *Server) registerSendPollVote() {
 	tool := mcp.NewTool("send_poll_vote",
-		mcp.WithDescription("Cast (or re-cast) a vote on a previously-seen poll. Each call replaces the caller's prior vote on that poll; `options` must match the poll's option names exactly."),
+		mcp.WithDescription("Cast or re-cast a vote on a previously-seen poll; each call replaces the caller's prior vote on that poll, and the new tally is broadcast to the chat. Reversible by calling again with the desired option set (or an empty list to clear). Prerequisite: the poll must be in the local cache, i.e. send_poll was used or we received the poll via sync. Returns a JSON object `{Success, Message, ID}` where `ID` is the vote message ID."),
 		mcp.WithString("chat_jid", mcp.Required(), mcp.Description(jidDesc)),
-		mcp.WithString("poll_message_id", mcp.Required(), mcp.Description("ID of the poll message to vote on")),
-		mcp.WithArray("options", mcp.Required(), mcp.Items(map[string]any{"type": "string"}), mcp.Description("option names to pick (1–32); must match the poll exactly")),
+		mcp.WithString("poll_message_id", mcp.Required(), mcp.Description("WhatsApp message ID of the poll to vote on (use `ID` returned by send_poll, or `message_id` from list_messages)")),
+		mcp.WithArray("options", mcp.Required(), mcp.Items(map[string]any{"type": "string"}), mcp.Description("option labels to pick; must match the poll's option text exactly, between 1 and 32 entries")),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
 	)
@@ -90,9 +90,9 @@ type getPollResultsArgs struct {
 
 func (s *Server) registerGetPollResults() {
 	tool := mcp.NewTool("get_poll_results",
-		mcp.WithDescription(offlineSafePrefix+"Return the current tally for a cached poll. Zero-vote options are included."),
+		mcp.WithDescription(offlineSafePrefix+"Return the current vote tally for a cached poll. Read-only; no side effects. Zero-vote options are included so the response always lists every original option. Returns a JSON object `{poll_message_id, chat_jid, tally}` where `tally` is `option_label -> vote_count`."),
 		mcp.WithString("chat_jid", mcp.Required(), mcp.Description(jidDesc)),
-		mcp.WithString("poll_message_id", mcp.Required(), mcp.Description("ID of the poll message to tally")),
+		mcp.WithString("poll_message_id", mcp.Required(), mcp.Description("WhatsApp message ID of the poll to tally (use `ID` from send_poll, or `message_id` from list_messages)")),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
@@ -125,11 +125,11 @@ type sendContactCardArgs struct {
 
 func (s *Server) registerSendContactCard() {
 	tool := mcp.NewTool("send_contact_card",
-		mcp.WithDescription("Send a contact card. When `vcard` is omitted, a minimal vCard 3.0 is synthesised from `name` + `phone`."),
+		mcp.WithDescription("Send a WhatsApp contact card; recipients see a tappable contact entry they can save to their address book and the outgoing message is persisted to the local cache. When `vcard` is omitted a minimal vCard 3.0 is synthesised from `name` + `phone`. Reversible via delete_message (revoke). Returns a JSON object `{Success, Message, ID}` where `ID` is the WhatsApp message ID on success."),
 		mcp.WithString("recipient", mcp.Required(), mcp.Description(recipientDesc)),
-		mcp.WithString("name", mcp.Required(), mcp.Description("contact display name (also used for the synthesised vCard)")),
-		mcp.WithString("phone", mcp.Description("phone number (digits preferred); used to synthesise the vCard when `vcard` is not supplied")),
-		mcp.WithString("vcard", mcp.Description("raw vCard 3.0 string; when set, name+phone synthesis is skipped")),
+		mcp.WithString("name", mcp.Required(), mcp.Description("contact display name; also used as the FN in the synthesised vCard")),
+		mcp.WithString("phone", mcp.Description("phone number (digits preferred); embedded in the synthesised vCard when `vcard` is not supplied")),
+		mcp.WithString("vcard", mcp.Description("raw vCard 3.0 string; when set, name+phone synthesis is skipped and this string is sent as-is")),
 		mcp.WithDestructiveHintAnnotation(false),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a sendContactCardArgs) (*mcp.CallToolResult, error) {

@@ -21,7 +21,7 @@ func (s *Server) registerPrivacyTools() {
 
 func (s *Server) registerGetBlocklist() {
 	tool := mcp.NewTool("get_blocklist",
-		mcp.WithDescription("Return the user's current WhatsApp blocklist as JSON."),
+		mcp.WithDescription("Fetch the paired user's current WhatsApp blocklist from the server. Read-only; blocked contacts are not notified by this call. Use block_contact / unblock_contact to mutate the list. Returns a JSON document with the list of blocked JIDs."),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
@@ -41,7 +41,7 @@ type blocklistMutationArgs struct {
 
 func (s *Server) registerBlockContact() {
 	tool := mcp.NewTool("block_contact",
-		mcp.WithDescription("Block a contact so they can no longer send you messages or see your last seen, profile photo, and status. Idempotent if already blocked. Use unblock_contact to reverse."),
+		mcp.WithDescription("Block a contact so they can no longer send the paired user messages or see your last seen, profile photo, or status; the blocked contact is not explicitly notified but will see undelivered messages on their side. Idempotent if already blocked. Reversible via unblock_contact. Returns the plain-text string `Blocked <jid>`."),
 		mcp.WithString("jid", mcp.Required(), mcp.Description(recipientDesc)),
 		mcp.WithIdempotentHintAnnotation(true),
 	)
@@ -58,7 +58,7 @@ func (s *Server) registerBlockContact() {
 
 func (s *Server) registerUnblockContact() {
 	tool := mcp.NewTool("unblock_contact",
-		mcp.WithDescription("Unblock a previously blocked contact, restoring their ability to message you and see your last seen/profile/status. Idempotent if already unblocked. The contact is not notified. Use get_blocklist to see who is currently blocked."),
+		mcp.WithDescription("Unblock a previously blocked contact, restoring their ability to message the paired user and see your last seen/profile/status; the contact is not notified. Idempotent if already unblocked. Reversible via block_contact. Use get_blocklist to see who is currently blocked. Returns the plain-text string `Unblocked <jid>`."),
 		mcp.WithString("jid", mcp.Required(), mcp.Description(recipientDesc)),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
@@ -80,8 +80,8 @@ type sendPresenceArgs struct {
 
 func (s *Server) registerSendPresence() {
 	tool := mcp.NewTool("send_presence",
-		mcp.WithDescription("Set the user's own online availability. Different from `send_typing`, which affects per-chat composing presence."),
-		mcp.WithString("state", mcp.Required(), mcp.Enum("available", "unavailable"), mcp.Description("own availability state")),
+		mcp.WithDescription("Set the paired user's own global online availability; contacts permitted by privacy settings see `online` or last-seen accordingly. Reversible by calling again with the inverse state. Use send_typing for per-chat composing/recording indicators instead. Returns a JSON object `{success, message}`."),
+		mcp.WithString("state", mcp.Required(), mcp.Enum("available", "unavailable"), mcp.Description("availability to broadcast: `available` (online) or `unavailable` (offline)")),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
 	)
@@ -98,7 +98,7 @@ func (s *Server) registerSendPresence() {
 
 func (s *Server) registerGetPrivacySettings() {
 	tool := mcp.NewTool("get_privacy_settings",
-		mcp.WithDescription("Return the user's current WhatsApp privacy settings as a JSON object with keys like groupadd, last, status, profile, readreceipts, online. Read-only; use set_privacy_setting to change individual values."),
+		mcp.WithDescription("Fetch the paired user's current WhatsApp privacy settings from the server. Read-only; no side effects. Use set_privacy_setting to change individual values. Returns a JSON document with keys like `groupadd`, `last`, `status`, `profile`, `readreceipts`, `online`, `calladd`, `messages`, `defense`, `stickers` and their current string values."),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
@@ -133,9 +133,9 @@ type setPrivacySettingArgs struct {
 
 func (s *Server) registerSetPrivacySetting() {
 	tool := mcp.NewTool("set_privacy_setting",
-		mcp.WithDescription("Change a single privacy setting. Not every name/value combination is valid; WhatsApp rejects invalid combinations server-side. Use get_privacy_settings to view current values first."),
-		mcp.WithString("name", mcp.Required(), mcp.Enum(privacySettingNames...), mcp.Description("privacy knob to change")),
-		mcp.WithString("value", mcp.Required(), mcp.Enum(privacySettingValues...), mcp.Description("new value for the knob")),
+		mcp.WithDescription("Change a single WhatsApp privacy knob (read-receipts, last-seen, online, group-add, etc.) for the paired account; takes effect immediately and may change who can see your activity or contact you. Reversible by calling again with the previous value (capture it via get_privacy_settings first). Not every name/value combination is valid — WhatsApp rejects invalid combinations server-side. Returns a JSON document echoing the updated settings."),
+		mcp.WithString("name", mcp.Required(), mcp.Enum(privacySettingNames...), mcp.Description("privacy knob to change; one of the WhatsApp setting names (e.g. `last`, `readreceipts`, `groupadd`, `online`)")),
+		mcp.WithString("value", mcp.Required(), mcp.Enum(privacySettingValues...), mcp.Description("new value; one of the WhatsApp privacy values (e.g. `all`, `contacts`, `none`, `match_last_seen`)")),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
 	)
@@ -160,8 +160,8 @@ type setStatusMessageArgs struct {
 
 func (s *Server) registerSetStatusMessage() {
 	tool := mcp.NewTool("set_status_message",
-		mcp.WithDescription("Update the user's WhatsApp 'About' text (profile status message). Pass an empty string to clear it."),
-		mcp.WithString("text", mcp.Required(), mcp.Description("new About text; empty string clears")),
+		mcp.WithDescription("Update the paired user's WhatsApp profile `About` text; contacts permitted by privacy settings see the new text on the profile screen. Reversible by calling again with the previous text or with an empty string to clear. Note: this is the static profile About line, not the temporary `Status` story feed. Returns a JSON object `{success, message}`."),
+		mcp.WithString("text", mcp.Required(), mcp.Description("new About text; pass an empty string to clear")),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
 	)

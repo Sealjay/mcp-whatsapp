@@ -28,8 +28,10 @@ const jidDesc = "WhatsApp JID: individual as `<digits>@s.whatsapp.net` or bare p
 
 // recipientDesc describes the expected shape of a send-target. Callers may
 // pass either a bare phone number or a fully qualified JID (individual or
-// group).
-const recipientDesc = "Send target: phone digits, `<digits>@s.whatsapp.net`, or group `<digits>-<timestamp>@g.us`"
+// group). Bare numbers must be digits only — no `+` prefix, spaces, or
+// punctuation; a leading `+` is stripped as a courtesy but everything else
+// is rejected with a clear error rather than misrouted silently.
+const recipientDesc = "Send target: digits only (E.164 without `+`, no spaces or punctuation); or `<digits>@s.whatsapp.net`; or group `<digits>-<timestamp>@g.us`"
 
 // offlineSafePrefix marks a tool as safe to call while disconnected from
 // WhatsApp because it only reads the local SQLite cache.

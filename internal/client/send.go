@@ -105,14 +105,18 @@ func (c *Client) send(ctx context.Context, recipient, message, mediaPath string,
 
 // parseRecipient normalizes a phone number or JID string into types.JID.
 func parseRecipient(recipient string) (types.JID, error) {
-	if strings.Contains(recipient, "@") {
-		jid, err := types.ParseJID(recipient)
+	canonical, err := NormalizeRecipient(recipient)
+	if err != nil {
+		return types.JID{}, err
+	}
+	if strings.Contains(canonical, "@") {
+		jid, err := types.ParseJID(canonical)
 		if err != nil {
 			return types.JID{}, fmt.Errorf("Error parsing JID: %v", err)
 		}
 		return jid, nil
 	}
-	return types.JID{User: recipient, Server: types.DefaultUserServer}, nil
+	return types.JID{User: canonical, Server: types.DefaultUserServer}, nil
 }
 
 // attachMedia uploads mediaPath and populates the appropriate message field.

@@ -30,8 +30,8 @@ type searchContactsArgs struct {
 
 func (s *Server) registerSearchContacts() {
 	tool := mcp.NewTool("search_contacts",
-		mcp.WithDescription(offlineSafePrefix+"Search WhatsApp contacts by name or phone number."),
-		mcp.WithString("query", mcp.Required(), mcp.Description("case-insensitive substring to match")),
+		mcp.WithDescription(offlineSafePrefix+"Search the cached WhatsApp contact list by case-insensitive substring of name or phone number. Read-only; no side effects. Use is_on_whatsapp to verify whether an unknown phone number is registered. Returns a JSON array of contact objects (each with JID, push name, full name, and phone)."),
+		mcp.WithString("query", mcp.Required(), mcp.Description("case-insensitive substring to match against name or phone")),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
@@ -63,17 +63,17 @@ type listMessagesArgs struct {
 
 func (s *Server) registerListMessages() {
 	tool := mcp.NewTool("list_messages",
-		mcp.WithDescription(offlineSafePrefix+"Get WhatsApp messages matching specified criteria with optional context. Returns a formatted text block."),
-		mcp.WithString("after", mcp.Description("ISO-8601 lower bound")),
-		mcp.WithString("before", mcp.Description("ISO-8601 upper bound")),
-		mcp.WithString("sender_phone_number", mcp.Description(jidDesc)),
-		mcp.WithString("chat_jid", mcp.Description(jidDesc)),
-		mcp.WithString("query", mcp.Description("case-insensitive substring to match")),
-		mcp.WithNumber("limit", mcp.DefaultNumber(20)),
-		mcp.WithNumber("page", mcp.DefaultNumber(0)),
-		mcp.WithBoolean("include_context", mcp.DefaultBool(true)),
-		mcp.WithNumber("context_before", mcp.DefaultNumber(1)),
-		mcp.WithNumber("context_after", mcp.DefaultNumber(1)),
+		mcp.WithDescription(offlineSafePrefix+"Search and page through cached WhatsApp messages, optionally filtering by chat, sender, time range, and substring; can include surrounding context messages. Read-only; no side effects. Use get_message_context to expand around a single known message ID, or request_sync to backfill missing history. Returns a human-readable formatted text block listing matching messages."),
+		mcp.WithString("after", mcp.Description("ISO-8601 UTC lower bound on message timestamp (inclusive)")),
+		mcp.WithString("before", mcp.Description("ISO-8601 UTC upper bound on message timestamp (inclusive)")),
+		mcp.WithString("sender_phone_number", mcp.Description("filter to messages sent by this phone or JID ("+jidDesc+")")),
+		mcp.WithString("chat_jid", mcp.Description("filter to messages in this chat ("+jidDesc+")")),
+		mcp.WithString("query", mcp.Description("case-insensitive substring to match within message body")),
+		mcp.WithNumber("limit", mcp.DefaultNumber(20), mcp.Description("max messages to return (default 20, capped at 100 server-side)")),
+		mcp.WithNumber("page", mcp.DefaultNumber(0), mcp.Description("zero-based page index for paging through results (default 0)")),
+		mcp.WithBoolean("include_context", mcp.DefaultBool(true), mcp.Description("if true, attach a few surrounding messages to each match (defaults to true)")),
+		mcp.WithNumber("context_before", mcp.DefaultNumber(1), mcp.Description("messages to include before each match (default 1, capped at 20 server-side)")),
+		mcp.WithNumber("context_after", mcp.DefaultNumber(1), mcp.Description("messages to include after each match (default 1, capped at 20 server-side)")),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
@@ -137,12 +137,12 @@ type listChatsArgs struct {
 
 func (s *Server) registerListChats() {
 	tool := mcp.NewTool("list_chats",
-		mcp.WithDescription(offlineSafePrefix+"Get WhatsApp chats matching specified criteria."),
-		mcp.WithString("query", mcp.Description("case-insensitive substring to match")),
-		mcp.WithNumber("limit", mcp.DefaultNumber(20)),
-		mcp.WithNumber("page", mcp.DefaultNumber(0)),
-		mcp.WithBoolean("include_last_message", mcp.DefaultBool(true)),
-		mcp.WithString("sort_by", mcp.DefaultString("last_active"), mcp.Description("last_active or name")),
+		mcp.WithDescription(offlineSafePrefix+"List cached WhatsApp chats (1:1 and group), optionally filtered by name substring and sorted by recency or alphabetic name. Read-only; no side effects. Use get_chat for a single chat by JID, list_groups for groups only. Returns a JSON array of chat objects (each with JID, name, last-message metadata when requested)."),
+		mcp.WithString("query", mcp.Description("case-insensitive substring to match against chat name")),
+		mcp.WithNumber("limit", mcp.DefaultNumber(20), mcp.Description("max chats to return (default 20)")),
+		mcp.WithNumber("page", mcp.DefaultNumber(0), mcp.Description("zero-based page index for paging through results (default 0)")),
+		mcp.WithBoolean("include_last_message", mcp.DefaultBool(true), mcp.Description("if true, include each chat's most recent message in the result (defaults to true)")),
+		mcp.WithString("sort_by", mcp.DefaultString("last_active"), mcp.Enum("last_active", "name"), mcp.Description("sort order: `last_active` (most-recent first, default) or `name` (alphabetic)")),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
@@ -171,9 +171,9 @@ type getChatArgs struct {
 
 func (s *Server) registerGetChat() {
 	tool := mcp.NewTool("get_chat",
-		mcp.WithDescription(offlineSafePrefix+"Get WhatsApp chat metadata by JID."),
+		mcp.WithDescription(offlineSafePrefix+"Fetch metadata for a single cached chat by JID. Read-only; no side effects. Use list_chats to discover chat JIDs, or get_group_info for live group metadata. Returns a JSON object describing the chat (JID, name, last-message metadata when requested), or the JSON literal `null` when the chat is not in the cache."),
 		mcp.WithString("chat_jid", mcp.Required(), mcp.Description(jidDesc)),
-		mcp.WithBoolean("include_last_message", mcp.DefaultBool(true)),
+		mcp.WithBoolean("include_last_message", mcp.DefaultBool(true), mcp.Description("if true, include the chat's most recent message in the result (defaults to true)")),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
@@ -202,10 +202,10 @@ type getMessageContextArgs struct {
 
 func (s *Server) registerGetMessageContext() {
 	tool := mcp.NewTool("get_message_context",
-		mcp.WithDescription(offlineSafePrefix+"Get context around a specific WhatsApp message."),
-		mcp.WithString("message_id", mcp.Required(), mcp.Description("WhatsApp message ID")),
-		mcp.WithNumber("before", mcp.DefaultNumber(5)),
-		mcp.WithNumber("after", mcp.DefaultNumber(5)),
+		mcp.WithDescription(offlineSafePrefix+"Fetch a specific cached message and the surrounding messages in its chat. Read-only; no side effects. Use list_messages for searching across many chats. Returns a JSON object with the target message and arrays of messages before and after it."),
+		mcp.WithString("message_id", mcp.Required(), mcp.Description("WhatsApp message ID of the target message (use `message_id` from list_messages)")),
+		mcp.WithNumber("before", mcp.DefaultNumber(5), mcp.Description("messages to fetch before the target (default 5; non-positive values fall back to the default)")),
+		mcp.WithNumber("after", mcp.DefaultNumber(5), mcp.Description("messages to fetch after the target (default 5; non-positive values fall back to the default)")),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
@@ -235,8 +235,8 @@ type isOnWhatsAppArgs struct {
 
 func (s *Server) registerIsOnWhatsApp() {
 	tool := mcp.NewTool("is_on_whatsapp",
-		mcp.WithDescription("Check which phone numbers are registered on WhatsApp. Returns each number's registration status and JID. Use before send_message when you have a phone number but need to verify the contact exists. Input: digits only, no '+' prefix (e.g. \"447700900000\")."),
-		mcp.WithArray("phones", mcp.Required(), mcp.Items(map[string]any{"type": "string"})),
+		mcp.WithDescription("Query WhatsApp servers to check which of the supplied phone numbers are registered on WhatsApp; the queried users are not notified. Read-only with no chat side effects. Use before send_message when you only have a phone number and need to confirm the contact exists. Returns a JSON object keyed by input phone, each value `{is_in: bool, jid: string, verified_name?: string}` (or similar)."),
+		mcp.WithArray("phones", mcp.Required(), mcp.Items(map[string]any{"type": "string"}), mcp.Description("phone numbers to check; digits only with no `+` prefix, spaces, or punctuation (e.g. `447700900000`); must be non-empty")),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
@@ -257,7 +257,7 @@ func (s *Server) registerIsOnWhatsApp() {
 
 func (s *Server) registerGetStatus() {
 	tool := mcp.NewTool("get_status",
-		mcp.WithDescription("Report whether the WhatsApp bridge inside this MCP server is connected, and who we're paired as."),
+		mcp.WithDescription("Report whether the embedded WhatsApp bridge is connected and which account it is paired with. Read-only; no side effects. Call this first when other tools fail with auth or connection errors. Returns a JSON object `{connected, paired, own_jid?, own_phone?, hint?}` — `hint` includes the URL of the local pairing UI when not yet paired."),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),

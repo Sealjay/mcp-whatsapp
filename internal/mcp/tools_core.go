@@ -26,15 +26,19 @@ func (s *Server) maybeMarkChatRead(ctx context.Context, r client.SendResult, rec
 }
 
 // normalizeRecipientToChatJID maps a recipient string (phone or JID) back to
-// a chat JID suitable for MarkChatRead / store lookups.
+// a chat JID suitable for MarkChatRead / store lookups. Mirrors
+// client.NormalizeRecipient so a successful send (which accepted `+447…`) is
+// followed by a chat-JID lookup against the same canonical form. Malformed
+// input returns "" so the caller skips the side-effect.
 func normalizeRecipientToChatJID(recipient string) string {
-	if recipient == "" {
+	canonical, err := client.NormalizeRecipient(recipient)
+	if err != nil {
 		return ""
 	}
-	if strings.Contains(recipient, "@") {
-		return recipient
+	if strings.Contains(canonical, "@") {
+		return canonical
 	}
-	return recipient + "@s.whatsapp.net"
+	return canonical + "@s.whatsapp.net"
 }
 
 func parseTimestamp(s string) (time.Time, error) {
