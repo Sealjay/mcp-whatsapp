@@ -60,10 +60,13 @@ func (c *Client) Download(ctx context.Context, messageID, chatJID string) Downlo
 		}
 	}
 
-	chatDir := filepath.Join(c.store.Dir(), strings.ReplaceAll(chatJID, ":", "_"))
-	chatDir = filepath.Clean(chatDir)
-	storeDir, _ := filepath.Abs(c.store.Dir())
-	if !strings.HasPrefix(chatDir, filepath.Clean(storeDir)+string(filepath.Separator)) {
+	storeDir, err := filepath.Abs(c.store.Dir())
+	if err != nil {
+		return DownloadResult{Success: false, Message: fmt.Sprintf("resolve store dir: %v", err)}
+	}
+	storeDir = filepath.Clean(storeDir)
+	chatDir := filepath.Clean(filepath.Join(storeDir, strings.ReplaceAll(chatJID, ":", "_")))
+	if !strings.HasPrefix(chatDir, storeDir+string(filepath.Separator)) {
 		return DownloadResult{Success: false, Message: "invalid chat directory: path escapes store"}
 	}
 	if err := os.MkdirAll(chatDir, 0o700); err != nil {
