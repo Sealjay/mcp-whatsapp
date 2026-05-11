@@ -86,19 +86,30 @@ Scan the QR code with WhatsApp on your phone (*Settings → Linked Devices → L
 
 Restart the client. WhatsApp appears as an available integration. Closing and reopening the client reconnects to the daemon — no process spawn, no per-session handshake, no stdin/stdout juggling.
 
-### Sending files
+### Sending and receiving files
 
-`send_file` and `send_audio_message` accept a `media_path` argument pointing at the file to send. By default, the path must live under `./store/uploads/` (resolved relative to your `-store` directory). On first run, `serve` creates the directory automatically; drop files you intend to send into it.
+`WHATSAPP_MCP_MEDIA_ROOT` gates both directions of file movement:
+
+- **Sending** — `send_file` and `send_audio_message` accept a `media_path` argument pointing at the file to send. The path must live under the allowed root.
+- **Receiving** — `download_media` writes decrypted media to the daemon cache at `<store>/<chat_jid>/`. Passing the optional `output_path` argument additionally places the file at a caller-chosen location, which must also live under the allowed root. If a file already exists at `output_path` the call is a no-op.
+
+By default the allowed root is `./store/uploads/` (resolved relative to your `-store` directory). On first run, `serve` creates it automatically; drop files you intend to send into it and point `output_path` here if you want to read incoming media from the same place.
 
 To allow a different directory, set `WHATSAPP_MCP_MEDIA_ROOT` (absolute path) when starting the daemon:
 
 ```bash
-WHATSAPP_MCP_MEDIA_ROOT=/Users/me/whatsapp-outbox ./bin/whatsapp-mcp serve
+WHATSAPP_MCP_MEDIA_ROOT=/Users/me/whatsapp-shared ./bin/whatsapp-mcp serve
 ```
 
 Or add it to your launchd plist / systemd unit / shell profile so it persists across restarts.
 
-Paths outside the allowed root are rejected with a clear error so Claude can ask you to move the file or update the env var. Symlinks inside the root are resolved before the check, so a symlink that points out of the root is also rejected. Do not place secrets inside the allowed root — the allowlist bounds what the tool can read, but anything inside is fair game.
+Paths outside the allowed root are rejected with a clear error so Claude can ask you to move the file or update the env var. Symlinks inside the root are resolved before the check, so a symlink that points out of the root is also rejected. Do not place secrets inside the allowed root — the allowlist bounds what the tool can read or write, but anything inside is fair game.
+
+#### Sandboxed clients (Claude.ai with Cowork, etc.)
+
+Sandboxed MCP clients cannot read the daemon's local cache. To make downloaded media visible to them, point `WHATSAPP_MCP_MEDIA_ROOT` at a directory the client's sandbox can also read (a Cowork workspace mount, a shared volume, etc.), and tell the client to pass `output_path` on every `download_media` call into that root. A copy-pasteable system instruction:
+
+> When calling the WhatsApp MCP's `download_media`, always pass `output_path` set to a path under your shared workspace. Without it the decrypted file lands only in the daemon's local cache, which is outside your sandbox and unreadable. `output_path` must live under `WHATSAPP_MCP_MEDIA_ROOT` on the daemon side; the basename is yours to pick.
 
 ## Architecture
 
@@ -154,7 +165,7 @@ Flags and environment variables for `serve`:
 - `-addr host:port` (env `WHATSAPP_MCP_ADDR`, default `127.0.0.1:8765`).
 - `-allow-remote` (explicit opt-in to bind a non-loopback address; requires `WHATSAPP_MCP_TOKEN`).
 - `WHATSAPP_MCP_TOKEN` — bearer token for `/mcp` and `/pair/*` when `-allow-remote` is set. Required; `serve` exits if missing.
-- `WHATSAPP_MCP_MEDIA_ROOT` — allowed root for `send_file` / `send_audio_message` paths.
+- `WHATSAPP_MCP_MEDIA_ROOT` — allowed root for `send_file` / `send_audio_message` `media_path` and `download_media` `output_path`.
 - `WHATSAPP_MCP_DEBUG=1` — enable verbose logging with partial phone-number redaction (last 5 digits visible).
 
 ## Tools

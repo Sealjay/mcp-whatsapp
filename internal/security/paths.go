@@ -44,6 +44,43 @@ func ValidateMediaPath(userPath, allowedRoot string) (string, error) {
 	return resolved, nil
 }
 
+// ValidateOutputPath is the sister of ValidateMediaPath for files that do
+// not yet exist. The caller (download_media) is asking us to *create* a file
+// at userPath; only the parent directory has to exist on disk. We resolve
+// the parent via EvalSymlinks, then re-anchor the basename and confine the
+// whole thing inside allowedRoot. Symlinked parents that point outside the
+// root are rejected the same way ValidateMediaPath rejects symlinked files.
+func ValidateOutputPath(userPath, allowedRoot string) (string, error) {
+	if userPath == "" {
+		return "", fmt.Errorf("output_path is required when provided")
+	}
+	abs, err := filepath.Abs(userPath)
+	if err != nil {
+		return "", fmt.Errorf("invalid output_path %q: %w", userPath, err)
+	}
+	abs = filepath.Clean(abs)
+	parent := filepath.Dir(abs)
+	resolvedParent, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		return "", fmt.Errorf("output_path parent directory %q not accessible: %w", parent, err)
+	}
+	resolved := filepath.Join(resolvedParent, filepath.Base(abs))
+
+	rootAbs, err := filepath.Abs(allowedRoot)
+	if err != nil {
+		return "", fmt.Errorf("invalid allowed root %q: %w", allowedRoot, err)
+	}
+	rootAbs = filepath.Clean(rootAbs)
+	rootResolved, err := filepath.EvalSymlinks(rootAbs)
+	if err != nil {
+		rootResolved = rootAbs
+	}
+	if resolved != rootResolved && !strings.HasPrefix(resolved, rootResolved+string(filepath.Separator)) {
+		return "", fmt.Errorf("output_path %q is outside allowed root %q; set WHATSAPP_MCP_MEDIA_ROOT or place the file under that root", resolved, rootResolved)
+	}
+	return resolved, nil
+}
+
 // SafeFilename returns filepath.Base(raw) unless the base is one of the
 // degenerate values that could escape a join or hit special-case behaviour
 // ("", ".", "..", "/", or contains a null byte), in which case it returns

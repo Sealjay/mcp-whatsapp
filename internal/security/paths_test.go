@@ -108,6 +108,107 @@ func TestValidateMediaPath_MissingFile(t *testing.T) {
 	}
 }
 
+func TestValidateOutputPath_InsideRoot(t *testing.T) {
+	root := t.TempDir()
+	dest := filepath.Join(root, "new.jpg")
+	got, err := ValidateOutputPath(dest, root)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	rootResolved, _ := filepath.EvalSymlinks(root)
+	if got != filepath.Join(rootResolved, "new.jpg") {
+		t.Fatalf("want resolved path under %q, got %q", rootResolved, got)
+	}
+}
+
+func TestValidateOutputPath_NestedDirInsideRoot(t *testing.T) {
+	root := t.TempDir()
+	nested := filepath.Join(root, "sub")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	dest := filepath.Join(nested, "x.jpg")
+	got, err := ValidateOutputPath(dest, root)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.HasPrefix(got, root) && !strings.Contains(got, "/sub/x.jpg") {
+		t.Fatalf("path should resolve under root/sub, got %q", got)
+	}
+}
+
+func TestValidateOutputPath_Empty(t *testing.T) {
+	_, err := ValidateOutputPath("", t.TempDir())
+	if err == nil {
+		t.Fatal("empty input should be rejected (caller must skip the call)")
+	}
+}
+
+func TestValidateOutputPath_ParentMissing(t *testing.T) {
+	root := t.TempDir()
+	dest := filepath.Join(root, "does-not-exist-dir", "x.jpg")
+	_, err := ValidateOutputPath(dest, root)
+	if err == nil {
+		t.Fatal("missing parent dir should be rejected")
+	}
+	if !strings.Contains(err.Error(), "parent") {
+		t.Fatalf("error should mention parent, got %v", err)
+	}
+}
+
+func TestValidateOutputPath_OutsideRoot(t *testing.T) {
+	root := t.TempDir()
+	other := t.TempDir()
+	dest := filepath.Join(other, "x.jpg")
+	_, err := ValidateOutputPath(dest, root)
+	if err == nil {
+		t.Fatal("expected outside-root rejection")
+	}
+	if !strings.Contains(err.Error(), "allowed root") {
+		t.Fatalf("error should mention allowed root, got %v", err)
+	}
+}
+
+func TestValidateOutputPath_TraversalAttempt(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	attempt := filepath.Join(root, "..", filepath.Base(outside), "x.jpg")
+	_, err := ValidateOutputPath(attempt, root)
+	if err == nil {
+		t.Fatal("expected traversal attempt to be rejected")
+	}
+}
+
+func TestValidateOutputPath_SymlinkParentEscape(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	link := filepath.Join(root, "escape")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink unsupported on this platform: %v", err)
+	}
+	// Parent (the symlink) resolves outside the root.
+	_, err := ValidateOutputPath(filepath.Join(link, "x.jpg"), root)
+	if err == nil {
+		t.Fatal("expected symlinked-parent escape to be rejected")
+	}
+}
+
+func TestValidateOutputPath_SymlinkParentInsideRoot(t *testing.T) {
+	root := t.TempDir()
+	real := filepath.Join(root, "real")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	link := filepath.Join(root, "alias")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlink unsupported on this platform: %v", err)
+	}
+	_, err := ValidateOutputPath(filepath.Join(link, "x.jpg"), root)
+	if err != nil {
+		t.Fatalf("symlinked parent inside root should pass, got %v", err)
+	}
+}
+
 func TestSafeFilename(t *testing.T) {
 	cases := []struct {
 		name string

@@ -124,6 +124,13 @@ func (c *Client) ValidateMediaPath(userPath string) (string, error) {
 	return security.ValidateMediaPath(userPath, c.allowedMediaRoot)
 }
 
+// ValidateOutputPath is the sister wrapper for paths the daemon is about to
+// *write* to (e.g. download_media's output_path). Parent dir must exist; the
+// final file does not.
+func (c *Client) ValidateOutputPath(userPath string) (string, error) {
+	return security.ValidateOutputPath(userPath, c.allowedMediaRoot)
+}
+
 // IsLoggedIn reports whether the underlying whatsmeow device has a stored
 // session. A false return means the next Connect call will emit QR pairing
 // events instead of reconnecting.

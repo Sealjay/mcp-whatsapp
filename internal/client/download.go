@@ -2,10 +2,13 @@ package client
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/sealjay/mcp-whatsapp/internal/security"
 	"go.mau.fi/whatsmeow"
@@ -42,8 +45,23 @@ func (d *MediaDownloader) GetMediaType() whatsmeow.MediaType {
 }
 
 // Download fetches media for a previously-cached message and writes it under
-// <StoreDir>/<chat_sanitized>/<filename>.
-func (c *Client) Download(ctx context.Context, messageID, chatJID string) DownloadResult {
+// <StoreDir>/<chat_sanitized>/<filename>. If outputPath is non-empty, the
+// decrypted bytes are additionally placed at that location (validated against
+// the configured media root). The cache is always populated so subsequent
+// calls remain idempotent.
+func (c *Client) Download(ctx context.Context, messageID, chatJID, outputPath string) DownloadResult {
+	// Validate output_path first so a bad path fails the call before any DB
+	// or network work. The skip-if-exists check waits until after we have
+	// the media metadata (so the success response carries the right fields).
+	var resolvedOutput string
+	if outputPath != "" {
+		var err error
+		resolvedOutput, err = c.ValidateOutputPath(outputPath)
+		if err != nil {
+			return DownloadResult{Success: false, Message: err.Error()}
+		}
+	}
+
 	// Look up the cached media fields.
 	mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength, err :=
 		c.store.GetMediaInfo(messageID, chatJID)
@@ -57,6 +75,20 @@ func (c *Client) Download(ctx context.Context, messageID, chatJID string) Downlo
 		return DownloadResult{
 			Success: false,
 			Message: "not a media message",
+		}
+	}
+
+	// Skip-if-exists at the caller's destination: symmetric with the cache
+	// short-circuit below. Idempotent re-calls are a no-op.
+	if resolvedOutput != "" {
+		if _, statErr := os.Stat(resolvedOutput); statErr == nil {
+			return DownloadResult{
+				Success:   true,
+				Message:   fmt.Sprintf("Successfully downloaded %s media", mediaType),
+				MediaType: mediaType,
+				Filename:  filename,
+				Path:      resolvedOutput,
+			}
 		}
 	}
 
@@ -80,14 +112,23 @@ func (c *Client) Download(ctx context.Context, messageID, chatJID string) Downlo
 		return DownloadResult{Success: false, Message: fmt.Sprintf("failed to get absolute path: %v", err)}
 	}
 
-	// Short-circuit if we already have the file on disk.
+	// Short-circuit if we already have the file in cache. If output_path is
+	// set, materialise it there from the cache (cheap hardlink + copy
+	// fallback) and return the output path instead.
 	if _, err := os.Stat(localPath); err == nil {
+		returnPath := absPath
+		if resolvedOutput != "" {
+			if err := placeAtOutput(localPath, resolvedOutput); err != nil {
+				return DownloadResult{Success: false, Message: fmt.Sprintf("failed to write output_path: %v", err)}
+			}
+			returnPath = resolvedOutput
+		}
 		return DownloadResult{
 			Success:   true,
 			Message:   fmt.Sprintf("Successfully downloaded %s media", mediaType),
 			MediaType: mediaType,
 			Filename:  filename,
-			Path:      absPath,
+			Path:      returnPath,
 		}
 	}
 
@@ -130,14 +171,54 @@ func (c *Client) Download(ctx context.Context, messageID, chatJID string) Downlo
 		return DownloadResult{Success: false, Message: fmt.Sprintf("failed to save media file: %v", err)}
 	}
 
+	returnPath := absPath
+	if resolvedOutput != "" {
+		if err := placeAtOutput(localPath, resolvedOutput); err != nil {
+			return DownloadResult{Success: false, Message: fmt.Sprintf("failed to write output_path: %v", err)}
+		}
+		returnPath = resolvedOutput
+	}
+
 	c.log.Infof("Successfully downloaded %s media (%d bytes)", mediaType, len(data))
 	return DownloadResult{
 		Success:   true,
 		Message:   fmt.Sprintf("Successfully downloaded %s media", mediaType),
 		MediaType: mediaType,
 		Filename:  filename,
-		Path:      absPath,
+		Path:      returnPath,
 	}
+}
+
+// placeAtOutput materialises src at dst. Prefers a hard link (zero-copy, O(1))
+// and falls back to a stream copy on cross-device (EXDEV). If dst already
+// exists, returns nil — the caller has already cleared the skip-if-exists
+// check, so EEXIST here is a benign race and the file satisfies the request.
+func placeAtOutput(src, dst string) error {
+	if err := os.Link(src, dst); err == nil {
+		return nil
+	} else if errors.Is(err, syscall.EEXIST) {
+		return nil
+	} else if !errors.Is(err, syscall.EXDEV) {
+		return err
+	}
+	// Cross-device — fall back to a copy.
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		if errors.Is(err, syscall.EEXIST) {
+			return nil
+		}
+		return err
+	}
+	defer out.Close()
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	return out.Close()
 }
 
 // extractDirectPathFromURL turns a CDN URL into the /direct/path/form that
