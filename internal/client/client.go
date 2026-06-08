@@ -76,8 +76,10 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		return nil, fmt.Errorf("create store dir: %w", err)
 	}
 	// If the directory already existed (e.g. from a legacy install) tighten
-	// it now. Chmod is a no-op when the mode already matches.
-	if err := os.Chmod(cfg.StoreDir, 0o700); err != nil {
+	// it now. Chmod is a no-op when the mode already matches, and best-effort
+	// so network/ephemeral mounts (Azure Files SMB, ACA EmptyDir) that reject
+	// chmod with EPERM don't abort startup — see store.ChmodBestEffort.
+	if err := store.ChmodBestEffort(cfg.StoreDir, 0o700); err != nil {
 		return nil, fmt.Errorf("chmod store dir: %w", err)
 	}
 
@@ -87,8 +89,9 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open whatsmeow sqlstore: %w", err)
 	}
-	// whatsmeow creates whatsapp.db with the process umask; force 0600.
-	if err := os.Chmod(waPath, 0o600); err != nil && !os.IsNotExist(err) {
+	// whatsmeow creates whatsapp.db with the process umask; force 0600
+	// (best-effort — see store.ChmodBestEffort for the network-mount rationale).
+	if err := store.ChmodBestEffort(waPath, 0o600); err != nil {
 		return nil, fmt.Errorf("chmod whatsapp.db: %w", err)
 	}
 
