@@ -6,13 +6,33 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 )
+
+// chmodBestEffort tightens a path's permissions but tolerates filesystems that
+// do not support chmod. Network mounts such as Azure Files / CIFS SMB return
+// EPERM/ENOTSUP/EINVAL from chmod(2) — on those mounts access is governed by
+// the mount options (uid/gid/file_mode), not POSIX mode bits, so a rejected
+// chmod is not a security regression. A local filesystem never returns these
+// errors for a file the process owns, so genuine permission tightening on
+// local disk is preserved. Missing files are likewise tolerated.
+func chmodBestEffort(path string, mode os.FileMode) error {
+	err := os.Chmod(path, mode)
+	if err == nil || os.IsNotExist(err) {
+		return nil
+	}
+	if errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.ENOTSUP) || errors.Is(err, syscall.EINVAL) {
+		return nil
+	}
+	return err
+}
 
 // Message mirrors the on-wire shape used by downstream consumers.
 type Message struct {
@@ -72,7 +92,7 @@ func Open(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create store dir: %w", err)
 	}
-	if err := os.Chmod(dir, 0o700); err != nil {
+	if err := chmodBestEffort(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("chmod store dir: %w", err)
 	}
 	msgPath := filepath.Join(dir, "messages.db")
@@ -93,7 +113,7 @@ func Open(dir string) (*Store, error) {
 	// Tighten messages.db after schema has been applied (the file exists
 	// by then). IsNotExist-tolerate in case a future sqlite driver version
 	// defers file creation.
-	if err := os.Chmod(msgPath, 0o600); err != nil && !os.IsNotExist(err) {
+	if err := chmodBestEffort(msgPath, 0o600); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("chmod messages.db: %w", err)
 	}
@@ -105,7 +125,7 @@ func Open(dir string) (*Store, error) {
 		waDB = nil
 	}
 	// If whatsapp.db already exists (from a previous login), tighten it.
-	if err := os.Chmod(waPath, 0o600); err != nil && !os.IsNotExist(err) {
+	if err := chmodBestEffort(waPath, 0o600); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("chmod whatsapp.db: %w", err)
 	}
