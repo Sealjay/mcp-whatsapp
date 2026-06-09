@@ -96,19 +96,23 @@ func runServe(storeDir string, redactor *security.Redactor, args []string) int {
 		return 1
 	}
 
-	mcpServer := mcpsrv.NewServer(c)
 	drv := newProductionDriver(c)
 
+	// The daemon owns the pair cache, so build it first, then hand the cache
+	// to the MCP server (so pairing_status can surface the live QR), then
+	// mount the MCP HTTP handler back onto the daemon.
 	d, err := daemon.New(daemon.Config{
 		Addr:      addr,
 		Driver:    drv,
-		MCPMount:  mcpServer.AttachHTTP,
 		AuthToken: authToken,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "daemon.New: %v\n", err)
 		return 1
 	}
+
+	mcpServer := mcpsrv.NewServer(c, d.Cache())
+	d.SetMCPMount(mcpServer.AttachHTTP)
 
 	fmt.Fprintf(os.Stderr, "whatsapp-mcp listening on http://%s (MCP at /mcp, pairing at /pair)\n", addr)
 	if !c.IsLoggedIn() {

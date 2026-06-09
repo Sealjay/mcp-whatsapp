@@ -20,6 +20,7 @@ func (s *Server) registerQueryTools() {
 	s.registerGetMessageContext()
 	s.registerIsOnWhatsApp()
 	s.registerGetStatus()
+	s.registerPairingStatus()
 }
 
 // -- search_contacts --------------------------------------------------------
@@ -276,5 +277,56 @@ func (s *Server) registerGetStatus() {
 			status["hint"] = "Not paired. Open /pair on this server in a browser to scan QR (default: http://127.0.0.1:8765/pair)."
 		}
 		return resultJSON(status)
+	})
+}
+
+// -- pairing_status ---------------------------------------------------------
+
+// registerPairingStatus exposes the live device-pairing state as a structured
+// "setup_state" envelope. Where get_status is human-oriented, this returns a
+// machine-stable shape keyed by `state` so a polling supervisor (e.g. the Den
+// daemon) can surface the WhatsApp linking QR to its own clients.
+//
+// The bound client is consulted only once the cache reports a paired device,
+// keeping the awaiting_qr / error envelopes free of any whatsmeow dependency.
+func (s *Server) registerPairingStatus() {
+	tool := mcp.NewTool("pairing_status",
+		mcp.WithDescription("Report the WhatsApp device-pairing state as a structured `setup_state` envelope for programmatic supervisors that surface the linking QR to their own clients (e.g. a polling daemon). Read-only; no side effects. Returns a JSON object `{type:\"setup_state\", state, …}` where `state` is `ready` (paired and connected; adds own_jid/own_phone), `awaiting_qr` (unpaired; adds qr_payload when a pairing code is cached), or `error` (pairing cache unavailable)."),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(false),
+	)
+	s.mcp.AddTool(tool, func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		var ownJID, ownPhone string
+		ready := false
+		// Short-circuits before touching s.client unless we are paired, so a
+		// nil cache or unpaired state never dereferences the WhatsApp client.
+		if s.cache != nil && s.cache.Paired() && s.client.IsConnected() {
+			if wa := s.client.WA(); wa != nil && wa.Store != nil && wa.Store.ID != nil {
+				ownJID = wa.Store.ID.String()
+				ownPhone = wa.Store.ID.User
+				ready = true
+			}
+		}
+
+		resp := map[string]any{"type": "setup_state"}
+		switch {
+		case ready:
+			resp["state"] = "ready"
+			resp["own_jid"] = ownJID
+			resp["own_phone"] = ownPhone
+		case s.cache == nil:
+			resp["state"] = "error"
+			resp["detail"] = "pairing cache unavailable"
+		case s.cache.QR() != "":
+			resp["state"] = "awaiting_qr"
+			resp["qr_payload"] = s.cache.QR()
+			resp["detail"] = "Scan with WhatsApp → Linked devices"
+		default:
+			resp["state"] = "awaiting_qr"
+			resp["detail"] = "Generating pairing code…"
+		}
+		return resultJSON(resp)
 	})
 }

@@ -70,8 +70,16 @@ func New(cfg Config) (*Server, error) {
 	}, nil
 }
 
-// Cache exposes the pair cache (tests only).
+// Cache exposes the pair cache so the MCP server can answer pairing_status
+// (and for tests). The daemon owns the cache, so callers must construct the
+// daemon before wiring the cache into the MCP server.
 func (s *Server) Cache() *PairCache { return s.cache }
+
+// SetMCPMount installs the MCP HTTP mount after construction. The daemon owns
+// the pair cache, so serve.go builds the daemon first, hands its cache to the
+// MCP server, then mounts the MCP handler here. cfg.MCPMount is read in Run,
+// so setting it any time before Run takes effect.
+func (s *Server) SetMCPMount(fn func(mux *http.ServeMux)) { s.cfg.MCPMount = fn }
 
 // BoundAddr returns the address the HTTP listener actually bound to, useful
 // when Addr was "host:0". Only valid after <-s.listenerOK fires.

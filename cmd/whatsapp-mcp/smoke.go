@@ -46,8 +46,8 @@ func runSmoke(storeDir string, redactor *security.Redactor, args []string) int {
 	}
 	defer c.Disconnect()
 
-	srv := mcpsrv.NewServer(c)
-	_ = srv // construction is the smoke test; not starting the server here
+	srv := mcpsrv.NewServer(c, nil) // no pair cache in smoke mode
+	_ = srv                         // construction is the smoke test; not starting the server here
 
 	fmt.Fprintln(os.Stderr, "smoke: OK — store opens, client initialises, MCP tools register.")
 	return 0

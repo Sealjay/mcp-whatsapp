@@ -30,6 +30,7 @@ var expectedToolNames = []string{
 	"list_messages",
 	"mark_chat_read",
 	"mark_read",
+	"pairing_status",
 	"request_sync",
 	"search_contacts",
 	"send_audio_message",
@@ -56,7 +57,7 @@ func TestNewServer_RegistersAllTools(t *testing.T) {
 	// The client is only used inside handler closures — none of those run at
 	// registration time. Passing nil keeps the test hermetic (no whatsmeow,
 	// no sqlite, no network).
-	s := NewServer(nil)
+	s := NewServer(nil, nil)
 	if s == nil {
 		t.Fatal("NewServer returned nil")
 	}
@@ -114,8 +115,8 @@ func TestNewServer_RegistersAllTools(t *testing.T) {
 }
 
 func TestNewServer_ToolCount(t *testing.T) {
-	s := NewServer(nil)
-	const want = 41
+	s := NewServer(nil, nil)
+	const want = 42
 	if got := len(s.MCP().ListTools()); got != want {
 		t.Errorf("tool count = %d, want %d", got, want)
 	}
@@ -129,7 +130,7 @@ func TestNewServer_ToolCount(t *testing.T) {
 // is maintained manually — if a domain file is added or a tool is renamed the
 // test must be updated.
 func TestToolsByDomain(t *testing.T) {
-	s := NewServer(nil)
+	s := NewServer(nil, nil)
 	got := s.MCP().ListTools()
 
 	// domain file → representative tool name(s) that MUST be present.
