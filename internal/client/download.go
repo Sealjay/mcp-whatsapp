@@ -223,11 +223,16 @@ func placeAtOutput(src, dst string) error {
 
 // extractDirectPathFromURL turns a CDN URL into the /direct/path/form that
 // whatsmeow's Download requires when the URL does not already contain it.
+//
+// The query string MUST be preserved: whatsmeow builds the request URL as
+// `https://<host><directPath>&hash=…&mms-type=…&__wa-mms=`, which assumes
+// directPath already ends in `?ccb=…&oh=…&oe=…&_nc_sid=…` (WhatsApp's signed
+// CDN auth params). Stripping the query yields a malformed URL and every
+// download returns 403.
 func extractDirectPathFromURL(url string) string {
 	parts := strings.SplitN(url, ".net/", 2)
 	if len(parts) < 2 {
 		return url
 	}
-	pathPart := strings.SplitN(parts[1], "?", 2)[0]
-	return "/" + pathPart
+	return "/" + parts[1]
 }
