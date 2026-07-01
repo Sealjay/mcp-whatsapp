@@ -63,7 +63,7 @@ func (c *Client) Download(ctx context.Context, messageID, chatJID, outputPath st
 	}
 
 	// Look up the cached media fields.
-	mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength, err :=
+	mediaType, filename, url, directPath, mediaKey, fileSHA256, fileEncSHA256, fileLength, err :=
 		c.store.GetMediaInfo(messageID, chatJID)
 	if err != nil {
 		return DownloadResult{
@@ -154,7 +154,7 @@ func (c *Client) Download(ctx context.Context, messageID, chatJID, outputPath st
 
 	downloader := &MediaDownloader{
 		URL:           url,
-		DirectPath:    extractDirectPathFromURL(url),
+		DirectPath:    preferredDirectPath(directPath, url),
 		MediaKey:      mediaKey,
 		FileLength:    fileLength,
 		FileSHA256:    fileSHA256,
@@ -219,6 +219,19 @@ func placeAtOutput(src, dst string) error {
 		return err
 	}
 	return out.Close()
+}
+
+// preferredDirectPath picks the value handed to whatsmeow as the download's
+// DirectPath. New rows carry a stored directPath captured verbatim from the
+// media protobuf (including the signed `?ccb=&oh=&oe=&_nc_sid=` CDN auth
+// query), which is authoritative. Legacy rows written before the
+// direct_path column existed fall back to parsing URL — the same behaviour
+// prior daemon builds had.
+func preferredDirectPath(stored, url string) string {
+	if stored != "" {
+		return stored
+	}
+	return extractDirectPathFromURL(url)
 }
 
 // extractDirectPathFromURL turns a CDN URL into the /direct/path/form that

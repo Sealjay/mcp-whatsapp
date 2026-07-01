@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS messages (
     media_type TEXT,
     filename TEXT,
     url TEXT,
+    direct_path TEXT,
     media_key BLOB,
     file_sha256 BLOB,
     file_enc_sha256 BLOB,
