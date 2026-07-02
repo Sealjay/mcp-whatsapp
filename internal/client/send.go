@@ -15,6 +15,7 @@ import (
 	"go.mau.fi/whatsmeow/types"
 
 	"github.com/sealjay/mcp-whatsapp/internal/media"
+	"github.com/sealjay/mcp-whatsapp/internal/ratelimit"
 	"github.com/sealjay/mcp-whatsapp/internal/store"
 )
 
@@ -64,6 +65,25 @@ func (c *Client) send(ctx context.Context, recipient, message, mediaPath string,
 		return SendResult{Success: false, Message: err.Error()}
 	}
 
+	// Daemon-side rate limit — defense-in-depth against a client (or the LLM
+	// driving it) fanning out sends faster than WhatsApp tolerates. The
+	// operator override rides on a context value the MCP layer only sets when
+	// the request carried the X-Rate-Limit-Override header, which the model
+	// cannot forge.
+	if c.limiter != nil {
+		if ratelimit.BypassFromContext(ctx) {
+			c.log.Warnf("RATE LIMIT OVERRIDE: send to %s bypassed the limiter via X-Rate-Limit-Override", c.redactor.JID(recipientJID.String()))
+		} else {
+			isContact := c.IsKnownContact(recipientJID)
+			if d := c.limiter.AllowSend(isContact); !d.Allowed {
+				c.log.Warnf("Rate limited: send to %s denied (%s); retry in %s", c.redactor.JID(recipientJID.String()), d.Reason, d.RetryAfter.Round(time.Second))
+				return SendResult{Success: false, Message: fmt.Sprintf(
+					"rate limited: %s — retry in %s (set the X-Rate-Limit-Override header to bypass; see the daemon rate-limit docs)",
+					d.Reason, d.RetryAfter.Round(time.Second))}
+			}
+		}
+	}
+
 	// Detect disappearing timer for group chats; direct chats default to 0.
 	var ephemeralExpiration uint32
 	if recipientJID.Server == "g.us" {
@@ -101,6 +121,23 @@ func (c *Client) send(ctx context.Context, recipient, message, mediaPath string,
 		Message: fmt.Sprintf("Message sent to %s", recipient),
 		ID:      resp.ID,
 	}
+}
+
+// IsKnownContact classifies a send target for the rate limiter. Groups we can
+// send to are inherently known contexts, so they are never treated as cold.
+// For 1:1 recipients, "known" means we have prior inbound history from that
+// JID in the cache. On a store error we fail closed — treat the target as a
+// non-contact so the stricter limit applies.
+func (c *Client) IsKnownContact(jid types.JID) bool {
+	if jid.Server == types.GroupServer {
+		return true
+	}
+	known, err := c.store.HasInboundFrom(jid.String())
+	if err != nil {
+		c.log.Warnf("contact lookup failed for %s, treating as non-contact: %v", c.redactor.JID(jid.String()), err)
+		return false
+	}
+	return known
 }
 
 // parseRecipient normalizes a phone number or JID string into types.JID.

@@ -206,6 +206,23 @@ func (s *Store) GetNewestMessage(chatJID string) (id string, ts time.Time, isFro
 	return
 }
 
+// HasInboundFrom reports whether the cache holds at least one message we
+// received (is_from_me = 0) in the given chat. It is the "have we ever heard
+// from this JID" signal the rate limiter uses to classify a send target as a
+// known contact (leash) versus cold outreach (stricter leash). A group JID is
+// always a known context and callers treat it as such without querying here.
+func (s *Store) HasInboundFrom(chatJID string) (bool, error) {
+	var exists int
+	err := s.db.QueryRow(
+		"SELECT EXISTS(SELECT 1 FROM messages WHERE chat_jid = ? AND is_from_me = 0 LIMIT 1)",
+		chatJID,
+	).Scan(&exists)
+	if err != nil {
+		return false, err
+	}
+	return exists == 1, nil
+}
+
 // FindChatName returns the name stored for a chat JID, empty if none.
 func (s *Store) FindChatName(jid string) string {
 	var name string

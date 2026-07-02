@@ -242,10 +242,11 @@ func (s *Server) registerIsOnWhatsApp() {
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
 	)
-	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a isOnWhatsAppArgs) (*mcp.CallToolResult, error) {
+	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, req mcp.CallToolRequest, a isOnWhatsAppArgs) (*mcp.CallToolResult, error) {
 		if len(a.Phones) == 0 {
 			return mcp.NewToolResultError("phones must not be empty"), nil
 		}
+		ctx = withRateLimitOverride(ctx, req)
 		m, err := s.client.IsOnWhatsApp(ctx, a.Phones)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil

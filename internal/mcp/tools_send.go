@@ -40,10 +40,11 @@ func (s *Server) registerSendMessage() {
 		mcp.WithBoolean("mark_chat_read", mcp.DefaultBool(false), mcp.Description("if true, also ack recent incoming messages in the chat to clear the unread badge (defaults to false)")),
 		mcp.WithDestructiveHintAnnotation(false),
 	)
-	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a sendMessageArgs) (*mcp.CallToolResult, error) {
+	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, req mcp.CallToolRequest, a sendMessageArgs) (*mcp.CallToolResult, error) {
 		if a.Recipient == "" {
 			return mcp.NewToolResultError("recipient must be provided"), nil
 		}
+		ctx = withRateLimitOverride(ctx, req)
 		r := s.client.Send(ctx, a.Recipient, a.Message)
 		s.maybeMarkChatRead(ctx, r, a.Recipient, a.MarkChatRead)
 		return resultJSON(r)
@@ -70,7 +71,7 @@ func (s *Server) registerSendFile() {
 		mcp.WithBoolean("view_once", mcp.DefaultBool(false), mcp.Description("if true, mark image/video/audio submessages as view-once; silently ignored for documents (defaults to false)")),
 		mcp.WithDestructiveHintAnnotation(false),
 	)
-	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a sendFileArgs) (*mcp.CallToolResult, error) {
+	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, req mcp.CallToolRequest, a sendFileArgs) (*mcp.CallToolResult, error) {
 		if a.Recipient == "" || a.MediaPath == "" {
 			return mcp.NewToolResultError("recipient and media_path are required"), nil
 		}
@@ -78,6 +79,7 @@ func (s *Server) registerSendFile() {
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
+		ctx = withRateLimitOverride(ctx, req)
 		r := s.client.SendMediaWithOptions(ctx, client.SendMediaOptions{
 			Recipient: a.Recipient,
 			Caption:   a.Caption,
@@ -107,10 +109,11 @@ func (s *Server) registerSendAudioMessage() {
 		mcp.WithBoolean("view_once", mcp.DefaultBool(false), mcp.Description("if true, mark the voice note as view-once (defaults to false)")),
 		mcp.WithDestructiveHintAnnotation(false),
 	)
-	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a sendAudioArgs) (*mcp.CallToolResult, error) {
+	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, req mcp.CallToolRequest, a sendAudioArgs) (*mcp.CallToolResult, error) {
 		if a.Recipient == "" || a.MediaPath == "" {
 			return mcp.NewToolResultError("recipient and media_path are required"), nil
 		}
+		ctx = withRateLimitOverride(ctx, req)
 		safePath, err := s.client.ValidateMediaPath(a.MediaPath)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
