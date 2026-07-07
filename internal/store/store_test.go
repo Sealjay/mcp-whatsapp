@@ -295,6 +295,56 @@ func TestMigrateSchema_AddsDirectPath(t *testing.T) {
 	defer s2.Close()
 }
 
+func TestHasInboundFrom(t *testing.T) {
+	s := openTestStore(t)
+
+	// Alice (447700000001) has inbound rows in the seed (a1, a3, a5 with
+	// is_from_me = 0).
+	got, err := s.HasInboundFrom("447700000001@s.whatsapp.net")
+	if err != nil {
+		t.Fatalf("HasInboundFrom(Alice): %v", err)
+	}
+	if !got {
+		t.Error("Alice has seeded inbound messages; want true")
+	}
+
+	// A JID with no rows at all → false, no error.
+	got, err = s.HasInboundFrom("000000000@s.whatsapp.net")
+	if err != nil {
+		t.Fatalf("HasInboundFrom(unknown): %v", err)
+	}
+	if got {
+		t.Error("unknown JID has no inbound; want false")
+	}
+}
+
+// TestHasInboundFrom_OutboundOnly: a chat where every row is is_from_me = 1
+// (we only ever messaged them) must report false — that's the cold-outreach
+// case the rate limiter treats with the stricter tier.
+func TestHasInboundFrom_OutboundOnly(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	const jid = "447712345678@s.whatsapp.net"
+	if err := s.StoreChat(jid, "ColdLead", time.Now().UTC()); err != nil {
+		t.Fatalf("StoreChat: %v", err)
+	}
+	if err := s.StoreMessage(ctx, Message{
+		ID: "o1", ChatJID: jid, Sender: "me", Content: "hi, cold outreach",
+		Timestamp: time.Now().UTC(), IsFromMe: true,
+	}, nil, nil, nil, 0); err != nil {
+		t.Fatalf("StoreMessage: %v", err)
+	}
+
+	got, err := s.HasInboundFrom(jid)
+	if err != nil {
+		t.Fatalf("HasInboundFrom: %v", err)
+	}
+	if got {
+		t.Error("outbound-only chat must report no inbound; want false")
+	}
+}
+
 func TestGetNewestMessage_EmptyChat(t *testing.T) {
 	s := openTestStore(t)
 

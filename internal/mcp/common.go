@@ -19,8 +19,32 @@
 package mcp
 
 import (
+	"context"
+
 	"github.com/mark3labs/mcp-go/mcp"
+
+	"github.com/sealjay/mcp-whatsapp/internal/ratelimit"
 )
+
+// rateLimitOverrideHeader is the HTTP header a human-configured MCP client can
+// set to bypass the daemon-side send/usync rate limiter. It is deliberately a
+// transport header, not a tool argument: the LLM controls JSON-RPC params but
+// not HTTP headers, so the model cannot set this to talk its way past the
+// guard mid-conversation — only the operator who configures the client can.
+const rateLimitOverrideHeader = "X-Rate-Limit-Override"
+
+// withRateLimitOverride returns a context carrying the operator bypass flag
+// when the originating HTTP request set X-Rate-Limit-Override to a truthy
+// value ("true", "1", "yes"). Otherwise ctx is returned unchanged. Pass the
+// tool request's Header (populated by the streamable HTTP server) as h.
+func withRateLimitOverride(ctx context.Context, req mcp.CallToolRequest) context.Context {
+	switch req.Header.Get(rateLimitOverrideHeader) {
+	case "true", "1", "yes", "TRUE", "True":
+		return ratelimit.WithBypass(ctx)
+	default:
+		return ctx
+	}
+}
 
 // jidDesc describes the expected shape of a single-chat or group JID.
 // Used for `chat_jid`, `sender_jid`, and `sender_phone_number` arguments.
