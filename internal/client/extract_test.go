@@ -102,9 +102,14 @@ func TestExtractDirectPathFromURL(t *testing.T) {
 		want string
 	}{
 		{
-			name: "cdn url with query",
-			in:   "https://mmg.whatsapp.net/v/t62.7118-24/abc.enc?ccb=x",
-			want: "/v/t62.7118-24/abc.enc",
+			// WhatsApp's CDN URLs carry the signed auth params in the query
+			// (ccb/oh/oe/_nc_sid). They MUST be preserved: whatsmeow builds
+			// the download URL as `https://<host><directPath>&hash=…`, which
+			// assumes directPath already ends in `?…`. Stripping the query
+			// yields a malformed URL that the CDN answers with HTTP 403.
+			name: "cdn url with query — query preserved for signed CDN auth",
+			in:   "https://mmg.whatsapp.net/v/t62.7118-24/abc.enc?ccb=11-4&oh=01_Q5xx&oe=6A6220F0&_nc_sid=5e03e0&mms3=true",
+			want: "/v/t62.7118-24/abc.enc?ccb=11-4&oh=01_Q5xx&oe=6A6220F0&_nc_sid=5e03e0&mms3=true",
 		},
 		{
 			name: "cdn url without query",
