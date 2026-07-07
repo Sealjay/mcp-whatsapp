@@ -37,6 +37,7 @@ func NewServer(c *client.Client, cache pairingCache) *Server {
 	)
 	s := &Server{client: c, mcp: mcpSrv, cache: cache}
 	s.registerTools()
+	s.registerResources()
 	return s
 }
 
