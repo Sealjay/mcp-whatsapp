@@ -107,19 +107,20 @@ func (c *Client) normalizeIncomingMessage(
 	}
 
 	content := extractTextContent(raw)
-	mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength := extractMediaInfo(raw)
+	mediaType, filename, url, directPath, mediaKey, fileSHA256, fileEncSHA256, fileLength := extractMediaInfo(raw)
 
 	return normalizedMessage{
 		msg: store.Message{
-			ID:        msgID,
-			ChatJID:   chatJID,
-			Sender:    sender,
-			Content:   content,
-			Timestamp: timestamp,
-			IsFromMe:  isFromMe,
-			MediaType: mediaType,
-			Filename:  filename,
-			URL:       url,
+			ID:         msgID,
+			ChatJID:    chatJID,
+			Sender:     sender,
+			Content:    content,
+			Timestamp:  timestamp,
+			IsFromMe:   isFromMe,
+			MediaType:  mediaType,
+			Filename:   filename,
+			URL:        url,
+			DirectPath: directPath,
 		},
 		mediaKey:      mediaKey,
 		fileSHA256:    fileSHA256,
@@ -399,30 +400,37 @@ func extractTextContent(msg *waProto.Message) string {
 }
 
 // extractMediaInfo pulls out the storable media fields from a Message.
-func extractMediaInfo(msg *waProto.Message) (mediaType, filename, url string, mediaKey, fileSHA256, fileEncSHA256 []byte, fileLength uint64) {
+// directPath is captured verbatim from the media protobuf and includes the
+// signed `?ccb=&oh=&oe=&_nc_sid=` CDN auth query, so the download path can
+// hand it straight to whatsmeow without any URL string manipulation.
+func extractMediaInfo(msg *waProto.Message) (mediaType, filename, url, directPath string, mediaKey, fileSHA256, fileEncSHA256 []byte, fileLength uint64) {
 	if msg == nil {
-		return "", "", "", nil, nil, nil, 0
+		return "", "", "", "", nil, nil, nil, 0
 	}
 
 	if img := msg.GetImageMessage(); img != nil {
 		return "image", "image_" + time.Now().Format("20060102_150405") + ".jpg",
-			img.GetURL(), img.GetMediaKey(), img.GetFileSHA256(), img.GetFileEncSHA256(), img.GetFileLength()
+			img.GetURL(), img.GetDirectPath(),
+			img.GetMediaKey(), img.GetFileSHA256(), img.GetFileEncSHA256(), img.GetFileLength()
 	}
 	if vid := msg.GetVideoMessage(); vid != nil {
 		return "video", "video_" + time.Now().Format("20060102_150405") + ".mp4",
-			vid.GetURL(), vid.GetMediaKey(), vid.GetFileSHA256(), vid.GetFileEncSHA256(), vid.GetFileLength()
+			vid.GetURL(), vid.GetDirectPath(),
+			vid.GetMediaKey(), vid.GetFileSHA256(), vid.GetFileEncSHA256(), vid.GetFileLength()
 	}
 	if aud := msg.GetAudioMessage(); aud != nil {
 		return "audio", "audio_" + time.Now().Format("20060102_150405") + ".ogg",
-			aud.GetURL(), aud.GetMediaKey(), aud.GetFileSHA256(), aud.GetFileEncSHA256(), aud.GetFileLength()
+			aud.GetURL(), aud.GetDirectPath(),
+			aud.GetMediaKey(), aud.GetFileSHA256(), aud.GetFileEncSHA256(), aud.GetFileLength()
 	}
 	if doc := msg.GetDocumentMessage(); doc != nil {
 		fname := security.SafeFilename(doc.GetFileName())
 		return "document", fname,
-			doc.GetURL(), doc.GetMediaKey(), doc.GetFileSHA256(), doc.GetFileEncSHA256(), doc.GetFileLength()
+			doc.GetURL(), doc.GetDirectPath(),
+			doc.GetMediaKey(), doc.GetFileSHA256(), doc.GetFileEncSHA256(), doc.GetFileLength()
 	}
 
-	return "", "", "", nil, nil, nil, 0
+	return "", "", "", "", nil, nil, nil, 0
 }
 
 // extractPollOptionNames pulls the option names out of a PollCreationMessage.

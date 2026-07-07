@@ -129,12 +129,13 @@ func TestStoreMediaInfo_Update(t *testing.T) {
 	fileEnc := []byte{0x04, 0x05}
 	var fileLen uint64 = 4321
 
+	newDirectPath := "/v/t62.7118-24/new.enc?ccb=11-4&oh=x&oe=y&_nc_sid=z"
 	if err := s.StoreMediaInfo("media1", "447700000001@s.whatsapp.net",
-		newURL, mediaKey, fileSHA, fileEnc, fileLen); err != nil {
+		newURL, newDirectPath, mediaKey, fileSHA, fileEnc, fileLen); err != nil {
 		t.Fatalf("StoreMediaInfo: %v", err)
 	}
 
-	mt, fn, url, mk, fs, fe, fl, err := s.GetMediaInfo("media1", "447700000001@s.whatsapp.net")
+	mt, fn, url, dp, mk, fs, fe, fl, err := s.GetMediaInfo("media1", "447700000001@s.whatsapp.net")
 	if err != nil {
 		t.Fatalf("GetMediaInfo: %v", err)
 	}
@@ -146,6 +147,9 @@ func TestStoreMediaInfo_Update(t *testing.T) {
 	}
 	if url != newURL {
 		t.Fatalf("url: got %q", url)
+	}
+	if dp != newDirectPath {
+		t.Fatalf("directPath: got %q want %q", dp, newDirectPath)
 	}
 	if !bytes.Equal(mk, mediaKey) {
 		t.Fatalf("mediaKey mismatch: got %x", mk)
@@ -165,7 +169,7 @@ func TestGetMediaInfo_Seeded(t *testing.T) {
 	s := openTestStore(t)
 
 	// a4 was seeded with image media + bytes.
-	mt, _, url, mk, fs, fe, fl, err := s.GetMediaInfo("a4", "447700000001@s.whatsapp.net")
+	mt, _, url, _, mk, fs, fe, fl, err := s.GetMediaInfo("a4", "447700000001@s.whatsapp.net")
 	if err != nil {
 		t.Fatalf("GetMediaInfo: %v", err)
 	}
@@ -181,6 +185,114 @@ func TestGetMediaInfo_Seeded(t *testing.T) {
 	if fl == 0 {
 		t.Fatal("expected non-zero file length")
 	}
+}
+
+// TestStoreMessage_DirectPathRoundTrip: a Message written with DirectPath
+// set must come back through GetMediaInfo with the same value. This is
+// what the download path relies on to skip the URL-parsing fallback and
+// hand whatsmeow the CDN path the protobuf gave us.
+func TestStoreMessage_DirectPathRoundTrip(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	const (
+		msgID      = "dp-1"
+		chatJID    = "447700000001@s.whatsapp.net"
+		directPath = "/v/t62.7118-24/roundtrip.enc?ccb=11-4&oh=SIG&oe=EXP&_nc_sid=SID&mms3=true"
+	)
+	if err := s.StoreMessage(ctx, Message{
+		ID:         msgID,
+		ChatJID:    chatJID,
+		Sender:     "me",
+		Content:    "see attached",
+		Timestamp:  time.Date(2026, 1, 12, 9, 0, 0, 0, time.UTC),
+		IsFromMe:   true,
+		MediaType:  "image",
+		Filename:   "photo.jpg",
+		URL:        "https://mmg.whatsapp.net" + directPath,
+		DirectPath: directPath,
+	}, []byte{0xaa}, []byte{0xbb}, []byte{0xcc}, 1024); err != nil {
+		t.Fatalf("StoreMessage: %v", err)
+	}
+
+	_, _, _, gotDirectPath, _, _, _, _, err := s.GetMediaInfo(msgID, chatJID)
+	if err != nil {
+		t.Fatalf("GetMediaInfo: %v", err)
+	}
+	if gotDirectPath != directPath {
+		t.Errorf("direct_path round-trip: got %q, want %q", gotDirectPath, directPath)
+	}
+}
+
+// TestMigrateSchema_AddsDirectPath: an existing database that predates the
+// direct_path column should have it added by Open (via migrateSchema),
+// with existing rows preserved and direct_path defaulting to NULL. Open
+// must be idempotent — running twice does not double-add.
+func TestMigrateSchema_AddsDirectPath(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "messages.db")
+
+	// Pre-create a legacy messages.db WITHOUT the direct_path column.
+	// This mirrors the pre-migration schema (before poll_options_json even,
+	// so we exercise both migrations together).
+	legacy, err := sql.Open("sqlite3", "file:"+dbPath+"?_foreign_keys=on")
+	if err != nil {
+		t.Fatalf("open legacy DB: %v", err)
+	}
+	_, err = legacy.Exec(`
+		CREATE TABLE chats (jid TEXT PRIMARY KEY, name TEXT, last_message_time TIMESTAMP);
+		CREATE TABLE messages (
+			id TEXT, chat_jid TEXT, sender TEXT, content TEXT,
+			timestamp TIMESTAMP, is_from_me BOOLEAN,
+			media_type TEXT, filename TEXT, url TEXT,
+			media_key BLOB, file_sha256 BLOB, file_enc_sha256 BLOB,
+			file_length INTEGER,
+			PRIMARY KEY (id, chat_jid),
+			FOREIGN KEY (chat_jid) REFERENCES chats(jid)
+		);
+		INSERT INTO chats (jid, name) VALUES ('legacy@s.whatsapp.net', 'Legacy');
+		INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url)
+		VALUES ('legacy-1', 'legacy@s.whatsapp.net', 'legacy@s.whatsapp.net', 'x',
+		        '2026-01-01 09:00:00', 0, 'image', 'x.jpg', 'https://mmg.whatsapp.net/v/legacy?ccb=1');
+	`)
+	if err != nil {
+		t.Fatalf("seed legacy schema: %v", err)
+	}
+	_ = legacy.Close()
+
+	// Opening through the store must migrate — direct_path and poll_options_json
+	// both get ALTER'd on. Existing legacy row is preserved.
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	// Verify direct_path column exists by SELECTing it — a missing column
+	// surfaces as a SQL error.
+	var (
+		haveDirectPath sql.NullString
+		haveURL        string
+	)
+	if err := s.db.QueryRow(
+		"SELECT direct_path, url FROM messages WHERE id = ?", "legacy-1",
+	).Scan(&haveDirectPath, &haveURL); err != nil {
+		t.Fatalf("select direct_path after migration: %v", err)
+	}
+	if haveDirectPath.Valid {
+		t.Errorf("legacy row direct_path should be NULL, got %q", haveDirectPath.String)
+	}
+	if haveURL == "" {
+		t.Error("legacy row url should have survived migration")
+	}
+
+	// Second Open must be a no-op — verifies migrateSchema is idempotent.
+	s.Close()
+	s2, err := Open(dir)
+	if err != nil {
+		t.Fatalf("second Open: %v", err)
+	}
+	defer s2.Close()
 }
 
 func TestGetNewestMessage_EmptyChat(t *testing.T) {

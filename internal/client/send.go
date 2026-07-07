@@ -277,25 +277,26 @@ func (c *Client) persistSent(ctx context.Context, recipientJID types.JID, msgID,
 	}
 
 	var (
-		storedMediaType, storedFilename, storedURL      string
-		storedMediaKey, storedFileSHA256, storedFileEnc []byte
-		storedFileLength                                uint64
+		storedMediaType, storedFilename, storedURL, storedDirectPath string
+		storedMediaKey, storedFileSHA256, storedFileEnc              []byte
+		storedFileLength                                             uint64
 	)
 	if mediaPath != "" {
-		storedMediaType, storedFilename, storedURL,
+		storedMediaType, storedFilename, storedURL, storedDirectPath,
 			storedMediaKey, storedFileSHA256, storedFileEnc, storedFileLength = extractMediaInfo(msg)
 	}
 
 	err := c.store.StoreMessage(ctx, store.Message{
-		ID:        msgID,
-		ChatJID:   chatJID,
-		Sender:    ourJID,
-		Content:   message,
-		Timestamp: now,
-		IsFromMe:  true,
-		MediaType: storedMediaType,
-		Filename:  storedFilename,
-		URL:       storedURL,
+		ID:         msgID,
+		ChatJID:    chatJID,
+		Sender:     ourJID,
+		Content:    message,
+		Timestamp:  now,
+		IsFromMe:   true,
+		MediaType:  storedMediaType,
+		Filename:   storedFilename,
+		URL:        storedURL,
+		DirectPath: storedDirectPath,
 	}, storedMediaKey, storedFileSHA256, storedFileEnc, storedFileLength)
 	if err != nil {
 		c.log.Warnf("Failed to store sent message: %v", err)

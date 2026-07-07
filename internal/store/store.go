@@ -47,8 +47,14 @@ type Message struct {
 	MediaType   string    `json:"media_type,omitempty"`
 	Filename    string    `json:"filename,omitempty"`
 	URL         string    `json:"url,omitempty"`
-	ChatName    string    `json:"chat_name,omitempty"`
-	PhoneNumber string    `json:"phone_number,omitempty"`
+	// DirectPath is the CDN path (starting with `/`, including the signed
+	// `?ccb=&oh=&oe=&_nc_sid=` auth query) captured verbatim from the
+	// WhatsApp media protobuf at receive/send time. When present, the
+	// download path uses it directly; when absent (legacy row written by
+	// an older daemon build), Download falls back to parsing URL.
+	DirectPath  string `json:"direct_path,omitempty"`
+	ChatName    string `json:"chat_name,omitempty"`
+	PhoneNumber string `json:"phone_number,omitempty"`
 }
 
 // Chat is a cached WhatsApp chat.
@@ -168,29 +174,35 @@ func (s *Store) StoreMessage(ctx context.Context, m Message, mediaKey, fileSHA25
 	}
 	_, err := s.db.ExecContext(ctx,
 		`INSERT OR REPLACE INTO messages
-		(id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, media_key, file_sha256, file_enc_sha256, file_length)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		(id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, direct_path, media_key, file_sha256, file_enc_sha256, file_length)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		m.ID, m.ChatJID, m.Sender, m.Content, m.Timestamp, m.IsFromMe,
-		m.MediaType, m.Filename, m.URL, mediaKey, fileSHA256, fileEncSHA256, fileLength,
+		m.MediaType, m.Filename, m.URL, m.DirectPath, mediaKey, fileSHA256, fileEncSHA256, fileLength,
 	)
 	return err
 }
 
 // StoreMediaInfo updates the media columns of an existing message row.
-func (s *Store) StoreMediaInfo(id, chatJID, url string, mediaKey, fileSHA256, fileEncSHA256 []byte, fileLength uint64) error {
+func (s *Store) StoreMediaInfo(id, chatJID, url, directPath string, mediaKey, fileSHA256, fileEncSHA256 []byte, fileLength uint64) error {
 	_, err := s.db.Exec(
-		"UPDATE messages SET url = ?, media_key = ?, file_sha256 = ?, file_enc_sha256 = ?, file_length = ? WHERE id = ? AND chat_jid = ?",
-		url, mediaKey, fileSHA256, fileEncSHA256, fileLength, id, chatJID,
+		"UPDATE messages SET url = ?, direct_path = ?, media_key = ?, file_sha256 = ?, file_enc_sha256 = ?, file_length = ? WHERE id = ? AND chat_jid = ?",
+		url, directPath, mediaKey, fileSHA256, fileEncSHA256, fileLength, id, chatJID,
 	)
 	return err
 }
 
-// GetMediaInfo fetches the persisted media fields for a message.
-func (s *Store) GetMediaInfo(id, chatJID string) (mediaType, filename, url string, mediaKey, fileSHA256, fileEncSHA256 []byte, fileLength uint64, err error) {
+// GetMediaInfo fetches the persisted media fields for a message. direct_path
+// is the CDN path captured from the WhatsApp media protobuf at receive time,
+// including the signed `?ccb=&oh=&oe=&_nc_sid=` auth query. It may be empty
+// for legacy rows written before this column existed — callers that need
+// to fetch bytes should fall back to parsing url in that case.
+func (s *Store) GetMediaInfo(id, chatJID string) (mediaType, filename, url, directPath string, mediaKey, fileSHA256, fileEncSHA256 []byte, fileLength uint64, err error) {
+	var dp sql.NullString
 	err = s.db.QueryRow(
-		"SELECT media_type, filename, url, media_key, file_sha256, file_enc_sha256, file_length FROM messages WHERE id = ? AND chat_jid = ?",
+		"SELECT media_type, filename, url, direct_path, media_key, file_sha256, file_enc_sha256, file_length FROM messages WHERE id = ? AND chat_jid = ?",
 		id, chatJID,
-	).Scan(&mediaType, &filename, &url, &mediaKey, &fileSHA256, &fileEncSHA256, &fileLength)
+	).Scan(&mediaType, &filename, &url, &dp, &mediaKey, &fileSHA256, &fileEncSHA256, &fileLength)
+	directPath = dp.String
 	return
 }
 
@@ -259,6 +271,7 @@ CREATE TABLE IF NOT EXISTS messages (
 	media_type TEXT,
 	filename TEXT,
 	url TEXT,
+	direct_path TEXT,
 	media_key BLOB,
 	file_sha256 BLOB,
 	file_enc_sha256 BLOB,
@@ -289,6 +302,7 @@ func migrateSchema(db *sql.DB) error {
 	}
 	defer rows.Close()
 	hasPollOptions := false
+	hasDirectPath := false
 	for rows.Next() {
 		var (
 			cid        int
@@ -304,6 +318,9 @@ func migrateSchema(db *sql.DB) error {
 		if name == "poll_options_json" {
 			hasPollOptions = true
 		}
+		if name == "direct_path" {
+			hasDirectPath = true
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate table_info(messages): %w", err)
@@ -311,6 +328,11 @@ func migrateSchema(db *sql.DB) error {
 	if !hasPollOptions {
 		if _, err := db.Exec("ALTER TABLE messages ADD COLUMN poll_options_json TEXT"); err != nil {
 			return fmt.Errorf("add column poll_options_json: %w", err)
+		}
+	}
+	if !hasDirectPath {
+		if _, err := db.Exec("ALTER TABLE messages ADD COLUMN direct_path TEXT"); err != nil {
+			return fmt.Errorf("add column direct_path: %w", err)
 		}
 	}
 	return nil
