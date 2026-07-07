@@ -18,6 +18,7 @@ import (
 	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
 
+	"github.com/sealjay/mcp-whatsapp/internal/ratelimit"
 	"github.com/sealjay/mcp-whatsapp/internal/security"
 	"github.com/sealjay/mcp-whatsapp/internal/store"
 )
@@ -29,6 +30,11 @@ type Config struct {
 	Logger           waLog.Logger       // optional; defaults to stderr at INFO
 	AllowedMediaRoot string             // absolute path; media_path args must live under this
 	Redactor         *security.Redactor // optional; defaults to a redacting instance
+	// RateLimiter throttles outbound sends and usync lookups. Optional; New
+	// installs one built from ratelimit.DefaultConfig when nil. Pass an
+	// explicitly-configured limiter to override the defaults, or leave the
+	// field nil on a Client literal (as unit tests do) to disable limiting.
+	RateLimiter *ratelimit.Limiter
 }
 
 // Client wraps a whatsmeow.Client together with the message cache and logger.
@@ -40,6 +46,7 @@ type Client struct {
 	handlerInstalled bool
 	allowedMediaRoot string
 	redactor         *security.Redactor
+	limiter          *ratelimit.Limiter
 }
 
 // New constructs a Client. It sets the latest WhatsApp version best-effort,
@@ -61,6 +68,11 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 	redactor := cfg.Redactor
 	if redactor == nil {
 		redactor = &security.Redactor{}
+	}
+
+	limiter := cfg.RateLimiter
+	if limiter == nil {
+		limiter = ratelimit.New(ratelimit.DefaultConfig())
 	}
 
 	// Best-effort: fetch the latest WhatsApp version so the server doesn't
@@ -116,6 +128,7 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		log:              logger,
 		allowedMediaRoot: cfg.AllowedMediaRoot,
 		redactor:         redactor,
+		limiter:          limiter,
 	}, nil
 }
 
