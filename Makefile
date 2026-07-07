@@ -1,5 +1,8 @@
 .PHONY: build test test-race test-cover lint vet fmt clean login serve bridge smoke e2e upgrade-check
 
+# fmt uses process substitution; force bash so `make lint` works under a POSIX /bin/sh
+SHELL := /bin/bash
+
 BIN := ./bin/whatsapp-mcp
 PKGS := ./...
 GO := go
