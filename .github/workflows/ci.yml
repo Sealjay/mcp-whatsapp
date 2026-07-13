@@ -2,10 +2,17 @@ name: CI
 
 on:
   push:
-    branches: [main, 'claude/**']
+    branches: [main]
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE']
   pull_request:
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE']
   schedule:
     - cron: '17 6 * * 1'  # weekly whatsmeow upgrade probe
+
+# Supersede in-flight runs when a branch gets a newer push; never cancel main.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   test:
@@ -31,18 +38,9 @@ jobs:
       - run: go test -race -coverprofile=cover.out ./...
       - run: go tool cover -func=cover.out | tail -1
       - run: go build ./...
-
-  mdtest-parity:
-    # Fails the build if a whatsmeow method we call disappears from mdtest,
-    # which is an early signal that upstream removed or renamed the API.
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: 'stable'
-      - run: go mod download
       - name: mdtest parity grep
+        # Fails if a whatsmeow method we call disappears upstream — an early
+        # signal that the API was removed or renamed.
         run: bash ./scripts/mdtest-parity.sh
 
   upgrade-check:

@@ -43,7 +43,7 @@ Bump roughly every 30 days:
 make upgrade-check
 ```
 
-`.github/workflows/ci.yml` runs this weekly. The `mdtest-parity` job fails if any method on `*whatsmeow.Client` we call disappears upstream. Current pin: see `go.mod` (`go.mau.fi/whatsmeow`).
+`.github/workflows/ci.yml` runs this weekly. The `mdtest parity grep` step in the test job fails if any method on `*whatsmeow.Client` we call disappears upstream. Current pin: see `go.mod` (`go.mau.fi/whatsmeow`).
 
 ## Feature implementation map
 
