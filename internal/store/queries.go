@@ -256,12 +256,8 @@ func (s *Store) SearchContacts(ctx context.Context, query string) ([]Contact, er
 		if err := rows.Scan(&jid, &name); err != nil {
 			return nil, err
 		}
-		phone := jid
-		if idx := strings.Index(jid, "@"); idx >= 0 {
-			phone = jid[:idx]
-		}
 		result = append(result, Contact{
-			PhoneNumber: phone,
+			PhoneNumber: jidUser(jid),
 			Name:        name.String,
 			JID:         jid,
 		})
@@ -284,11 +280,7 @@ func (s *Store) SearchContacts(ctx context.Context, query string) ([]Contact, er
 		if seen[jid] {
 			continue
 		}
-		phone := jid
-		if idx := strings.Index(jid, "@"); idx >= 0 {
-			phone = jid[:idx]
-		}
-		result = append(result, Contact{PhoneNumber: phone, Name: name, JID: jid})
+		result = append(result, Contact{PhoneNumber: jidUser(jid), Name: name, JID: jid})
 	}
 	sort.Slice(result, func(i, j int) bool {
 		if result[i].Name != result[j].Name {
@@ -374,10 +366,7 @@ func (s *Store) GetSenderName(ctx context.Context, senderJID string) string {
 		return name.String
 	}
 
-	phonePart := senderJID
-	if idx := strings.Index(senderJID, "@"); idx >= 0 {
-		phonePart = senderJID[:idx]
-	}
+	phonePart := jidUser(senderJID)
 
 	// Prefer an exact direct-chat match on phone + @s.whatsapp.net before
 	// falling back to a LIKE — the LIKE can cross-match unrelated rows.
@@ -479,9 +468,8 @@ func (s *Store) resolveSenderPhone(sender string, isGroup bool) string {
 	// In groups the sender may be a bare user (phone or lid). Try the LID
 	// map first in case it's an @lid-style user part.
 	resolved := s.ResolveLIDToJID(sender + "@s.whatsapp.net")
-	parts := strings.Split(resolved, "@")
-	if len(parts) > 0 && parts[0] != "" {
-		return parts[0]
+	if u := jidUser(resolved); u != "" {
+		return u
 	}
 	return sender
 }

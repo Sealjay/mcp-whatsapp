@@ -4,9 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"os"
-	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 
@@ -58,10 +56,10 @@ func downloadMediaResult(r client.DownloadResult) (*mcp.CallToolResult, error) {
 
 // readInlineMedia returns an ImageContent or AudioContent block for the file
 // at path, or (nil, false) if the file is missing, unreadable, or larger
-// than inlineMediaMaxBytes. The MIME type is sniffed from the leading
-// bytes via http.DetectContentType so we get the real format regardless of
-// the filename WhatsApp assigns (all photos are named `.jpg` even when the
-// underlying bytes are WebP, and all voice notes are named `.ogg`).
+// than inlineMediaMaxBytes. The MIME type is sniffed via sniffResourceMIME
+// (resources.go) so we get the real format regardless of the filename
+// WhatsApp assigns (all photos are named `.jpg` even when the underlying
+// bytes are WebP, and all voice notes are named `.ogg`).
 func readInlineMedia(path, mediaType string) (mcp.Content, bool) {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -74,19 +72,12 @@ func readInlineMedia(path, mediaType string) (mcp.Content, bool) {
 	if err != nil {
 		return nil, false
 	}
-	mimeType := http.DetectContentType(data)
+	mimeType := sniffResourceMIME(data, mediaType)
 	encoded := base64.StdEncoding.EncodeToString(data)
 	switch mediaType {
 	case "image":
 		return mcp.NewImageContent(encoded, mimeType), true
 	case "audio":
-		// http.DetectContentType returns application/ogg for the Ogg container
-		// (Ogg can carry audio, video, or subtitles). WhatsApp audio messages
-		// are always Opus-in-Ogg, so promote to audio/ogg — otherwise MCP
-		// clients see an application/* payload and won't render it as audio.
-		if strings.HasPrefix(mimeType, "application/") {
-			mimeType = "audio/ogg"
-		}
 		return mcp.NewAudioContent(encoded, mimeType), true
 	}
 	return nil, false

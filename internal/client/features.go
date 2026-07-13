@@ -143,15 +143,7 @@ func (c *Client) SendReply(ctx context.Context, chatJID, targetMessageID, target
 			Text:        proto.String(body),
 			ContextInfo: ctxInfo,
 		},
-	}
-
-	// Preserve ephemeral timer behavior for replies as well.
-	if chat.Server == "g.us" {
-		if gi, err := c.wa.GetGroupInfo(ctx, chat); err == nil && gi.DisappearingTimer > 0 {
-			msg.MessageContextInfo = &waProto.MessageContextInfo{
-				MessageAddOnDurationInSecs: proto.Uint32(gi.DisappearingTimer),
-			}
-		}
+		MessageContextInfo: c.ephemeralContextInfo(ctx, chat),
 	}
 
 	if _, err := c.wa.SendMessage(ctx, chat, msg); err != nil {

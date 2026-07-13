@@ -38,17 +38,11 @@ var privacySettingValues = []types.PrivacySetting{
 	types.PrivacySettingOff,
 }
 
-func joinPrivacyNames() string {
-	parts := make([]string, len(privacySettingTypes))
-	for i, n := range privacySettingTypes {
-		parts[i] = string(n)
-	}
-	return strings.Join(parts, ", ")
-}
-
-func joinPrivacyValues() string {
-	parts := make([]string, len(privacySettingValues))
-	for i, v := range privacySettingValues {
+// joinNames renders a slice of string-based constants (privacy setting
+// names or values) as a comma-separated list for error messages.
+func joinNames[T ~string](vals []T) string {
+	parts := make([]string, len(vals))
+	for i, v := range vals {
 		parts[i] = string(v)
 	}
 	return strings.Join(parts, ", ")
@@ -105,7 +99,7 @@ func validatePrivacySettingName(name string) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("invalid name %q: must be one of %s", name, joinPrivacyNames())
+	return fmt.Errorf("invalid name %q: must be one of %s", name, joinNames(privacySettingTypes))
 }
 
 // validatePrivacySettingValue returns an error whose message lists the allowed
@@ -116,7 +110,7 @@ func validatePrivacySettingValue(value string) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("invalid value %q: must be one of %s", value, joinPrivacyValues())
+	return fmt.Errorf("invalid value %q: must be one of %s", value, joinNames(privacySettingValues))
 }
 
 // SetPrivacySetting changes a single privacy setting. Returns the resulting

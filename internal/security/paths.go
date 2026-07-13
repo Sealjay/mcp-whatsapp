@@ -28,6 +28,19 @@ func ValidateMediaPath(userPath, allowedRoot string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("media_path %q not accessible: %w", abs, err)
 	}
+	rootResolved, err := resolveRoot(allowedRoot)
+	if err != nil {
+		return "", err
+	}
+	if err := confine("media_path", resolved, rootResolved); err != nil {
+		return "", err
+	}
+	return resolved, nil
+}
+
+// resolveRoot returns allowedRoot absolute, cleaned, and symlink-resolved.
+// A root that does not exist yet falls back to its cleaned absolute form.
+func resolveRoot(allowedRoot string) (string, error) {
 	rootAbs, err := filepath.Abs(allowedRoot)
 	if err != nil {
 		return "", fmt.Errorf("invalid allowed root %q: %w", allowedRoot, err)
@@ -35,13 +48,18 @@ func ValidateMediaPath(userPath, allowedRoot string) (string, error) {
 	rootAbs = filepath.Clean(rootAbs)
 	rootResolved, err := filepath.EvalSymlinks(rootAbs)
 	if err != nil {
-		// Root may not exist yet; fall back to the cleaned absolute form.
-		rootResolved = rootAbs
+		return rootAbs, nil
 	}
-	if resolved != rootResolved && !strings.HasPrefix(resolved, rootResolved+string(filepath.Separator)) {
-		return "", fmt.Errorf("media_path %q is outside allowed root %q; set WHATSAPP_MCP_MEDIA_ROOT or place the file under that root", resolved, rootResolved)
+	return rootResolved, nil
+}
+
+// confine rejects resolved paths that are neither root itself nor under it;
+// field names the offending parameter in the error.
+func confine(field, resolved, root string) error {
+	if resolved != root && !strings.HasPrefix(resolved, root+string(filepath.Separator)) {
+		return fmt.Errorf("%s %q is outside allowed root %q; set WHATSAPP_MCP_MEDIA_ROOT or place the file under that root", field, resolved, root)
 	}
-	return resolved, nil
+	return nil
 }
 
 // ValidateOutputPath is the sister of ValidateMediaPath for files that do
@@ -66,17 +84,12 @@ func ValidateOutputPath(userPath, allowedRoot string) (string, error) {
 	}
 	resolved := filepath.Join(resolvedParent, filepath.Base(abs))
 
-	rootAbs, err := filepath.Abs(allowedRoot)
+	rootResolved, err := resolveRoot(allowedRoot)
 	if err != nil {
-		return "", fmt.Errorf("invalid allowed root %q: %w", allowedRoot, err)
+		return "", err
 	}
-	rootAbs = filepath.Clean(rootAbs)
-	rootResolved, err := filepath.EvalSymlinks(rootAbs)
-	if err != nil {
-		rootResolved = rootAbs
-	}
-	if resolved != rootResolved && !strings.HasPrefix(resolved, rootResolved+string(filepath.Separator)) {
-		return "", fmt.Errorf("output_path %q is outside allowed root %q; set WHATSAPP_MCP_MEDIA_ROOT or place the file under that root", resolved, rootResolved)
+	if err := confine("output_path", resolved, rootResolved); err != nil {
+		return "", err
 	}
 	return resolved, nil
 }

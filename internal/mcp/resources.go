@@ -103,11 +103,3 @@ func sniffResourceMIME(data []byte, mediaType string) string {
 	}
 	return mime
 }
-
-// MediaResourceURI builds a `whatsapp://media/{chat_jid}/{message_id}` URI
-// with the chat_jid URL-encoded. Exported so other packages (in particular
-// the download_media result builder, once these two land together) can
-// emit ResourceLink content blocks pointing at the addressable resource.
-func MediaResourceURI(chatJID, messageID string) string {
-	return mediaURIPrefix + url.PathEscape(chatJID) + "/" + messageID
-}

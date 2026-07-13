@@ -37,9 +37,8 @@ type resetter interface {
 // pairHandlers bundles the three pair endpoints against a shared cache and
 // a resetter. Wire to an *http.ServeMux via mount.
 type pairHandlers struct {
-	cache   *PairCache
-	reset   resetter
-	onReset func() // optional hook invoked after a successful Logout
+	cache *PairCache
+	reset resetter
 
 	// Rate limiters keyed by endpoint path.
 	pairGetLimiter   *Limiter
@@ -160,8 +159,5 @@ func (h *pairHandlers) handlePairReset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.cache.Reset()
-	if h.onReset != nil {
-		h.onReset()
-	}
 	http.Redirect(w, r, "/pair", http.StatusSeeOther)
 }

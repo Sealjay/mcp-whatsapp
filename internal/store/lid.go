@@ -2,6 +2,13 @@ package store
 
 import "strings"
 
+// jidUser returns the part of a JID before "@" (the user/phone segment).
+// If jid has no "@", the whole string is returned unchanged.
+func jidUser(jid string) string {
+	u, _, _ := strings.Cut(jid, "@")
+	return u
+}
+
 // ResolveLIDToJID converts a LID-based JID to a standard JID using the
 // whatsmeow_lid_map table. If the JID is already in standard format or the
 // lookup fails, the original JID is returned.
@@ -13,7 +20,7 @@ func (s *Store) ResolveLIDToJID(jid string) string {
 		return jid
 	}
 
-	lid := strings.Split(jid, "@")[0]
+	lid := jidUser(jid)
 
 	var phone string
 	err := s.whatsmeowDB.QueryRow("SELECT pn FROM whatsmeow_lid_map WHERE lid = ?", lid).Scan(&phone)
@@ -30,7 +37,7 @@ func (s *Store) ResolveJIDToPhone(jid string) string {
 		return ""
 	}
 	if strings.HasSuffix(jid, "@s.whatsapp.net") {
-		return strings.Split(jid, "@")[0]
+		return jidUser(jid)
 	}
 	if strings.HasSuffix(jid, "@lid") {
 		resolved := s.ResolveLIDToJID(jid)

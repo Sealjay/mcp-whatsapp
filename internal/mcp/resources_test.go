@@ -1,7 +1,6 @@
 package mcp
 
 import (
-	"net/url"
 	"testing"
 )
 
@@ -74,43 +73,6 @@ func TestParseMediaURI(t *testing.T) {
 			}
 			if msgID != tc.wantMsgID {
 				t.Errorf("messageID = %q, want %q", msgID, tc.wantMsgID)
-			}
-		})
-	}
-}
-
-// TestMediaResourceURI_RoundTrip: URIs produced by MediaResourceURI must
-// parse back to the same (chat_jid, message_id) pair. This is the contract
-// clients rely on when they take a URI out of a ResourceLink and hand it
-// straight to resources/read.
-func TestMediaResourceURI_RoundTrip(t *testing.T) {
-	cases := []struct {
-		chatJID   string
-		messageID string
-	}{
-		{"971503469348@s.whatsapp.net", "3EB01D1397A581AAC94B29"},
-		{"120363404898807161@g.us", "3EB037D9D1351AA170A086"},
-		{"971503469348:45@s.whatsapp.net", "M-DEVICE-SPECIFIC"}, // multidevice JID with `:`
-	}
-	for _, tc := range cases {
-		t.Run(tc.chatJID, func(t *testing.T) {
-			uri := MediaResourceURI(tc.chatJID, tc.messageID)
-
-			// Sanity check: the emitted URI must be a valid RFC 3986 URI so
-			// clients can hand it verbatim to standard URL parsers.
-			if _, err := url.Parse(uri); err != nil {
-				t.Fatalf("emitted URI %q is not a valid URL: %v", uri, err)
-			}
-
-			gotChatJID, gotMsgID, err := parseMediaURI(uri)
-			if err != nil {
-				t.Fatalf("round-trip parse failed for %q: %v", uri, err)
-			}
-			if gotChatJID != tc.chatJID {
-				t.Errorf("chatJID round-trip: got %q, want %q", gotChatJID, tc.chatJID)
-			}
-			if gotMsgID != tc.messageID {
-				t.Errorf("messageID round-trip: got %q, want %q", gotMsgID, tc.messageID)
 			}
 		})
 	}

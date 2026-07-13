@@ -85,19 +85,8 @@ func (c *Client) send(ctx context.Context, recipient, message, mediaPath string,
 	}
 
 	// Detect disappearing timer for group chats; direct chats default to 0.
-	var ephemeralExpiration uint32
-	if recipientJID.Server == "g.us" {
-		if gi, err := c.wa.GetGroupInfo(ctx, recipientJID); err == nil && gi.DisappearingTimer > 0 {
-			ephemeralExpiration = gi.DisappearingTimer
-			c.log.Infof("Auto-detected group disappearing timer: %d seconds", ephemeralExpiration)
-		}
-	}
-
-	msg := &waProto.Message{}
-	if ephemeralExpiration > 0 {
-		msg.MessageContextInfo = &waProto.MessageContextInfo{
-			MessageAddOnDurationInSecs: proto.Uint32(ephemeralExpiration),
-		}
+	msg := &waProto.Message{
+		MessageContextInfo: c.ephemeralContextInfo(ctx, recipientJID),
 	}
 
 	if mediaPath != "" {
@@ -120,6 +109,23 @@ func (c *Client) send(ctx context.Context, recipient, message, mediaPath string,
 		Success: true,
 		Message: fmt.Sprintf("Message sent to %s", recipient),
 		ID:      resp.ID,
+	}
+}
+
+// ephemeralContextInfo returns the MessageContextInfo carrying the group's
+// disappearing-message timer for chat, or nil if chat isn't a group,
+// GetGroupInfo fails, or no timer is set. Shared by send and SendReply.
+func (c *Client) ephemeralContextInfo(ctx context.Context, chat types.JID) *waProto.MessageContextInfo {
+	if chat.Server != "g.us" {
+		return nil
+	}
+	gi, err := c.wa.GetGroupInfo(ctx, chat)
+	if err != nil || gi.DisappearingTimer == 0 {
+		return nil
+	}
+	c.log.Infof("Auto-detected group disappearing timer: %d seconds", gi.DisappearingTimer)
+	return &waProto.MessageContextInfo{
+		MessageAddOnDurationInSecs: proto.Uint32(gi.DisappearingTimer),
 	}
 }
 
@@ -288,20 +294,7 @@ func (c *Client) persistSent(ctx context.Context, recipientJID types.JID, msgID,
 		chatJID = c.store.ResolveLIDToJID(chatJID)
 	}
 
-	var chatName string
-	if recipientJID.Server == "g.us" {
-		if gi, err := c.wa.GetGroupInfo(ctx, recipientJID); err == nil && gi.Name != "" {
-			chatName = gi.Name
-		} else {
-			chatName = "Group " + recipientJID.User
-		}
-	} else {
-		if contact, err := c.wa.Store.Contacts.GetContact(ctx, recipientJID); err == nil && contact.FullName != "" {
-			chatName = contact.FullName
-		} else {
-			chatName = recipientJID.User
-		}
-	}
+	chatName := c.resolveChatNameFallback(ctx, recipientJID, "")
 
 	now := time.Now()
 	if err := c.store.StoreChat(chatJID, chatName, now); err != nil {

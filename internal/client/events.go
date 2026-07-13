@@ -359,30 +359,40 @@ func (c *Client) GetChatName(jid types.JID, chatJID string, conversation *waHist
 		}
 
 		if name == "" {
-			groupInfo, err := c.wa.GetGroupInfo(context.Background(), jid)
-			if err == nil && groupInfo.Name != "" {
-				name = groupInfo.Name
-			} else {
-				name = "Group " + jid.User
-			}
+			name = c.resolveChatNameFallback(context.Background(), jid, sender)
 		}
 
 		c.log.Infof("Using group name: %s", name)
 	} else {
 		c.log.Infof("Getting name for contact: %s", chatJID)
 
-		contact, err := c.wa.Store.Contacts.GetContact(context.Background(), jid)
-		if err == nil && contact.FullName != "" {
-			name = contact.FullName
-		} else if sender != "" {
-			name = sender
-		} else {
-			name = jid.User
-		}
+		name = c.resolveChatNameFallback(context.Background(), jid, sender)
+
 		c.log.Infof("Using contact name: %s", name)
 	}
 
 	return name
+}
+
+// resolveChatNameFallback looks up a chat's name via GetGroupInfo (for
+// groups) or the contact store (for DMs), falling back to sender (if given)
+// and finally jid.User. This is the shared tail of GetChatName's group and
+// contact branches, also used directly by persistSent (which has no
+// conversation metadata to check first).
+func (c *Client) resolveChatNameFallback(ctx context.Context, jid types.JID, sender string) string {
+	if jid.Server == "g.us" {
+		if gi, err := c.wa.GetGroupInfo(ctx, jid); err == nil && gi.Name != "" {
+			return gi.Name
+		}
+		return "Group " + jid.User
+	}
+	if contact, err := c.wa.Store.Contacts.GetContact(ctx, jid); err == nil && contact.FullName != "" {
+		return contact.FullName
+	}
+	if sender != "" {
+		return sender
+	}
+	return jid.User
 }
 
 // extractTextContent returns the plain-text body of a Message, if any.
