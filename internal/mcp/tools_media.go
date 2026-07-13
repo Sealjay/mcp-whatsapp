@@ -30,7 +30,10 @@ func (s *Server) registerSendPoll() {
 		mcp.WithString("question", mcp.Required(), mcp.Description("poll question text shown above the options")),
 		mcp.WithArray("options", mcp.Required(), mcp.Items(map[string]any{"type": "string"}), mcp.Description("poll option labels; must contain between 2 and 32 entries")),
 		mcp.WithNumber("selectable_count", mcp.DefaultNumber(1), mcp.Description("how many options each voter may pick; 1 = single-choice (default), higher = multi-select up to this cap")),
+		mcp.WithReadOnlyHintAnnotation(false),
 		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(false),
+		mcp.WithOpenWorldHintAnnotation(true),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a sendPollArgs) (*mcp.CallToolResult, error) {
 		if r := requireNonEmpty("recipient", a.Recipient); r != nil {
@@ -62,8 +65,10 @@ func (s *Server) registerSendPollVote() {
 		mcp.WithString("chat_jid", mcp.Required(), mcp.Description(jidDesc)),
 		mcp.WithString("poll_message_id", mcp.Required(), mcp.Description("WhatsApp message ID of the poll to vote on (use `ID` returned by send_poll, or `message_id` from list_messages)")),
 		mcp.WithArray("options", mcp.Required(), mcp.Items(map[string]any{"type": "string"}), mcp.Description("option labels to pick; must match the poll's option text exactly, between 1 and 32 entries")),
+		mcp.WithReadOnlyHintAnnotation(false),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(true),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a sendPollVoteArgs) (*mcp.CallToolResult, error) {
 		if r := requireNonEmpty("chat_jid", a.ChatJID); r != nil {
@@ -130,7 +135,10 @@ func (s *Server) registerSendContactCard() {
 		mcp.WithString("name", mcp.Required(), mcp.Description("contact display name; also used as the FN in the synthesised vCard")),
 		mcp.WithString("phone", mcp.Description("phone number (digits preferred); embedded in the synthesised vCard when `vcard` is not supplied")),
 		mcp.WithString("vcard", mcp.Description("raw vCard 3.0 string; when set, name+phone synthesis is skipped and this string is sent as-is")),
+		mcp.WithReadOnlyHintAnnotation(false),
 		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(false),
+		mcp.WithOpenWorldHintAnnotation(true),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a sendContactCardArgs) (*mcp.CallToolResult, error) {
 		if r := requireNonEmpty("recipient", a.Recipient); r != nil {

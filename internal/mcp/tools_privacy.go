@@ -25,6 +25,7 @@ func (s *Server) registerGetBlocklist() {
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(true),
 	)
 	s.mcp.AddTool(tool, func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		js, err := s.client.GetBlocklist(ctx)
@@ -43,7 +44,10 @@ func (s *Server) registerBlockContact() {
 	tool := mcp.NewTool("block_contact",
 		mcp.WithDescription("Block a contact so they can no longer send the paired user messages or see your last seen, profile photo, or status; the blocked contact is not explicitly notified but will see undelivered messages on their side. Idempotent if already blocked. Reversible via unblock_contact. Returns the plain-text string `Blocked <jid>`."),
 		mcp.WithString("jid", mcp.Required(), mcp.Description(recipientDesc)),
+		mcp.WithReadOnlyHintAnnotation(false),
+		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(true),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a blocklistMutationArgs) (*mcp.CallToolResult, error) {
 		if r := requireNonEmpty("jid", a.JID); r != nil {
@@ -60,8 +64,10 @@ func (s *Server) registerUnblockContact() {
 	tool := mcp.NewTool("unblock_contact",
 		mcp.WithDescription("Unblock a previously blocked contact, restoring their ability to message the paired user and see your last seen/profile/status; the contact is not notified. Idempotent if already unblocked. Reversible via block_contact. Use get_blocklist to see who is currently blocked. Returns the plain-text string `Unblocked <jid>`."),
 		mcp.WithString("jid", mcp.Required(), mcp.Description(recipientDesc)),
+		mcp.WithReadOnlyHintAnnotation(false),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(true),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a blocklistMutationArgs) (*mcp.CallToolResult, error) {
 		if r := requireNonEmpty("jid", a.JID); r != nil {
@@ -82,8 +88,10 @@ func (s *Server) registerSendPresence() {
 	tool := mcp.NewTool("send_presence",
 		mcp.WithDescription("Set the paired user's own global online availability; contacts permitted by privacy settings see `online` or last-seen accordingly. Reversible by calling again with the inverse state. Use send_typing for per-chat composing/recording indicators instead. Returns a JSON object `{success, message}`."),
 		mcp.WithString("state", mcp.Required(), mcp.Enum("available", "unavailable"), mcp.Description("availability to broadcast: `available` (online) or `unavailable` (offline)")),
+		mcp.WithReadOnlyHintAnnotation(false),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(true),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a sendPresenceArgs) (*mcp.CallToolResult, error) {
 		if r := requireNonEmpty("state", a.State); r != nil {
@@ -102,6 +110,7 @@ func (s *Server) registerGetPrivacySettings() {
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(true),
 	)
 	s.mcp.AddTool(tool, func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		js, err := s.client.GetPrivacySettings(ctx)
@@ -136,8 +145,10 @@ func (s *Server) registerSetPrivacySetting() {
 		mcp.WithDescription("Change a single WhatsApp privacy knob (read-receipts, last-seen, online, group-add, etc.) for the paired account; takes effect immediately and may change who can see your activity or contact you. Reversible by calling again with the previous value (capture it via get_privacy_settings first). Not every name/value combination is valid — WhatsApp rejects invalid combinations server-side. Returns a JSON document echoing the updated settings."),
 		mcp.WithString("name", mcp.Required(), mcp.Enum(privacySettingNames...), mcp.Description("privacy knob to change; one of the WhatsApp setting names (e.g. `last`, `readreceipts`, `groupadd`, `online`)")),
 		mcp.WithString("value", mcp.Required(), mcp.Enum(privacySettingValues...), mcp.Description("new value; one of the WhatsApp privacy values (e.g. `all`, `contacts`, `none`, `match_last_seen`)")),
+		mcp.WithReadOnlyHintAnnotation(false),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(true),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a setPrivacySettingArgs) (*mcp.CallToolResult, error) {
 		if r := requireNonEmpty("name", a.Name); r != nil {
@@ -162,8 +173,10 @@ func (s *Server) registerSetStatusMessage() {
 	tool := mcp.NewTool("set_status_message",
 		mcp.WithDescription("Update the paired user's WhatsApp profile `About` text; contacts permitted by privacy settings see the new text on the profile screen. Reversible by calling again with the previous text or with an empty string to clear. Note: this is the static profile About line, not the temporary `Status` story feed. Returns a JSON object `{success, message}`."),
 		mcp.WithString("text", mcp.Required(), mcp.Description("new About text; pass an empty string to clear")),
+		mcp.WithReadOnlyHintAnnotation(false),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(true),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a setStatusMessageArgs) (*mcp.CallToolResult, error) {
 		if err := s.client.SetStatusMessage(ctx, a.Text); err != nil {

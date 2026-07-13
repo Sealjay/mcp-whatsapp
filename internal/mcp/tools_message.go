@@ -34,7 +34,10 @@ func (s *Server) registerEditMessage() {
 		mcp.WithString("chat_jid", mcp.Required(), mcp.Description(jidDesc)),
 		mcp.WithString("message_id", mcp.Required(), mcp.Description("WhatsApp message ID of your own message to edit (use `message_id` from list_messages)")),
 		mcp.WithString("new_body", mcp.Required(), mcp.Description("replacement message body text")),
+		mcp.WithReadOnlyHintAnnotation(false),
+		mcp.WithDestructiveHintAnnotation(true),
 		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(true),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a editMessageArgs) (*mcp.CallToolResult, error) {
 		if err := s.client.EditMessage(ctx, a.ChatJID, a.MessageID, a.NewBody); err != nil {
@@ -58,6 +61,10 @@ func (s *Server) registerDeleteMessage() {
 		mcp.WithString("chat_jid", mcp.Required(), mcp.Description(jidDesc)),
 		mcp.WithString("message_id", mcp.Required(), mcp.Description("WhatsApp message ID of the message to revoke (use `message_id` from list_messages)")),
 		mcp.WithString("sender_jid", mcp.Description("JID of the original sender; required when deleting someone else's message as a group admin, leave empty when deleting your own ("+jidDesc+")")),
+		mcp.WithReadOnlyHintAnnotation(false),
+		mcp.WithDestructiveHintAnnotation(true),
+		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(true),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a deleteMessageArgs) (*mcp.CallToolResult, error) {
 		if err := s.client.DeleteMessage(ctx, a.ChatJID, a.MessageID, a.SenderJID); err != nil {
@@ -81,8 +88,10 @@ func (s *Server) registerMarkRead() {
 		mcp.WithString("chat_jid", mcp.Required(), mcp.Description(jidDesc)),
 		mcp.WithArray("message_ids", mcp.Required(), mcp.Description("list of WhatsApp message IDs to ack (use `message_id` values from list_messages); must be non-empty"), mcp.Items(map[string]any{"type": "string"})),
 		mcp.WithString("sender_jid", mcp.Description("JID of the original sender; required in group chats, omit in 1:1 chats ("+jidDesc+")")),
+		mcp.WithReadOnlyHintAnnotation(false),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(true),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a markReadArgs) (*mcp.CallToolResult, error) {
 		if len(a.MessageIDs) == 0 {
@@ -107,8 +116,10 @@ func (s *Server) registerMarkChatRead() {
 		mcp.WithDescription("Ack the most recent incoming messages in a chat to clear its unread badge; senders receive read receipts (subject to their privacy settings). Cannot be unread once acked. Use mark_read for ack-by-message-ID. Returns the plain-text string `Acked N message(s) in <chat_jid>`."),
 		mcp.WithString("chat_jid", mcp.Required(), mcp.Description(jidDesc)),
 		mcp.WithNumber("limit", mcp.DefaultNumber(50), mcp.Description("how many of the most recent incoming messages to ack (default 50)")),
+		mcp.WithReadOnlyHintAnnotation(false),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(true),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a markChatReadArgs) (*mcp.CallToolResult, error) {
 		if a.ChatJID == "" {
@@ -134,7 +145,10 @@ func (s *Server) registerRequestSync() {
 		mcp.WithDescription("Ask WhatsApp servers to backfill historical messages for a chat into the local cache; messages arrive asynchronously and become queryable via list_messages once delivered. No effect on the chat itself or other users. If `from_timestamp` is omitted, the request anchors on the newest cached message. Returns a plain-text confirmation describing what was requested."),
 		mcp.WithString("chat_jid", mcp.Description(jidDesc)),
 		mcp.WithString("from_timestamp", mcp.Description("ISO-8601 UTC timestamp marking the lower bound; if omitted, anchors on the newest cached message in the chat")),
+		mcp.WithReadOnlyHintAnnotation(false),
 		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(true),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a requestSyncArgs) (*mcp.CallToolResult, error) {
 		if a.ChatJID == "" {
@@ -170,8 +184,10 @@ func (s *Server) registerDownloadMedia() {
 		mcp.WithString("message_id", mcp.Required(), mcp.Description("WhatsApp message ID of a media message (use `message_id` from list_messages)")),
 		mcp.WithString("chat_jid", mcp.Required(), mcp.Description(jidDesc)),
 		mcp.WithString("output_path", mcp.Description("optional absolute path under the configured media root (`WHATSAPP_MCP_MEDIA_ROOT`, default `<store>/uploads/`); parent directory must exist; calls are skipped if the file already exists; omit to write only to the daemon cache")),
+		mcp.WithReadOnlyHintAnnotation(false),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(true),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a downloadMediaArgs) (*mcp.CallToolResult, error) {
 		if a.MessageID == "" || a.ChatJID == "" {
