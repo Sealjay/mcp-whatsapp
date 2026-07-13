@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -229,8 +230,10 @@ func (s *Store) GetChat(ctx context.Context, jid string, includeLastMessage bool
 	return &c, nil
 }
 
-// SearchContacts does a LIKE search over chats (excluding groups) and returns
-// up to 50 contacts ordered by name, jid.
+// SearchContacts does a LIKE search over chats (excluding groups) and the
+// synced whatsmeow_contacts address book, and returns up to 50 contacts
+// ordered by name, jid. Address-book names win over chat names, which for
+// 1:1 chats are often just the bare phone number.
 func (s *Store) SearchContacts(ctx context.Context, query string) ([]Contact, error) {
 	pattern := "%" + query + "%"
 	rows, err := s.db.QueryContext(ctx, `
@@ -265,6 +268,36 @@ func (s *Store) SearchContacts(ctx context.Context, query string) ([]Contact, er
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+
+	// Merge in address-book matches (issue #21: saved names live in
+	// whatsmeow_contacts, not chats).
+	names := s.searchContactNames(pattern)
+	seen := make(map[string]bool, len(result))
+	for i, c := range result {
+		seen[c.JID] = true
+		if n := names[c.JID]; n != "" {
+			result[i].Name = n
+		}
+	}
+	for jid, name := range names {
+		if seen[jid] {
+			continue
+		}
+		phone := jid
+		if idx := strings.Index(jid, "@"); idx >= 0 {
+			phone = jid[:idx]
+		}
+		result = append(result, Contact{PhoneNumber: phone, Name: name, JID: jid})
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Name != result[j].Name {
+			return result[i].Name < result[j].Name
+		}
+		return result[i].JID < result[j].JID
+	})
+	if len(result) > 50 {
+		result = result[:50]
 	}
 	return result, nil
 }
@@ -325,9 +358,15 @@ func (s *Store) GetMessageContext(ctx context.Context, messageID string, before,
 	}, nil
 }
 
-// GetSenderName resolves a sender JID to a display name using the chats table.
-// Falls back to the input value if no name is found.
+// GetSenderName resolves a sender JID to a display name, preferring the
+// synced address book (whatsmeow_contacts) over the chats table — 1:1 chat
+// names are often just the bare phone number. Falls back to the input value
+// if no name is found.
 func (s *Store) GetSenderName(ctx context.Context, senderJID string) string {
+	if name := s.ContactName(senderJID); name != "" {
+		return name
+	}
+
 	var name sql.NullString
 	err := s.db.QueryRowContext(ctx,
 		"SELECT name FROM chats WHERE jid = ? LIMIT 1", senderJID).Scan(&name)

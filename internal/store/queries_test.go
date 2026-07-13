@@ -209,8 +209,8 @@ func TestSearchContacts_ExcludesGroups(t *testing.T) {
 			t.Fatalf("SearchContacts returned a group: %+v", c)
 		}
 	}
-	if len(contacts) != 2 {
-		t.Fatalf("expected 2 contacts (Alice + Bob), got %d", len(contacts))
+	if len(contacts) != 3 {
+		t.Fatalf("expected 3 contacts (Alice + Bob + address-book Jane), got %d", len(contacts))
 	}
 
 	// Filtering by name.
@@ -282,6 +282,57 @@ func TestGetSenderName(t *testing.T) {
 	got := s.GetSenderName(ctx, "447700000001@s.whatsapp.net")
 	if got != "Alice" {
 		t.Fatalf("expected Alice, got %q", got)
+	}
+}
+
+// Issue #21: name lookups must reach the synced address book
+// (whatsmeow_contacts), not just the chats table.
+func TestSearchContacts_AddressBook(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	for _, q := range []string{"Jane", "Jane Smith", "jane s"} {
+		got, err := s.SearchContacts(ctx, q)
+		if err != nil {
+			t.Fatalf("SearchContacts(%q): %v", q, err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("SearchContacts(%q): expected 1 match, got %+v", q, got)
+		}
+		c := got[0]
+		if c.Name != "Jane Smith Delhi" || c.JID != "919900000000@s.whatsapp.net" || c.PhoneNumber != "919900000000" {
+			t.Fatalf("SearchContacts(%q): unexpected contact %+v", q, c)
+		}
+	}
+
+	// Number search must also surface the saved name, not the bare number.
+	got, err := s.SearchContacts(ctx, "919900000000")
+	if err != nil {
+		t.Fatalf("SearchContacts by number: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "Jane Smith Delhi" {
+		t.Fatalf("expected Jane by number, got %+v", got)
+	}
+}
+
+func TestGetSenderName_AddressBook(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	// No chats row for this JID — the name must come from whatsmeow_contacts.
+	if got := s.GetSenderName(ctx, "919900000000@s.whatsapp.net"); got != "Jane Smith Delhi" {
+		t.Fatalf("expected address-book name, got %q", got)
+	}
+}
+
+func TestContactName_ResolvesLID(t *testing.T) {
+	s := openTestStore(t)
+
+	if got := s.ContactName("11223344@lid"); got != "Jane Smith Delhi" {
+		t.Fatalf("expected LID to resolve to address-book name, got %q", got)
+	}
+	if got := s.ContactName("999@s.whatsapp.net"); got != "" {
+		t.Fatalf("expected empty for unknown contact, got %q", got)
 	}
 }
 

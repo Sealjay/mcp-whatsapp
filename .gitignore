@@ -3,4 +3,5 @@ claude_desktop_config.json
 whatsapp.log
 bin/
 cover.out
-store/
+# Anchored: only the repo-root session/data dir, NOT internal/store/
+/store/

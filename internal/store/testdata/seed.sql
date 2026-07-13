@@ -40,6 +40,18 @@ CREATE TABLE IF NOT EXISTS whatsmeow_lid_map (
     pn TEXT
 );
 
+-- whatsmeow synced address book (normally lives in whatsapp.db, co-located for tests)
+CREATE TABLE IF NOT EXISTS whatsmeow_contacts (
+    our_jid        TEXT,
+    their_jid      TEXT,
+    first_name     TEXT,
+    full_name      TEXT,
+    push_name      TEXT,
+    business_name  TEXT,
+    redacted_phone TEXT,
+    PRIMARY KEY (our_jid, their_jid)
+);
+
 -- Chats: one direct, one group, one direct that was a LID chat originally,
 -- plus an unresolved @lid chat that SearchContacts must filter out.
 INSERT INTO chats (jid, name, last_message_time) VALUES
@@ -73,4 +85,10 @@ VALUES
 
 -- Sample LID mapping (lid 99887766 -> phone 447700000002)
 INSERT INTO whatsmeow_lid_map (lid, pn) VALUES
-    ('99887766', '447700000002');
+    ('99887766', '447700000002'),
+    ('11223344', '919900000000');
+
+-- Synced address-book contact with no chats row (issue #21 repro: name
+-- lookups must reach whatsmeow_contacts, not just chats).
+INSERT INTO whatsmeow_contacts (our_jid, their_jid, first_name, full_name, push_name, business_name) VALUES
+    ('me@s.whatsapp.net', '919900000000@s.whatsapp.net', 'Jane', 'Jane Smith Delhi', 'Jane S', '');
