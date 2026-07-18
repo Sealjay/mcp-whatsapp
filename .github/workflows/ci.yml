@@ -46,6 +46,8 @@ jobs:
   upgrade-check:
     if: github.event_name == 'schedule'
     runs-on: ubuntu-latest
+    permissions:
+      issues: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -53,11 +55,40 @@ jobs:
           go-version: 'stable'
       - name: Install ffmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Record pinned version
+        run: echo "OLD_PIN=$(go list -m -f '{{.Version}}' go.mau.fi/whatsmeow)" >> "$GITHUB_ENV"
       - run: go get go.mau.fi/whatsmeow@main
       - run: go mod tidy
+      - name: Record upstream version
+        run: echo "NEW_PIN=$(go list -m -f '{{.Version}}' go.mau.fi/whatsmeow)" >> "$GITHUB_ENV"
       - run: go build ./...
       - run: go test ./...
-      - name: Summarise
+      - name: Record build/test status
+        if: always()
+        run: echo "STATUS=${{ job.status }}" >> "$GITHUB_ENV"
+      - name: Report bump to rolling issue
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "whatsmeow @main builds and tests green."
-          echo "Open a PR with the go.mod/go.sum changes if you want to accept the bump."
+          if [ -z "${OLD_PIN:-}" ] || [ -z "${NEW_PIN:-}" ]; then
+            echo "version check did not complete; skipping report"
+            exit 0
+          fi
+          if [ "$OLD_PIN" = "$NEW_PIN" ]; then
+            echo "whatsmeow already current, nothing to report"
+            exit 0
+          fi
+          body="whatsmeow can be bumped.
+
+          - Current pin: \`$OLD_PIN\`
+          - Upstream @main: \`$NEW_PIN\`
+          - Build and test against @main: $STATUS
+
+          Run \`go get go.mau.fi/whatsmeow@main && go mod tidy\` to accept."
+          num=$(gh issue list --label upstream --state open --limit 1 --json number -q '.[0].number')
+          if [ -n "$num" ]; then
+            gh issue edit "$num" --body "$body"
+          else
+            gh issue create --title "whatsmeow upstream update available" --label upstream --body "$body"
+          fi
