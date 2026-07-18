@@ -1,9 +1,9 @@
 module github.com/sealjay/mcp-whatsapp
 
-go 1.25.0
+go 1.25.5
 
 require (
-	github.com/mark3labs/mcp-go v0.48.0
+	github.com/mark3labs/mcp-go v0.56.0
 	github.com/mattn/go-sqlite3 v1.14.48
 	github.com/mdp/qrterminal v1.0.1
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
@@ -22,6 +22,7 @@ require (
 	github.com/mattn/go-isatty v0.0.22 // indirect
 	github.com/petermattis/goid v0.0.0-20260713124913-97594f28f5ca // indirect
 	github.com/rs/zerolog v1.35.1 // indirect
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2 // indirect
 	github.com/spf13/cast v1.7.1 // indirect
 	github.com/vektah/gqlparser/v2 v2.5.36 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
