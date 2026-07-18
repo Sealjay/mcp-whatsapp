@@ -94,7 +94,7 @@ func (s *Server) BoundAddr() string {
 // sequence: drain HTTP → Disconnect driver.
 func (s *Server) Run(ctx context.Context) error {
 	mux := http.NewServeMux()
-	handlers := newPairHandlers(s.cache, driverLogout{s.cfg.Driver})
+	handlers := newPairHandlers(s.cache, s.cfg.Driver)
 	handlers.mount(mux)
 	if s.cfg.MCPMount != nil {
 		s.cfg.MCPMount(mux)
@@ -181,13 +181,6 @@ func (s *Server) onLoggedOut(ctx context.Context) func() {
 		_ = s.cfg.Driver.StartPairing(ctx, onQR, onPairSuccess)
 	}
 }
-
-// driverLogout adapts a pairDriver to the resetter interface required by
-// /pair/reset. Having it as a named type (rather than inline closure) keeps
-// the flow easy to read in Run.
-type driverLogout struct{ d pairDriver }
-
-func (d driverLogout) Logout(ctx context.Context) error { return d.d.Logout(ctx) }
 
 func authMiddleware(next http.Handler, token string) http.Handler {
 	if token == "" {

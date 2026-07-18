@@ -44,14 +44,12 @@ func buildVCard(name, phone string) string {
 
 // digitsOnly returns s with every non-digit character removed.
 func digitsOnly(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	for _, r := range s {
-		if r >= '0' && r <= '9' {
-			b.WriteRune(r)
+	return strings.Map(func(r rune) rune {
+		if r < '0' || r > '9' {
+			return -1
 		}
-	}
-	return b.String()
+		return r
+	}, s)
 }
 
 // escapeVCardText applies the RFC 6350 text-value escaping rules for the

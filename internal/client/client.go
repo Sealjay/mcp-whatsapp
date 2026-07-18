@@ -266,6 +266,3 @@ func (c *Client) WA() *whatsmeow.Client { return c.wa }
 
 // Store returns the message cache.
 func (c *Client) Store() *store.Store { return c.store }
-
-// Log returns the logger used by this client.
-func (c *Client) Log() waLog.Logger { return c.log }

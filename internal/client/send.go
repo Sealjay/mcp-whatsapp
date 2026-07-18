@@ -19,7 +19,7 @@ import (
 	"github.com/sealjay/mcp-whatsapp/internal/store"
 )
 
-// SendResult is the public return value from Send/SendMedia.
+// SendResult is the public return value from Send/SendMediaWithOptions.
 type SendResult struct {
 	Success bool
 	Message string
@@ -40,21 +40,12 @@ func (c *Client) Send(ctx context.Context, recipient, message string) SendResult
 	return c.send(ctx, recipient, message, "", false)
 }
 
-// SendMedia uploads mediaPath and sends it with optional caption.
-func (c *Client) SendMedia(ctx context.Context, recipient, caption, mediaPath string) SendResult {
-	return c.SendMediaWithOptions(ctx, SendMediaOptions{
-		Recipient: recipient,
-		Caption:   caption,
-		MediaPath: mediaPath,
-	})
-}
-
 // SendMediaWithOptions is the extensible entry point for media sends.
 func (c *Client) SendMediaWithOptions(ctx context.Context, opts SendMediaOptions) SendResult {
 	return c.send(ctx, opts.Recipient, opts.Caption, opts.MediaPath, opts.ViewOnce)
 }
 
-// send is the unified implementation shared by Send and SendMedia.
+// send is the unified implementation shared by Send and SendMediaWithOptions.
 func (c *Client) send(ctx context.Context, recipient, message, mediaPath string, viewOnce bool) SendResult {
 	if !c.wa.IsConnected() {
 		return SendResult{Success: false, Message: "Not connected to WhatsApp"}

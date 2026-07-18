@@ -116,20 +116,7 @@ func (c *Client) Download(ctx context.Context, messageID, chatJID, outputPath st
 	// set, materialise it there from the cache (cheap hardlink + copy
 	// fallback) and return the output path instead.
 	if _, err := os.Stat(localPath); err == nil {
-		returnPath := absPath
-		if resolvedOutput != "" {
-			if err := placeAtOutput(localPath, resolvedOutput); err != nil {
-				return DownloadResult{Success: false, Message: fmt.Sprintf("failed to write output_path: %v", err)}
-			}
-			returnPath = resolvedOutput
-		}
-		return DownloadResult{
-			Success:   true,
-			Message:   fmt.Sprintf("Successfully downloaded %s media", mediaType),
-			MediaType: mediaType,
-			Filename:  filename,
-			Path:      returnPath,
-		}
+		return finalizeDownload(localPath, absPath, resolvedOutput, mediaType, filename)
 	}
 
 	if url == "" || len(mediaKey) == 0 || len(fileSHA256) == 0 || len(fileEncSHA256) == 0 || fileLength == 0 {
@@ -171,6 +158,15 @@ func (c *Client) Download(ctx context.Context, messageID, chatJID, outputPath st
 		return DownloadResult{Success: false, Message: fmt.Sprintf("failed to save media file: %v", err)}
 	}
 
+	c.log.Infof("Successfully downloaded %s media (%d bytes)", mediaType, len(data))
+	return finalizeDownload(localPath, absPath, resolvedOutput, mediaType, filename)
+}
+
+// finalizeDownload materialises the cached file at resolvedOutput (if set)
+// and builds the success DownloadResult. Shared by the cache-hit and
+// fresh-download paths in Download, which differ only in the log line
+// emitted just before this call.
+func finalizeDownload(localPath, absPath, resolvedOutput, mediaType, filename string) DownloadResult {
 	returnPath := absPath
 	if resolvedOutput != "" {
 		if err := placeAtOutput(localPath, resolvedOutput); err != nil {
@@ -178,8 +174,6 @@ func (c *Client) Download(ctx context.Context, messageID, chatJID, outputPath st
 		}
 		returnPath = resolvedOutput
 	}
-
-	c.log.Infof("Successfully downloaded %s media (%d bytes)", mediaType, len(data))
 	return DownloadResult{
 		Success:   true,
 		Message:   fmt.Sprintf("Successfully downloaded %s media", mediaType),

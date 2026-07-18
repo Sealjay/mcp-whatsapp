@@ -32,21 +32,12 @@ type Redactor struct {
 // Someone with independent knowledge of the user's contacts can still
 // correlate "…4567" with a specific phone number.
 func (r *Redactor) JID(jid string) string {
+	user, suffix := splitJID(jid)
 	if r.Debug {
-		user := jid
-		suffix := ""
-		if i := strings.Index(jid, "@"); i >= 0 {
-			user = jid[:i]
-			suffix = jid[i:]
-		}
 		if phoneDigitRun.MatchString(user) {
 			return "*****" + last5(user) + suffix
 		}
 		return jid
-	}
-	user := jid
-	if i := strings.Index(jid, "@"); i >= 0 {
-		user = jid[:i]
 	}
 	if user == "" {
 		return "…"
@@ -56,6 +47,15 @@ func (r *Redactor) JID(jid string) string {
 		return "…" + string(runes[len(runes)-4:])
 	}
 	return "…" + user
+}
+
+// splitJID splits jid at "@" into its user-part and "@"-prefixed suffix. If
+// jid contains no "@", suffix is "".
+func splitJID(jid string) (user, suffix string) {
+	if i := strings.Index(jid, "@"); i >= 0 {
+		return jid[:i], jid[i:]
+	}
+	return jid, ""
 }
 
 // Body returns a fixed-shape summary "[<len>B: text|url|command]" with phone

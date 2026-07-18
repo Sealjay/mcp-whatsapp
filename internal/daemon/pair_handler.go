@@ -40,7 +40,7 @@ type pairHandlers struct {
 	cache *PairCache
 	reset resetter
 
-	// Rate limiters keyed by endpoint path.
+	// One rate limiter per endpoint.
 	pairGetLimiter   *Limiter
 	pairQRLimiter    *Limiter
 	pairResetLimiter *Limiter
@@ -98,7 +98,7 @@ func (h *pairHandlers) mount(mux *http.ServeMux) {
 }
 
 func (h *pairHandlers) handlePairPage(w http.ResponseWriter, r *http.Request) {
-	if !h.pairGetLimiter.Allow("/pair") {
+	if !h.pairGetLimiter.Allow() {
 		w.Header().Set("Retry-After", "12")
 		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 		return
@@ -119,7 +119,7 @@ func (h *pairHandlers) handlePairPage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *pairHandlers) handlePairQR(w http.ResponseWriter, r *http.Request) {
-	if !h.pairQRLimiter.Allow("/pair/qr.png") {
+	if !h.pairQRLimiter.Allow() {
 		w.Header().Set("Retry-After", "6")
 		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 		return
@@ -144,7 +144,7 @@ func (h *pairHandlers) handlePairReset(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
-	if !h.pairResetLimiter.Allow("/pair/reset") {
+	if !h.pairResetLimiter.Allow() {
 		w.Header().Set("Retry-After", "60")
 		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 		return

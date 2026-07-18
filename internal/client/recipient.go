@@ -30,10 +30,5 @@ func NormalizeRecipient(recipient string) (string, error) {
 }
 
 func isAllDigits(s string) bool {
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
+	return strings.IndexFunc(s, func(r rune) bool { return r < '0' || r > '9' }) == -1
 }

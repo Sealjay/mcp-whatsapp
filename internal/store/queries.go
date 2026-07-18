@@ -9,6 +9,10 @@ import (
 	"time"
 )
 
+// listMessageColumns is the 8-column projection shared by ListMessages and
+// queryContextWindow.
+const listMessageColumns = "messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type"
+
 // ListMessagesParams holds the filters accepted by ListMessages. Zero values
 // mean "unset" except for Limit, which defaults to 20 when <= 0.
 type ListMessagesParams struct {
@@ -63,7 +67,7 @@ func (s *Store) ListMessages(ctx context.Context, params ListMessagesParams) ([]
 	}
 
 	var b strings.Builder
-	b.WriteString("SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type FROM messages")
+	b.WriteString("SELECT " + listMessageColumns + " FROM messages")
 	b.WriteString(" JOIN chats ON messages.chat_jid = chats.jid")
 	if len(whereClauses) > 0 {
 		b.WriteString(" WHERE ")
@@ -130,29 +134,7 @@ func (s *Store) ListChats(ctx context.Context, query string, limit, page int, in
 	}
 
 	var b strings.Builder
-	b.WriteString(`SELECT
-		chats.jid,
-		chats.name,
-		chats.last_message_time,`)
-	if includeLastMessage {
-		b.WriteString(`
-		latest_msg.content,
-		latest_msg.sender,
-		latest_msg.is_from_me
-	FROM chats
-		LEFT JOIN messages AS latest_msg ON chats.jid = latest_msg.chat_jid
-		AND latest_msg.rowid = (
-			SELECT rowid FROM messages
-			WHERE chat_jid = chats.jid
-			ORDER BY timestamp DESC LIMIT 1
-		)`)
-	} else {
-		b.WriteString(`
-		NULL,
-		NULL,
-		NULL
-	FROM chats`)
-	}
+	b.WriteString(chatSelectSQL("chats", includeLastMessage))
 
 	var args []any
 	if query != "" {
@@ -193,29 +175,7 @@ func (s *Store) ListChats(ctx context.Context, query string, limit, page int, in
 // GetChat returns a single chat by JID. Returns (nil, nil) when not found.
 func (s *Store) GetChat(ctx context.Context, jid string, includeLastMessage bool) (*Chat, error) {
 	var b strings.Builder
-	b.WriteString(`SELECT
-		c.jid,
-		c.name,
-		c.last_message_time,`)
-	if includeLastMessage {
-		b.WriteString(`
-		m.content,
-		m.sender,
-		m.is_from_me
-	FROM chats c
-		LEFT JOIN messages m ON c.jid = m.chat_jid
-		AND m.rowid = (
-			SELECT rowid FROM messages
-			WHERE chat_jid = c.jid
-			ORDER BY timestamp DESC LIMIT 1
-		)`)
-	} else {
-		b.WriteString(`
-		NULL,
-		NULL,
-		NULL
-	FROM chats c`)
-	}
+	b.WriteString(chatSelectSQL("c", includeLastMessage))
 	b.WriteString(" WHERE c.jid = ?")
 
 	row := s.db.QueryRowContext(ctx, b.String(), jid)
@@ -358,32 +318,36 @@ func (s *Store) GetSenderName(ctx context.Context, senderJID string) string {
 	if name := s.ContactName(senderJID); name != "" {
 		return name
 	}
-
-	var name sql.NullString
-	err := s.db.QueryRowContext(ctx,
-		"SELECT name FROM chats WHERE jid = ? LIMIT 1", senderJID).Scan(&name)
-	if err == nil && name.Valid && name.String != "" {
-		return name.String
+	if name := s.chatNameByJID(ctx, senderJID); name != "" {
+		return name
 	}
 
 	phonePart := jidUser(senderJID)
 
 	// Prefer an exact direct-chat match on phone + @s.whatsapp.net before
 	// falling back to a LIKE — the LIKE can cross-match unrelated rows.
-	var nameExact sql.NullString
-	err = s.db.QueryRowContext(ctx,
-		"SELECT name FROM chats WHERE jid = ? LIMIT 1", phonePart+"@s.whatsapp.net").Scan(&nameExact)
-	if err == nil && nameExact.Valid && nameExact.String != "" {
-		return nameExact.String
+	if name := s.chatNameByJID(ctx, phonePart+"@s.whatsapp.net"); name != "" {
+		return name
 	}
 
 	var name2 sql.NullString
-	err = s.db.QueryRowContext(ctx,
+	err := s.db.QueryRowContext(ctx,
 		"SELECT name FROM chats WHERE jid LIKE ? LIMIT 1", "%"+phonePart+"%").Scan(&name2)
 	if err == nil && name2.Valid && name2.String != "" {
 		return name2.String
 	}
 	return senderJID
+}
+
+// chatNameByJID looks up chats.name for an exact jid match. Returns "" if
+// not found or the stored name is empty.
+func (s *Store) chatNameByJID(ctx context.Context, jid string) string {
+	var name sql.NullString
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT name FROM chats WHERE jid = ? LIMIT 1", jid).Scan(&name); err == nil {
+		return name.String
+	}
+	return ""
 }
 
 // queryContextWindow fetches `limit` messages in chat either strictly before
@@ -396,7 +360,7 @@ func (s *Store) queryContextWindow(ctx context.Context, chatJID string, anchor t
 		order = "ASC"
 	}
 	q := fmt.Sprintf(`
-		SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type
+		SELECT `+listMessageColumns+`
 		FROM messages
 		JOIN chats ON messages.chat_jid = chats.jid
 		WHERE messages.chat_jid = ? AND messages.timestamp %s ?
@@ -472,6 +436,43 @@ func (s *Store) resolveSenderPhone(sender string, isGroup bool) string {
 		return u
 	}
 	return sender
+}
+
+// chatSelectSQL returns the shared 6-column chat projection (jid, name,
+// last_message_time, plus the latest message's content/sender/is_from_me
+// when includeLastMessage) used by both ListChats and GetChat. alias
+// qualifies the chat column references; pass "chats" for an unaliased FROM
+// clause (ListChats) or a short alias like "c" when the caller appends its
+// own WHERE clause on that alias (GetChat).
+func chatSelectSQL(alias string, includeLastMessage bool) string {
+	from := "chats"
+	if alias != "chats" {
+		from = "chats " + alias
+	}
+	if !includeLastMessage {
+		return fmt.Sprintf(`SELECT
+		%s.jid,
+		%s.name,
+		%s.last_message_time,
+		NULL,
+		NULL,
+		NULL
+	FROM %s`, alias, alias, alias, from)
+	}
+	return fmt.Sprintf(`SELECT
+		%s.jid,
+		%s.name,
+		%s.last_message_time,
+		latest_msg.content,
+		latest_msg.sender,
+		latest_msg.is_from_me
+	FROM %s
+		LEFT JOIN messages AS latest_msg ON %s.jid = latest_msg.chat_jid
+		AND latest_msg.rowid = (
+			SELECT rowid FROM messages
+			WHERE chat_jid = %s.jid
+			ORDER BY timestamp DESC LIMIT 1
+		)`, alias, alias, alias, from, alias, alias)
 }
 
 // scanChatRow scans the 6-column projection used by ListChats and GetChat.
