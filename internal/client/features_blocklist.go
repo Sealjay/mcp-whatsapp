@@ -39,7 +39,7 @@ func (c *Client) updateBlocklist(ctx context.Context, jidRaw string, action even
 	if !c.wa.IsConnected() {
 		return errors.New("not connected to WhatsApp")
 	}
-	jid, err := parseParticipantJID(jidRaw)
+	jid, err := parseRecipient(jidRaw)
 	if err != nil {
 		return fmt.Errorf("invalid contact JID: %w", err)
 	}

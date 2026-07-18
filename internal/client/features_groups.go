@@ -11,28 +11,11 @@ import (
 	"go.mau.fi/whatsmeow/types"
 )
 
-// parseParticipantJID normalises a "phone or JID" input into a types.JID,
-// defaulting to the user server when no domain is supplied.
-func parseParticipantJID(raw string) (types.JID, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return types.JID{}, errors.New("empty participant")
-	}
-	if strings.Contains(raw, "@") {
-		jid, err := types.ParseJID(raw)
-		if err != nil {
-			return types.JID{}, fmt.Errorf("invalid participant JID %q: %w", raw, err)
-		}
-		return jid, nil
-	}
-	return types.JID{User: raw, Server: types.DefaultUserServer}, nil
-}
-
 // parseParticipantJIDs batch-parses a slice of phone/JID strings.
 func parseParticipantJIDs(raws []string) ([]types.JID, error) {
 	out := make([]types.JID, len(raws))
 	for i, r := range raws {
-		jid, err := parseParticipantJID(r)
+		jid, err := parseRecipient(r)
 		if err != nil {
 			return nil, err
 		}

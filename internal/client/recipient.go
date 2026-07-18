@@ -16,6 +16,7 @@ import (
 // See issue #16: WhatsApp JIDs require bare digits in the user portion, but
 // LLMs and humans both reach for E.164-with-`+` they know from other channels.
 func NormalizeRecipient(recipient string) (string, error) {
+	recipient = strings.TrimSpace(recipient)
 	if recipient == "" {
 		return "", fmt.Errorf("recipient: required")
 	}

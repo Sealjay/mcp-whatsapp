@@ -18,31 +18,50 @@ func newDisconnectedClient() *Client {
 }
 
 func TestParseParticipantJID_PhoneOnly(t *testing.T) {
-	got, err := parseParticipantJID("447700000001")
+	got, err := parseRecipient("447700000001")
 	if err != nil {
-		t.Fatalf("parseParticipantJID(phone) error: %v", err)
+		t.Fatalf("parseRecipient(phone) error: %v", err)
 	}
 	if got.User != "447700000001" || got.Server != types.DefaultUserServer {
-		t.Fatalf("parseParticipantJID(phone) = %v, want %s@%s", got, "447700000001", types.DefaultUserServer)
+		t.Fatalf("parseRecipient(phone) = %v, want %s@%s", got, "447700000001", types.DefaultUserServer)
 	}
 }
 
 func TestParseParticipantJID_FullJID(t *testing.T) {
-	got, err := parseParticipantJID("447700000001@s.whatsapp.net")
+	got, err := parseRecipient("447700000001@s.whatsapp.net")
 	if err != nil {
-		t.Fatalf("parseParticipantJID(jid) error: %v", err)
+		t.Fatalf("parseRecipient(jid) error: %v", err)
 	}
 	if got.User != "447700000001" {
-		t.Fatalf("parseParticipantJID(jid).User = %q, want 447700000001", got.User)
+		t.Fatalf("parseRecipient(jid).User = %q, want 447700000001", got.User)
 	}
 }
 
 func TestParseParticipantJID_Empty(t *testing.T) {
-	if _, err := parseParticipantJID(""); err == nil {
-		t.Fatalf("parseParticipantJID(\"\") expected error")
+	if _, err := parseRecipient(""); err == nil {
+		t.Fatalf("parseRecipient(\"\") expected error")
 	}
-	if _, err := parseParticipantJID("   "); err == nil {
-		t.Fatalf("parseParticipantJID(whitespace) expected error")
+	if _, err := parseRecipient("   "); err == nil {
+		t.Fatalf("parseRecipient(whitespace) expected error")
+	}
+}
+
+func TestParseParticipantJID_LeadingPlus(t *testing.T) {
+	got, err := parseRecipient("+447967960994")
+	if err != nil {
+		t.Fatalf("parseRecipient(leading plus) error: %v", err)
+	}
+	if got.User != "447967960994" {
+		t.Fatalf("parseRecipient(leading plus).User = %q, want %q", got.User, "447967960994")
+	}
+}
+
+func TestParseParticipantJID_NonDigit(t *testing.T) {
+	if _, err := parseRecipient("44 7967 960994"); err == nil {
+		t.Fatalf("parseRecipient(\"44 7967 960994\") expected error")
+	}
+	if _, err := parseRecipient("hello"); err == nil {
+		t.Fatalf("parseRecipient(\"hello\") expected error")
 	}
 }
 
