@@ -40,6 +40,7 @@ type Config struct {
 // Client wraps a whatsmeow.Client together with the message cache and logger.
 type Client struct {
 	wa               *whatsmeow.Client
+	downloadMedia    func(context.Context, whatsmeow.DownloadableMessage) ([]byte, error)
 	store            *store.Store
 	log              waLog.Logger
 	handlerID        uint32
@@ -124,6 +125,7 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 
 	return &Client{
 		wa:               wa,
+		downloadMedia:    wa.Download,
 		store:            cfg.Store,
 		log:              logger,
 		allowedMediaRoot: cfg.AllowedMediaRoot,
