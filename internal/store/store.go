@@ -218,6 +218,36 @@ func (s *Store) GetNewestMessage(chatJID string) (id string, ts time.Time, isFro
 	return
 }
 
+// GetOldestMessage returns the earliest message row for a chat. It is the
+// counterpart to GetNewestMessage and exists so the history-sync code can
+// anchor a backward walk on a real cached message: WhatsApp resolves an
+// on-demand history-sync cursor by message key, so extending history backwards
+// requires the key of the oldest row we already hold, not a synthesised one.
+func (s *Store) GetOldestMessage(chatJID string) (id string, ts time.Time, isFromMe bool, err error) {
+	err = s.db.QueryRow(`
+		SELECT id, timestamp, is_from_me
+		FROM messages
+		WHERE chat_jid = ?
+		ORDER BY timestamp ASC
+		LIMIT 1`, chatJID).Scan(&id, &ts, &isFromMe)
+	return
+}
+
+// GetMessageAtOrBefore returns the newest message row at or before ts for a
+// chat. It lets a caller anchor a history-sync request on a real cached
+// message near a requested point in time rather than fabricating a key that
+// the server cannot resolve. Returns sql.ErrNoRows when the chat has nothing
+// at or before ts.
+func (s *Store) GetMessageAtOrBefore(chatJID string, before time.Time) (id string, ts time.Time, isFromMe bool, err error) {
+	err = s.db.QueryRow(`
+		SELECT id, timestamp, is_from_me
+		FROM messages
+		WHERE chat_jid = ? AND timestamp <= ?
+		ORDER BY timestamp DESC
+		LIMIT 1`, chatJID, before).Scan(&id, &ts, &isFromMe)
+	return
+}
+
 // HasInboundFrom reports whether the cache holds at least one message we
 // received (is_from_me = 0) in the given chat. It is the "have we ever heard
 // from this JID" signal the rate limiter uses to classify a send target as a
