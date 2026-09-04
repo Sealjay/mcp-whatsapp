@@ -1,0 +1,10 @@
+.git
+bin/
+store/
+*.db
+*.db-shm
+*.db-wal
+cover.out
+*.log
+claude_desktop_config.json
+docs/superpowers
