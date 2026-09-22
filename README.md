@@ -167,24 +167,40 @@ The daemon is designed to run independently of any MCP client. Three supported l
 
 ```bash
 docker build -t whatsapp-mcp --build-arg VERSION=$(git describe --tags --always) .
+```
+
+Pair once, before starting the long-running daemon — `login` and `serve` both take an exclusive lock on the store, so running `login` via `docker exec` against an already-running `serve` container fails with `another whatsapp-mcp instance is already running`. A one-off container sharing the same volume avoids that: no `serve` is running yet, so there's nothing to contend with, and the QR renders straight to your terminal with no browser or auth header involved.
+
+```bash
+docker run --rm -it -v whatsapp-mcp-store:/home/app/store whatsapp-mcp login
+```
+
+Then start the daemon proper:
+
+```bash
 docker run -d --name whatsapp-mcp -v whatsapp-mcp-store:/home/app/store whatsapp-mcp
 ```
 
 The image binds `127.0.0.1:8765` inside the container by default, same as the binary — a plain `-p 8765:8765` publish won't reach it, since Docker's port NAT requires the process to accept connections on a non-loopback interface, which this daemon refuses without an explicit opt-in. To make it reachable from the host, override `CMD` with the same `-allow-remote` + token pair described above:
 
 ```bash
+TOKEN=$(openssl rand -hex 32)
+echo "$TOKEN"   # your MCP client needs this — it's the bearer token below
+
 docker run -d --name whatsapp-mcp \
   -v whatsapp-mcp-store:/home/app/store \
   -p 127.0.0.1:8765:8765 \
-  -e WHATSAPP_MCP_TOKEN=$(openssl rand -hex 32) \
+  -e WHATSAPP_MCP_TOKEN="$TOKEN" \
   whatsapp-mcp serve -addr 0.0.0.0:8765 -allow-remote
 ```
 
-Then point your MCP client at `http://127.0.0.1:8765/mcp` with an `Authorization: Bearer <token>` header, and pair once via `docker exec -it whatsapp-mcp whatsapp-mcp -store /home/app/store login` (terminal QR — simpler than getting a browser to send that header to `/pair`).
+Point your MCP client at `http://127.0.0.1:8765/mcp` with an `Authorization: Bearer $TOKEN` header — pairing is already done from the `login` step above, so nothing further is needed.
+
+WhatsApp rotates the linked-device session roughly every 20 days. Outside Docker the running daemon just hands out a fresh QR at `/pair` when that happens (see below) — but in Docker, `/pair` isn't reachable the same way (the basic run above never publishes the port; the remote-bind one needs the same bearer header as `/mcp`, which a plain browser visit can't send). Re-pair by repeating the `login` step instead: `docker stop whatsapp-mcp`, re-run the one-off `login` container above, then `docker start whatsapp-mcp`.
 
 The image is a few hundred MB, almost entirely ffmpeg's Debian dependency chain (libav*, X11 render libs it pulls in incidentally) rather than the ~30MB Go binary itself.
 
-First-time pairing happens in a browser: start the daemon, open `http://127.0.0.1:8765/pair`, scan the QR with your phone. No terminal required. WhatsApp's multidevice protocol rotates the linked-device session roughly every 20 days; when that happens, the `/pair` page serves a fresh QR automatically — visit it again and re-pair. The `/pair/*` endpoints are rate-limited (5 GET/min, 1 POST/min on `/pair/reset`) and CSRF-protected.
+Outside Docker, first-time pairing happens in a browser instead: start the daemon, open `http://127.0.0.1:8765/pair`, scan the QR with your phone. No terminal required. WhatsApp's multidevice protocol rotates the linked-device session roughly every 20 days; when that happens, the `/pair` page serves a fresh QR automatically — visit it again and re-pair. The `/pair/*` endpoints are rate-limited (15 GET/min, 1 POST/min on `/pair/reset`) and CSRF-protected.
 
 Flags and environment variables for `serve`:
 
