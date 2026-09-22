@@ -53,10 +53,14 @@ type pairHandlers struct {
 // newPairHandlers constructs handlers with default rate limiters.
 func newPairHandlers(cache *PairCache, reset resetter) *pairHandlers {
 	return &pairHandlers{
-		cache:            cache,
-		reset:            reset,
-		pairGetLimiter:   NewLimiter(5.0/60.0, 5),   // 5/min, burst 5
-		pairQRLimiter:    NewLimiter(10.0/60.0, 10), // 10/min, burst 10
+		cache: cache,
+		reset: reset,
+		// pair.html.tmpl auto-refreshes the whole page (and its embedded QR
+		// image) every 5s while unpaired, so both limiters below must refill
+		// faster than that or a single viewer permanently rate-limits itself
+		// once the burst is spent.
+		pairGetLimiter:   NewLimiter(15.0/60.0, 5),  // 15/min, burst 5
+		pairQRLimiter:    NewLimiter(15.0/60.0, 10), // 15/min, burst 10
 		pairResetLimiter: NewLimiter(1.0/60.0, 1),   // 1/min, burst 1
 	}
 }
@@ -99,7 +103,7 @@ func (h *pairHandlers) mount(mux *http.ServeMux) {
 
 func (h *pairHandlers) handlePairPage(w http.ResponseWriter, r *http.Request) {
 	if !h.pairGetLimiter.Allow() {
-		w.Header().Set("Retry-After", "12")
+		w.Header().Set("Retry-After", "4")
 		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 		return
 	}
@@ -120,7 +124,7 @@ func (h *pairHandlers) handlePairPage(w http.ResponseWriter, r *http.Request) {
 
 func (h *pairHandlers) handlePairQR(w http.ResponseWriter, r *http.Request) {
 	if !h.pairQRLimiter.Allow() {
-		w.Header().Set("Retry-After", "6")
+		w.Header().Set("Retry-After", "4")
 		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 		return
 	}
