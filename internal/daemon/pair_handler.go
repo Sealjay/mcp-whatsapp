@@ -53,13 +53,13 @@ type pairHandlers struct {
 // newPairHandlers constructs handlers with default rate limiters.
 func newPairHandlers(cache *PairCache, reset resetter) *pairHandlers {
 	return &pairHandlers{
-		cache:            cache,
-		reset:            reset,
+		cache: cache,
+		reset: reset,
 		// pair.html.tmpl auto-refreshes the whole page (and its embedded QR
 		// image) every 5s while unpaired, so both limiters below must refill
 		// faster than that or a single viewer permanently rate-limits itself
 		// once the burst is spent.
-		pairGetLimiter:   NewLimiter(15.0/60.0, 5),   // 15/min, burst 5
+		pairGetLimiter:   NewLimiter(15.0/60.0, 5),  // 15/min, burst 5
 		pairQRLimiter:    NewLimiter(15.0/60.0, 10), // 15/min, burst 10
 		pairResetLimiter: NewLimiter(1.0/60.0, 1),   // 1/min, burst 1
 	}
