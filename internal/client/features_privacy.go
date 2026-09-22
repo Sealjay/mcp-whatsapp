@@ -143,7 +143,7 @@ func (c *Client) SetStatusMessage(ctx context.Context, text string) error {
 	if !c.wa.IsConnected() {
 		return errors.New("not connected to WhatsApp")
 	}
-	if err := c.wa.SetStatusMessage(ctx, text); err != nil {
+	if err := c.wa.SetStatusMessage(ctx, types.SetStatusInput{Text: &text}); err != nil {
 		return fmt.Errorf("set status message: %w", err)
 	}
 	return nil
