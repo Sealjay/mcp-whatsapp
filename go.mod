@@ -8,6 +8,7 @@ require (
 	github.com/mdp/qrterminal v1.0.1
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	go.mau.fi/whatsmeow v0.0.0-20260921121126-35ae40906e74
+	golang.org/x/sys v0.48.0
 	google.golang.org/protobuf v1.36.12
 )
 
@@ -32,7 +33,6 @@ require (
 	golang.org/x/exp v0.0.0-20260908205506-85c1c2202aba // indirect
 	golang.org/x/net v0.59.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
-	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	rsc.io/qr v0.2.0 // indirect
 )
