@@ -46,3 +46,36 @@ func TestRateLimit_AllowBurstThenDeny(t *testing.T) {
 		t.Fatal("tokens should be capped at burst")
 	}
 }
+
+// TestRateLimit_PairPageSurvivesFiveSecondAutoRefresh is a regression test
+// for the bug fixed in #37: pair.html.tmpl auto-refreshes the whole page
+// (and its embedded QR image) every 5s while unpaired. The previous
+// pairGetLimiter (5/min = 1 token per 12s) and pairQRLimiter (10/min = 1
+// token per 6s) both refilled slower than that cadence, so a single normal
+// viewer burned through the burst and then got a permanent 429 for as long
+// as the page stayed open — every refilled token was consumed by the next
+// automatic reload before it could accumulate.
+//
+// The current rate (15/min = 1 token per 4s, matching newPairHandlers'
+// pairGetLimiter and pairQRLimiter) must stay strictly ahead of a 5s poll
+// indefinitely, not just for the first few cycles.
+func TestRateLimit_PairPageSurvivesFiveSecondAutoRefresh(t *testing.T) {
+	clk := &fakeClock{now: time.Now()}
+	l := newLimiterWithClock(15.0/60.0, 5, clk) // matches pairGetLimiter
+
+	for i := 0; i < 5; i++ {
+		if !l.Allow() {
+			t.Fatalf("burst request %d should be allowed", i)
+		}
+	}
+
+	// Simulate 30 auto-refreshes at the page's real 5s cadence (2.5 minutes
+	// of a viewer leaving the tab open). Refill (1 token/4s) outpaces
+	// consumption (1 token/5s), so the bucket must never run dry again.
+	for i := 0; i < 30; i++ {
+		clk.Advance(5 * time.Second)
+		if !l.Allow() {
+			t.Fatalf("refresh %d at 5s cadence should never be permanently rate-limited", i)
+		}
+	}
+}
