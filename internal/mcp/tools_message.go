@@ -3,9 +3,13 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
+
+	"github.com/sealjay/mcp-whatsapp/internal/client"
 )
 
 // registerMessageTools wires message-mutation and history tools:
@@ -135,16 +139,58 @@ func (s *Server) registerMarkChatRead() {
 
 // -- request_sync -----------------------------------------------------------
 
+// flexInt is an int that also accepts a JSON string, for clients that send
+// numeric arguments as strings (typically when working from a cached tool
+// schema that predates the parameter).
+type flexInt int
+
+func (f *flexInt) UnmarshalJSON(b []byte) error {
+	s := strings.TrimSpace(strings.Trim(string(b), `"`))
+	if s == "" || s == "null" {
+		*f = 0
+		return nil
+	}
+	v, err := strconv.Atoi(s)
+	if err != nil {
+		return fmt.Errorf("count: must be an integer, got %s", string(b))
+	}
+	*f = flexInt(v)
+	return nil
+}
+
+// flexBool is a bool that also accepts a JSON string ("true"/"false"), for
+// clients sending boolean arguments as strings from a cached tool schema.
+type flexBool bool
+
+func (f *flexBool) UnmarshalJSON(b []byte) error {
+	s := strings.TrimSpace(strings.Trim(string(b), `"`))
+	if s == "" || s == "null" {
+		return nil
+	}
+	v, err := strconv.ParseBool(s)
+	if err != nil {
+		return fmt.Errorf("use_lid: must be a boolean, got %s", string(b))
+	}
+	*f = flexBool(v)
+	return nil
+}
+
 type requestSyncArgs struct {
-	ChatJID       string `json:"chat_jid,omitempty"`
-	FromTimestamp string `json:"from_timestamp,omitempty"`
+	ChatJID       string    `json:"chat_jid,omitempty"`
+	FromTimestamp string    `json:"from_timestamp,omitempty"`
+	Anchor        string    `json:"anchor,omitempty"`
+	Count         flexInt   `json:"count,omitempty"`
+	UseLID        *flexBool `json:"use_lid,omitempty"`
 }
 
 func (s *Server) registerRequestSync() {
 	tool := mcp.NewTool("request_sync",
-		mcp.WithDescription("Ask WhatsApp servers to backfill historical messages for a chat into the local cache; messages arrive asynchronously and become queryable via list_messages once delivered. No effect on the chat itself or other users. If `from_timestamp` is omitted, the request anchors on the newest cached message. Returns a plain-text confirmation describing what was requested."),
-		mcp.WithString("chat_jid", mcp.Description(jidDesc)),
-		mcp.WithString("from_timestamp", mcp.Description("ISO-8601 UTC timestamp marking the lower bound; if omitted, anchors on the newest cached message in the chat")),
+		mcp.WithDescription("Ask WhatsApp servers to backfill historical messages for a chat into the local cache; messages arrive asynchronously and become queryable via list_messages once delivered. No effect on the chat itself or other users. The request is always anchored on a real cached message, because WhatsApp resolves the cursor by message key. Use `anchor: \"oldest\"` to extend history backwards, calling repeatedly to walk back `count` messages at a time; `anchor: \"newest\"` (the default) only fills gaps below the most recent message. Returns a plain-text confirmation describing what was requested. An empty result afterwards means the server served nothing for that cursor, typically because the history predates WhatsApp's retention for linked devices."),
+		mcp.WithString("chat_jid", mcp.Required(), mcp.Description(jidDesc)),
+		mcp.WithString("from_timestamp", mcp.Description("ISO-8601 UTC timestamp; anchors on the newest cached message at or before this time, falling back to the oldest cached message when nothing is cached that far back. Ignored when `anchor` is set")),
+		mcp.WithString("anchor", mcp.Description("which cached message to anchor on: `oldest` to extend history backwards, `newest` to fill recent gaps (default)"), mcp.Enum(client.AnchorNewest, client.AnchorOldest)),
+		mcp.WithNumber("count", mcp.DefaultNumber(client.DefaultSyncCount), mcp.Description("how many messages to request before the anchor (default 50)")),
+		mcp.WithBoolean("use_lid", mcp.DefaultBool(true), mcp.Description("resolve the chat to its LID form (default true). Messages predating WhatsApp's LID migration are keyed on the phone-number JID; set false when walking back past that boundary returns empty batches")),
 		mcp.WithReadOnlyHintAnnotation(false),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
@@ -152,7 +198,19 @@ func (s *Server) registerRequestSync() {
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a requestSyncArgs) (*mcp.CallToolResult, error) {
 		if a.ChatJID == "" {
-			return mcp.NewToolResultText("Provide chat_jid to sync. Optionally add from_timestamp (ISO-8601) to anchor on a specific time; omit to anchor on the newest cached message."), nil
+			return mcp.NewToolResultError("chat_jid: required"), nil
+		}
+		switch a.Anchor {
+		case "", client.AnchorNewest, client.AnchorOldest:
+		default:
+			return mcp.NewToolResultError(fmt.Sprintf("anchor: must be %q or %q", client.AnchorNewest, client.AnchorOldest)), nil
+		}
+		if a.Count < 0 {
+			return mcp.NewToolResultError("count: must not be negative"), nil
+		}
+		useLID := true
+		if a.UseLID != nil {
+			useLID = bool(*a.UseLID)
 		}
 		var ts time.Time
 		if a.FromTimestamp != "" {
@@ -162,7 +220,7 @@ func (s *Server) registerRequestSync() {
 			}
 			ts = t
 		}
-		msg, err := s.client.RequestHistorySync(ctx, a.ChatJID, ts)
+		msg, err := s.client.RequestHistorySync(ctx, a.ChatJID, ts, a.Anchor, int(a.Count), useLID)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}

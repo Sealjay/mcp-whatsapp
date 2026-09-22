@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"sort"
 	"strings"
 	"testing"
@@ -445,5 +447,71 @@ func TestGetNewestMessage(t *testing.T) {
 	}
 	if isFromMe {
 		t.Fatalf("expected is_from_me=false, got true")
+	}
+}
+
+func TestGetOldestMessage(t *testing.T) {
+	s := openTestStore(t)
+
+	id, ts, isFromMe, err := s.GetOldestMessage("447700000001@s.whatsapp.net")
+	if err != nil {
+		t.Fatalf("GetOldestMessage: %v", err)
+	}
+	if id != "a1" {
+		t.Fatalf("expected oldest alice msg id a1, got %q", id)
+	}
+	if !ts.Equal(mustTime(t, "2026-01-01 09:00:00")) {
+		t.Fatalf("unexpected timestamp: %v", ts)
+	}
+	if isFromMe {
+		t.Fatalf("expected is_from_me=false, got true")
+	}
+}
+
+func TestGetOldestMessage_EmptyChat(t *testing.T) {
+	s := openTestStore(t)
+
+	_, _, _, err := s.GetOldestMessage("emptychat@s.whatsapp.net")
+	if !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expected sql.ErrNoRows, got %v", err)
+	}
+}
+
+func TestGetMessageAtOrBefore(t *testing.T) {
+	s := openTestStore(t)
+
+	// Between a3 (01-03) and a4 (01-04): the newest at-or-before is a3.
+	id, ts, _, err := s.GetMessageAtOrBefore("447700000001@s.whatsapp.net", mustTime(t, "2026-01-03 12:00:00"))
+	if err != nil {
+		t.Fatalf("GetMessageAtOrBefore: %v", err)
+	}
+	if id != "a3" {
+		t.Fatalf("expected a3, got %q", id)
+	}
+	if !ts.Equal(mustTime(t, "2026-01-03 09:10:00")) {
+		t.Fatalf("unexpected timestamp: %v", ts)
+	}
+}
+
+func TestGetMessageAtOrBefore_Inclusive(t *testing.T) {
+	s := openTestStore(t)
+
+	// Exactly on a3's timestamp: the bound is inclusive.
+	id, _, _, err := s.GetMessageAtOrBefore("447700000001@s.whatsapp.net", mustTime(t, "2026-01-03 09:10:00"))
+	if err != nil {
+		t.Fatalf("GetMessageAtOrBefore: %v", err)
+	}
+	if id != "a3" {
+		t.Fatalf("expected a3 for an exact-timestamp bound, got %q", id)
+	}
+}
+
+func TestGetMessageAtOrBefore_NothingThatFarBack(t *testing.T) {
+	s := openTestStore(t)
+
+	// Older than every cached message: caller falls back to the oldest.
+	_, _, _, err := s.GetMessageAtOrBefore("447700000001@s.whatsapp.net", mustTime(t, "2020-01-01 00:00:00"))
+	if !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expected sql.ErrNoRows, got %v", err)
 	}
 }
