@@ -163,6 +163,27 @@ The daemon is designed to run independently of any MCP client. Three supported l
 
 **Manual.** `./bin/whatsapp-mcp serve -addr 127.0.0.1:8765` in any terminal. Ctrl-C to stop.
 
+**Docker.** A multi-stage `Dockerfile` builds the binary and ships it on `debian:bookworm-slim` with ffmpeg and CA certs. `ENTRYPOINT` bakes in `-store /home/app/store`; `CMD` defaults to `serve` and is a normal Docker command override (`docker run whatsapp-mcp smoke`, `... login`, `... serve -addr ...`). Persist `/home/app/store` or you lose the paired session on every restart:
+
+```bash
+docker build -t whatsapp-mcp --build-arg VERSION=$(git describe --tags --always) .
+docker run -d --name whatsapp-mcp -v whatsapp-mcp-store:/home/app/store whatsapp-mcp
+```
+
+The image binds `127.0.0.1:8765` inside the container by default, same as the binary — a plain `-p 8765:8765` publish won't reach it, since Docker's port NAT requires the process to accept connections on a non-loopback interface, which this daemon refuses without an explicit opt-in. To make it reachable from the host, override `CMD` with the same `-allow-remote` + token pair described above:
+
+```bash
+docker run -d --name whatsapp-mcp \
+  -v whatsapp-mcp-store:/home/app/store \
+  -p 127.0.0.1:8765:8765 \
+  -e WHATSAPP_MCP_TOKEN=$(openssl rand -hex 32) \
+  whatsapp-mcp serve -addr 0.0.0.0:8765 -allow-remote
+```
+
+Then point your MCP client at `http://127.0.0.1:8765/mcp` with an `Authorization: Bearer <token>` header, and pair once via `docker exec -it whatsapp-mcp whatsapp-mcp -store /home/app/store login` (terminal QR — simpler than getting a browser to send that header to `/pair`).
+
+The image is a few hundred MB, almost entirely ffmpeg's Debian dependency chain (libav*, X11 render libs it pulls in incidentally) rather than the ~30MB Go binary itself.
+
 First-time pairing happens in a browser: start the daemon, open `http://127.0.0.1:8765/pair`, scan the QR with your phone. No terminal required. WhatsApp's multidevice protocol rotates the linked-device session roughly every 20 days; when that happens, the `/pair` page serves a fresh QR automatically — visit it again and re-pair. The `/pair/*` endpoints are rate-limited (5 GET/min, 1 POST/min on `/pair/reset`) and CSRF-protected.
 
 Flags and environment variables for `serve`:
