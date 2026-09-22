@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"strings"
 	"time"
 
@@ -419,17 +420,17 @@ func extractMediaInfo(msg *waProto.Message) (mediaType, filename, url, directPat
 	}
 
 	if img := msg.GetImageMessage(); img != nil {
-		return "image", "image_" + time.Now().Format("20060102_150405") + ".jpg",
+		return "image", generatedMediaFilename("image", img.GetFileSHA256(), ".jpg"),
 			img.GetURL(), img.GetDirectPath(),
 			img.GetMediaKey(), img.GetFileSHA256(), img.GetFileEncSHA256(), img.GetFileLength()
 	}
 	if vid := msg.GetVideoMessage(); vid != nil {
-		return "video", "video_" + time.Now().Format("20060102_150405") + ".mp4",
+		return "video", generatedMediaFilename("video", vid.GetFileSHA256(), ".mp4"),
 			vid.GetURL(), vid.GetDirectPath(),
 			vid.GetMediaKey(), vid.GetFileSHA256(), vid.GetFileEncSHA256(), vid.GetFileLength()
 	}
 	if aud := msg.GetAudioMessage(); aud != nil {
-		return "audio", "audio_" + time.Now().Format("20060102_150405") + ".ogg",
+		return "audio", generatedMediaFilename("audio", aud.GetFileSHA256(), ".ogg"),
 			aud.GetURL(), aud.GetDirectPath(),
 			aud.GetMediaKey(), aud.GetFileSHA256(), aud.GetFileEncSHA256(), aud.GetFileLength()
 	}
@@ -441,6 +442,14 @@ func extractMediaInfo(msg *waProto.Message) (mediaType, filename, url, directPat
 	}
 
 	return "", "", "", "", nil, nil, nil, 0
+}
+
+func generatedMediaFilename(prefix string, fileSHA256 []byte, extension string) string {
+	digest := hex.EncodeToString(fileSHA256)
+	if digest == "" {
+		digest = "unknown"
+	}
+	return prefix + "_" + digest + extension
 }
 
 // extractPollOptionNames pulls the option names out of a PollCreationMessage.

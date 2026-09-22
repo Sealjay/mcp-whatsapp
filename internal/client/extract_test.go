@@ -1,7 +1,6 @@
 package client
 
 import (
-	"strings"
 	"testing"
 
 	waProto "go.mau.fi/whatsmeow/binary/proto"
@@ -78,8 +77,8 @@ func TestExtractMediaInfo_Image(t *testing.T) {
 	if mediaType != "image" {
 		t.Errorf("mediaType = %q, want \"image\"", mediaType)
 	}
-	if !strings.HasPrefix(filename, "image_") || !strings.HasSuffix(filename, ".jpg") {
-		t.Errorf("filename = %q, want pattern image_*.jpg", filename)
+	if filename != "image_0304.jpg" {
+		t.Errorf("filename = %q, want stable hash-based filename", filename)
 	}
 	if url != wantURL {
 		t.Errorf("url = %q, want %q", url, wantURL)
@@ -98,6 +97,28 @@ func TestExtractMediaInfo_Image(t *testing.T) {
 	}
 	if length != wantLen {
 		t.Errorf("fileLength = %d, want %d", length, wantLen)
+	}
+}
+
+func TestExtractMediaInfo_GeneratedFilenamesAreStable(t *testing.T) {
+	sha := []byte{0xaa, 0xbb, 0xcc}
+	tests := []struct {
+		name string
+		want string
+		msg  *waProto.Message
+	}{
+		{"image", "image_aabbcc.jpg", &waProto.Message{ImageMessage: &waProto.ImageMessage{FileSHA256: sha}}},
+		{"video", "video_aabbcc.mp4", &waProto.Message{VideoMessage: &waProto.VideoMessage{FileSHA256: sha}}},
+		{"audio", "audio_aabbcc.ogg", &waProto.Message{AudioMessage: &waProto.AudioMessage{FileSHA256: sha}}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, first, _, _, _, _, _, _ := extractMediaInfo(tc.msg)
+			_, second, _, _, _, _, _, _ := extractMediaInfo(tc.msg)
+			if first != tc.want || second != tc.want {
+				t.Fatalf("filenames not stable: %q %q, want %q", first, second, tc.want)
+			}
+		})
 	}
 }
 

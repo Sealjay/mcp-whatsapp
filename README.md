@@ -93,10 +93,10 @@ Restart the client. WhatsApp appears as an available integration. Closing and re
 
 ### Sending and receiving files
 
-`WHATSAPP_MCP_MEDIA_ROOT` gates both directions of file movement:
+`WHATSAPP_MCP_MEDIA_ROOT` is an allowlist root and gates both directions of file movement:
 
 - **Sending** — `send_file` and `send_audio_message` accept a `media_path` argument pointing at the file to send. The path must live under the allowed root.
-- **Receiving** — `download_media` writes decrypted media to the daemon cache at `<store>/<chat_jid>/`. Passing the optional `output_path` argument additionally places the file at a caller-chosen location, which must also live under the allowed root. If a file already exists at `output_path` the call is a no-op.
+- **Receiving** — `download_media` writes decrypted media to the daemon cache at `<store>/<chat_jid>/<hex(message_id)>/<safe_filename>`. The message-ID directory prevents distinct messages with the same filename from sharing cached bytes; cache hits are checked against the stored size and SHA-256 when available. Passing the optional `output_path` argument additionally places the file at a caller-chosen location, which must also live under the allowed root. If a file already exists at `output_path` the call is a no-op.
 
 By default the allowed root is `./store/uploads/` (resolved relative to your `-store` directory). On first run, `serve` creates it automatically; drop files you intend to send into it and point `output_path` here if you want to read incoming media from the same place.
 
