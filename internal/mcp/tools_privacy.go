@@ -21,7 +21,7 @@ func (s *Server) registerPrivacyTools() {
 
 func (s *Server) registerGetBlocklist() {
 	tool := mcp.NewTool("get_blocklist",
-		mcp.WithDescription("Fetch the paired user's current WhatsApp blocklist from the server. Read-only; blocked contacts are not notified by this call. Use block_contact / unblock_contact to mutate the list. Returns a JSON document with the list of blocked JIDs."),
+		mcp.WithDescription("Fetch the paired user's current WhatsApp blocklist from the server. Read-only; blocked contacts are not notified by this call. Use block_contact / unblock_contact to mutate the list. Returns JSON with the blocked JIDs (now usually @lid) plus a Contacts list pairing each JID with its phone number where the LID mapping is known."),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),

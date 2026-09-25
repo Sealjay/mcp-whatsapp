@@ -270,7 +270,7 @@ Flags and environment variables for `serve`:
 
 | Tool | Purpose |
 |---|---|
-| `get_blocklist` | Return the current blocklist |
+| `get_blocklist` | Return the current blocklist (JIDs, usually `@lid`, plus phone numbers where known) |
 | `block_contact` | Block a contact by phone number or JID |
 | `unblock_contact` | Unblock a contact |
 
