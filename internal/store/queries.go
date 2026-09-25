@@ -292,7 +292,7 @@ func (s *Store) GetMessageContext(ctx context.Context, messageID string, before,
 		ChatName:  chatName.String,
 	}
 	target.IsGroup = strings.HasSuffix(target.ChatJID, "@g.us")
-	target.SenderPhone = s.resolveSenderPhone(target.Sender, target.IsGroup)
+	target.SenderPhone = s.resolveSenderPhone(target.Sender)
 
 	beforeMsgs, err := s.queryContextWindow(ctx, msgChat, ts, before, false)
 	if err != nil {
@@ -413,25 +413,19 @@ func (s *Store) scanListMessageRow(row interface {
 		ChatName:  chatName.String,
 	}
 	m.IsGroup = strings.HasSuffix(m.ChatJID, "@g.us")
-	m.SenderPhone = s.resolveSenderPhone(m.Sender, m.IsGroup)
+	m.SenderPhone = s.resolveSenderPhone(m.Sender)
 	return m, nil
 }
 
 // resolveSenderPhone returns a full phone (bare user part) for a message
-// sender. For direct chats the sender is already the bare phone. For groups,
-// we try to resolve via the LID map; if that fails we fall back to the stored
-// sender value.
-func (s *Store) resolveSenderPhone(sender string, isGroup bool) string {
+// sender. The stored sender may be a LID user part (group participants, and
+// DMs whose LID mapping was unknown when the message arrived), so try the
+// LID map; a phone-number sender simply misses and is returned unchanged.
+func (s *Store) resolveSenderPhone(sender string) string {
 	if sender == "" || sender == "me" {
 		return sender
 	}
-	if !isGroup {
-		// In direct chats the sender is already the bare phone/user part.
-		return sender
-	}
-	// In groups the sender may be a bare user (phone or lid). Try the LID
-	// map first in case it's an @lid-style user part.
-	resolved := s.ResolveLIDToJID(sender + "@s.whatsapp.net")
+	resolved := s.ResolveLIDToJID(sender + "@lid")
 	if u := jidUser(resolved); u != "" {
 		return u
 	}

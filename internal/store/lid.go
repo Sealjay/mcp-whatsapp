@@ -20,7 +20,9 @@ func (s *Store) ResolveLIDToJID(jid string) string {
 		return jid
 	}
 
-	lid := jidUser(jid)
+	// Strip any device suffix ("123:5@lid"): whatsmeow_lid_map is keyed on
+	// the bare LID user, but message senders carry the device ID.
+	lid, _, _ := strings.Cut(jidUser(jid), ":")
 
 	var phone string
 	err := s.whatsmeowDB.QueryRow("SELECT pn FROM whatsmeow_lid_map WHERE lid = ?", lid).Scan(&phone)
