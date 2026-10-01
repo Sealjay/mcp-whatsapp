@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/types"
 )
 
@@ -99,5 +100,27 @@ func TestParseRecipient(t *testing.T) {
 				t.Errorf("parseRecipient(%q): Server = %q, want %q", tc.in, got.Server, tc.wantServer)
 			}
 		})
+	}
+}
+
+func TestMediaTypeFromExtDocuments(t *testing.T) {
+	cases := map[string]string{
+		"/x/a.pdf":  "application/pdf",
+		"/x/a.PDF":  "application/pdf",
+		"/x/a.docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		"/x/a.xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+		"/x/a.csv":  "text/csv",
+		"/x/a.zip":  "application/zip",
+		"/x/noext":  "application/octet-stream",
+		"/x/a.zzzz": "application/octet-stream",
+	}
+	for path, want := range cases {
+		mt, got := mediaTypeFromExt(path)
+		if mt != whatsmeow.MediaDocument {
+			t.Errorf("%s: media type = %v, want document", path, mt)
+		}
+		if got != want {
+			t.Errorf("%s: mime = %q, want %q", path, got, want)
+		}
 	}
 }

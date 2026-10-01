@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"fmt"
+	"mime"
 	"os"
 	"path/filepath"
 	"strings"
@@ -273,8 +274,48 @@ func mediaTypeFromExt(path string) (whatsmeow.MediaType, string) {
 	case "mov":
 		return whatsmeow.MediaVideo, "video/quicktime"
 	default:
-		return whatsmeow.MediaDocument, "application/octet-stream"
+		return whatsmeow.MediaDocument, documentMimeType(ext)
 	}
+}
+
+// documentMimes maps common document extensions to their real MIME types.
+// WhatsApp clients use the Mimetype of a DocumentMessage to decide which app
+// opens the file; "application/octet-stream" shows up on phones as an
+// unopenable "BIN" file, so documents must carry an accurate type.
+var documentMimes = map[string]string{
+	"pdf":  "application/pdf",
+	"doc":  "application/msword",
+	"docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+	"xls":  "application/vnd.ms-excel",
+	"xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+	"ppt":  "application/vnd.ms-powerpoint",
+	"pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+	"odt":  "application/vnd.oasis.opendocument.text",
+	"ods":  "application/vnd.oasis.opendocument.spreadsheet",
+	"odp":  "application/vnd.oasis.opendocument.presentation",
+	"txt":  "text/plain",
+	"csv":  "text/csv",
+	"json": "application/json",
+	"rtf":  "application/rtf",
+	"zip":  "application/zip",
+	"mp3":  "audio/mpeg",
+	"m4a":  "audio/mp4",
+	"apk":  "application/vnd.android.package-archive",
+}
+
+// documentMimeType returns the MIME type for a document extension (lower
+// case, no dot), falling back to the system mime database and finally to
+// application/octet-stream.
+func documentMimeType(ext string) string {
+	if m, ok := documentMimes[ext]; ok {
+		return m
+	}
+	if ext != "" {
+		if m := mime.TypeByExtension("." + ext); m != "" {
+			return m
+		}
+	}
+	return "application/octet-stream"
 }
 
 // persistSent writes a cache row for a message we sent so the local history
