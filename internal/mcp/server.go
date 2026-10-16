@@ -32,7 +32,7 @@ type Server struct {
 func NewServer(c *client.Client, cache pairingCache) *Server {
 	mcpSrv := server.NewMCPServer(
 		"whatsapp",
-		"0.5.0",
+		"0.5.1",
 		server.WithToolCapabilities(true),
 	)
 	s := &Server{client: c, mcp: mcpSrv, cache: cache}
