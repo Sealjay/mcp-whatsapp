@@ -55,7 +55,7 @@ Scan the QR code with WhatsApp on your phone (*Settings → Linked Devices → L
 
 ### Connect your MCP client
 
-`whatsapp-mcp serve` is an HTTP daemon on `127.0.0.1:8765` (or `$WHATSAPP_MCP_ADDR`). MCP clients connect to it over HTTP:
+`whatsapp-mcp serve` is an HTTP daemon on `127.0.0.1:8765` (or `$WHATSAPP_MCP_ADDR`). It is stateless (no `Mcp-Session-Id`) and speaks MCP 2026-07-28 as well as older revisions. MCP clients connect to it over HTTP:
 
 Claude Desktop's `claude_desktop_config.json` doesn't support a bare `url`/`type: http` entry the way Claude Code and Cursor do — it only launches stdio servers via `command`/`args`. Bridge it with [`mcp-remote`](https://www.npmjs.com/package/mcp-remote) instead:
 

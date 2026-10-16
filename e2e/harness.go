@@ -21,10 +21,9 @@ import (
 // harness runs ./bin/whatsapp-mcp serve on an OS-assigned loopback port
 // and offers a typed MCP tool-call helper.
 type harness struct {
-	t         *testing.T
-	cmd       *exec.Cmd
-	addr      string
-	sessionID string // Mcp-Session-Id captured from the initialize response
+	t    *testing.T
+	cmd  *exec.Cmd
+	addr string
 }
 
 func newHarness(t *testing.T) *harness {
@@ -122,9 +121,6 @@ func (h *harness) callTool(name string, args map[string]any) toolResult {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+h.addr+"/mcp", bytes.NewReader(buf))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
-	if h.sessionID != "" {
-		req.Header.Set("Mcp-Session-Id", h.sessionID)
-	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		h.t.Fatalf("POST /mcp: %v", err)
@@ -177,9 +173,9 @@ decoded:
 	return res
 }
 
-// initializeMCP performs the JSON-RPC handshake expected by mcp-go before
-// any tool calls. It captures the Mcp-Session-Id header so subsequent
-// requests can be associated with the same session. Call once per harness.
+// initializeMCP performs the legacy (pre-2026-07-28) handshake that older
+// clients still send. The server is stateless, so it must succeed without
+// minting an Mcp-Session-Id; later requests carry no session header.
 func (h *harness) initializeMCP() {
 	h.t.Helper()
 	body := map[string]any{
@@ -201,8 +197,10 @@ func (h *harness) initializeMCP() {
 		h.t.Fatalf("initialize: %v", err)
 	}
 	_ = resp.Body.Close()
-	// Capture the session ID assigned by mcp-go so subsequent requests carry it.
+	if resp.StatusCode != http.StatusOK {
+		h.t.Fatalf("initialize: status %d", resp.StatusCode)
+	}
 	if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
-		h.sessionID = sid
+		h.t.Fatalf("stateless server minted Mcp-Session-Id %q", sid)
 	}
 }
