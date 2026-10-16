@@ -53,23 +53,31 @@ func TestHTTP_ListTools(t *testing.T) {
 }
 
 // TestHTTP_Stateless2026 speaks the 2026-07-28 revision: no initialize, the
-// protocol version rides in _meta and the Mcp-Protocol-Version header.
+// protocol version rides in _meta and the Mcp-Protocol-Version header. It
+// discovers, lists and calls a tool.
 func TestHTTP_Stateless2026(t *testing.T) {
 	h := newHarness(t)
 	meta := map[string]any{
 		"io.modelcontextprotocol/protocolVersion":    "2026-07-28",
 		"io.modelcontextprotocol/clientCapabilities": map[string]any{},
 	}
-	for _, method := range []string{"server/discover", "tools/list"} {
+	for _, method := range []string{"server/discover", "tools/list", "tools/call"} {
+		params := map[string]any{"_meta": meta}
+		if method == "tools/call" {
+			params["name"] = "list_chats"
+			params["arguments"] = map[string]any{}
+		}
 		buf, _ := json.Marshal(map[string]any{
-			"jsonrpc": "2.0", "id": 1, "method": method,
-			"params": map[string]any{"_meta": meta},
+			"jsonrpc": "2.0", "id": 1, "method": method, "params": params,
 		})
 		req, _ := http.NewRequest(http.MethodPost, "http://"+h.addr+"/mcp", bytes.NewReader(buf))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json, text/event-stream")
 		req.Header.Set("Mcp-Protocol-Version", "2026-07-28")
 		req.Header.Set("Mcp-Method", method)
+		if method == "tools/call" {
+			req.Header.Set("Mcp-Name", "list_chats")
+		}
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("POST %s: %v", method, err)

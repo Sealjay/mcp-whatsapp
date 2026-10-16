@@ -10,7 +10,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
+	mcpsrv "github.com/sealjay/mcp-whatsapp/internal/mcp"
 	"github.com/sealjay/mcp-whatsapp/internal/security"
 )
 
@@ -40,6 +42,8 @@ Serve-specific flags (after 'serve'):
 `
 
 func main() {
+	mcpsrv.Version = strings.TrimPrefix(Version, "v")
+
 	// Handle -version / --version before subcommand dispatch so it works
 	// regardless of the command that follows (or if none is given).
 	for _, a := range os.Args[1:] {

@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Single Go binary that runs as an HTTP MCP daemon (default `127.0.0.1:8765`) wrapping [whatsmeow](https://github.com/tulir/whatsmeow) to expose a personal WhatsApp account as MCP tools. `whatsapp-mcp serve` is the long-running process: it tracks WhatsApp events, caches messages locally, serves MCP at `/mcp`, and hosts the pairing UI at `/pair`. MCP clients (Claude Desktop, Cursor, etc.) connect to it over HTTP.
+Single Go binary that runs as an HTTP MCP daemon (default `127.0.0.1:8765`) wrapping [whatsmeow](https://github.com/tulir/whatsmeow) to expose a personal WhatsApp account as MCP tools. `whatsapp-mcp serve` is the long-running process: it tracks WhatsApp events, caches messages locally, serves MCP at `/mcp`, and hosts the pairing UI at `/pair`. MCP clients connect over stateless Streamable HTTP (`server.WithStateLess(true)`; MCP 2026-07-28 and older revisions, no `Mcp-Session-Id`).
 
 ## Structure
 
@@ -8,18 +8,18 @@ Single Go binary that runs as an HTTP MCP daemon (default `127.0.0.1:8765`) wrap
 cmd/whatsapp-mcp/       login, serve, smoke subcommands
 internal/client/        whatsmeow client wrapper (send, download, events, history, features)
 internal/daemon/        HTTP server, pairing state machine, /pair endpoint
-internal/mcp/           mark3labs/mcp-go server + tool registrations
+internal/mcp/           mark3labs/mcp-go v1 server + tool registrations
 internal/media/         ogg analysis + ffmpeg shell-out
 internal/security/      path allowlisting, filename sanitisation, log redaction
 internal/store/         SQLite cache + queries + LID resolution + formatters
 scripts/mdtest-parity.sh  whatsmeow API drift canary
 ```
 
-Data lives under `./store/` (override with `-store DIR`). Binary is `bin/whatsapp-mcp`.
+Data lives under `./store/` (override with `-store DIR`): `messages.db`, `whatsapp.db` (session) and `.lock`. To force a re-sync, delete both databases and re-run `login`. Binary is `bin/whatsapp-mcp`.
 
 ## Subcommands
 
-- `login` — pair the device via QR, write session to `store/whatsapp.db`.
+- `login` — pair the device via QR (or `-phone` for a pairing code), write session to `store/whatsapp.db`.
 - `serve` — HTTP daemon on `127.0.0.1:<port>`; tracks events + serves MCP at `/mcp`; pairing UI at `/pair`. Holds `store/.lock` while running and is mutually exclusive with any other `serve` instance using the same store directory.
 - `smoke` — boot-test without connecting to WhatsApp.
 
@@ -28,7 +28,7 @@ Data lives under `./store/` (override with `-store DIR`). Binary is `bin/whatsap
 ```bash
 make test          # unit tests
 make test-race     # with -race
-make e2e           # spawn the binary, speak JSON-RPC over HTTP
+make e2e           # spawn the binary, speak JSON-RPC over HTTP (both MCP eras; fails if a session ID is minted)
 make smoke         # boot-test without connecting to WhatsApp
 make vet           # go vet
 ```
@@ -61,7 +61,7 @@ Tool surface is 42 tools, registered from `internal/mcp/tools.go` + `tools_group
 
 ## Versioning
 
-This project uses **semantic versioning** (semver). Releases are driven by git tags. The Makefile injects the version from `git describe --tags` into the binary via `-ldflags`. No separate version file is needed.
+Semantic versioning, driven by git tags. The Makefile injects `git describe --tags` as `main.Version` via `-ldflags`, and `main` copies it into `internal/mcp.Version` for `serverInfo`. There is no version file to edit.
 
 To cut a release, run `/release` (or `/release patch|minor|major` to force a bump type). The command runs the full checklist: lint, test, tag, push, and `gh release create`.
 
@@ -72,10 +72,3 @@ To cut a release, run `/release` (or `/release patch|minor|major` to force a bum
 - **MAJOR** (vX.0.0): breaking changes to the MCP tool surface, config format, or store schema that requires user action.
 
 While pre-1.0, minor bumps may include breaking changes (per semver spec).
-
-## Database location
-
-- Messages: `store/messages.db`
-- WhatsApp session: `store/whatsapp.db`
-
-To force re-sync: delete both files and re-run `login`.

@@ -49,168 +49,84 @@ Start the daemon, then open the pairing page in a browser:
 open http://127.0.0.1:8765/pair   # macOS; or visit the URL manually
 ```
 
-Scan the QR code with WhatsApp on your phone (*Settings → Linked Devices → Link a Device*). The pairing persists to `./store/whatsapp.db`. When WhatsApp invalidates the session (roughly every 20 days), visit `/pair` again and re-scan.
+Scan the QR with WhatsApp (*Settings → Linked Devices → Link a Device*). The session persists to `./store/whatsapp.db`; WhatsApp rotates it roughly every 20 days, when `/pair` shows a fresh QR.
 
-**Alternative (headless / CI):** `./bin/whatsapp-mcp login` renders the QR in the terminal. Use this when a browser isn't available.
-
-**Pairing without a QR scan:** the `/pair` page also offers a phone-number form (and `login -phone +<international number>` works headlessly). Enter your number, then type the displayed code into WhatsApp via *Settings → Linked Devices → Link a Device → Link with phone number instead*. Code requests are CSRF-protected and rate-limited (3/min, burst 1).
+- **No browser:** `./bin/whatsapp-mcp login` renders the QR in the terminal.
+- **No QR scan:** use the phone-number form on `/pair` (or `login -phone +<international number>`), then type the code into *Link a Device → Link with phone number instead*.
+- The `/pair/*` endpoints are CSRF-protected and rate-limited (15 GET/min, 1 reset/min, 3 code requests/min).
 
 ### Connect your MCP client
 
-`whatsapp-mcp serve` is an HTTP daemon on `127.0.0.1:8765` (or `$WHATSAPP_MCP_ADDR`). It is stateless (no `Mcp-Session-Id`) and speaks MCP 2026-07-28 as well as older revisions. MCP clients connect to it over HTTP:
-
-Claude Desktop's `claude_desktop_config.json` doesn't support a bare `url`/`type: http` entry the way Claude Code and Cursor do — it only launches stdio servers via `command`/`args`. Bridge it with [`mcp-remote`](https://www.npmjs.com/package/mcp-remote) instead:
+`serve` listens on `127.0.0.1:8765` (or `$WHATSAPP_MCP_ADDR`) and serves MCP at `/mcp`. It is stateless (no `Mcp-Session-Id`) and speaks MCP 2026-07-28 as well as older revisions.
 
 ```jsonc
-// Claude Desktop — ~/Library/Application Support/Claude/claude_desktop_config.json
-{
-  "mcpServers": {
-    "whatsapp": {
-      "command": "npx",
-      "args": ["-y", "mcp-remote", "http://127.0.0.1:8765/mcp"]
-    }
-  }
-}
+// Claude Code (.claude/mcp.json or ~/.claude/mcp.json) and Cursor (~/.cursor/mcp.json)
+{ "mcpServers": { "whatsapp": { "type": "http", "url": "http://127.0.0.1:8765/mcp" } } }
+
+// Claude Desktop only launches stdio servers, so bridge with mcp-remote
+// (~/Library/Application Support/Claude/claude_desktop_config.json)
+{ "mcpServers": { "whatsapp": { "command": "npx", "args": ["-y", "mcp-remote", "http://127.0.0.1:8765/mcp"] } } }
 ```
 
-```jsonc
-// Claude Code — .claude/mcp.json (project) or ~/.claude/mcp.json (user)
-{
-  "mcpServers": {
-    "whatsapp": { "type": "http", "url": "http://127.0.0.1:8765/mcp" }
-  }
-}
-```
-
-```jsonc
-// Cursor — ~/.cursor/mcp.json
-{
-  "mcpServers": {
-    "whatsapp": { "type": "http", "url": "http://127.0.0.1:8765/mcp" }
-  }
-}
-```
-
-Restart the client. WhatsApp appears as an available integration. Closing and reopening the client reconnects to the daemon — no process spawn, no per-session handshake, no stdin/stdout juggling.
+Restart the client. The daemon outlives client restarts.
 
 ### Sending and receiving files
 
-`WHATSAPP_MCP_MEDIA_ROOT` is an allowlist root and gates both directions of file movement:
+`WHATSAPP_MCP_MEDIA_ROOT` (default `<store>/uploads/`, created on first run) is the only directory file tools may touch:
 
-- **Sending** — `send_file` and `send_audio_message` accept a `media_path` argument pointing at the file to send. The path must live under the allowed root.
-- **Receiving** — `download_media` writes decrypted media to the daemon cache at `<store>/<chat_jid>/<hex(message_id)>/<safe_filename>`. The message-ID directory prevents distinct messages with the same filename from sharing cached bytes; cache hits are checked against the stored size and SHA-256 when available. Passing the optional `output_path` argument additionally places the file at a caller-chosen location, which must also live under the allowed root. If a file already exists at `output_path` the call is a no-op.
+- **Sending:** `send_file` and `send_audio_message` take a `media_path` under the root.
+- **Receiving:** `download_media` caches to `<store>/<chat_jid>/<hex(message_id)>/<safe_filename>` (checked against the stored size and SHA-256). An optional `output_path` also places the file under the root; an existing file there makes the call a no-op.
 
-By default the allowed root is `./store/uploads/` (resolved relative to your `-store` directory). On first run, `serve` creates it automatically; drop files you intend to send into it and point `output_path` here if you want to read incoming media from the same place.
+Paths outside the root, including symlinks that resolve outside it, are rejected. Anything inside the root is readable and writable by the tools, so keep secrets out.
 
-To allow a different directory, set `WHATSAPP_MCP_MEDIA_ROOT` (absolute path) when starting the daemon:
-
-```bash
-WHATSAPP_MCP_MEDIA_ROOT=/Users/me/whatsapp-shared ./bin/whatsapp-mcp serve
-```
-
-Or add it to your launchd plist / systemd unit / shell profile so it persists across restarts.
-
-Paths outside the allowed root are rejected with a clear error so Claude can ask you to move the file or update the env var. Symlinks inside the root are resolved before the check, so a symlink that points out of the root is also rejected. Do not place secrets inside the allowed root — the allowlist bounds what the tool can read or write, but anything inside is fair game.
-
-#### Sandboxed clients (Claude.ai with Cowork, etc.)
-
-Sandboxed MCP clients cannot read the daemon's local cache. To make downloaded media visible to them, point `WHATSAPP_MCP_MEDIA_ROOT` at a directory the client's sandbox can also read (a Cowork workspace mount, a shared volume, etc.), and tell the client to pass `output_path` on every `download_media` call into that root. A copy-pasteable system instruction:
+**Sandboxed clients (Claude Cowork and similar)** cannot read the daemon's cache. Point `WHATSAPP_MCP_MEDIA_ROOT` at a directory the sandbox can read and give the client this instruction:
 
 > When calling the WhatsApp MCP's `download_media`, always pass `output_path` set to a path under your shared workspace. Without it the decrypted file lands only in the daemon's local cache, which is outside your sandbox and unreadable. `output_path` must live under `WHATSAPP_MCP_MEDIA_ROOT` on the daemon side; the basename is yours to pick.
 
-## Architecture
+### Serve flags and environment
 
-One binary, seven internal packages:
+- `-addr host:port` (env `WHATSAPP_MCP_ADDR`, default `127.0.0.1:8765`).
+- `-allow-remote`: bind a non-loopback address. Requires `WHATSAPP_MCP_TOKEN`, a bearer token for `/mcp` and `/pair/*`; `serve` exits without it.
+- `WHATSAPP_MCP_MEDIA_ROOT`: the file allowlist root above.
+- `WHATSAPP_MCP_DEBUG=1` or `-debug`: verbose logs (see [Debug logging](#debug-logging)).
+
+## Running the daemon
+
+Events reach SQLite **only while `serve` runs**. After downtime, whatsmeow backfills via `HistorySync` within WhatsApp's own retention window; anything older is lost, and `request_sync` backfills one chat on demand. A `flock(2)` on `store/.lock` allows one `serve` (or `login`) per store.
+
+| Option | How |
+|---|---|
+| macOS launchd | Copy `docs/launchd/com.sealjay.whatsapp-mcp.plist` to `~/Library/LaunchAgents/`, fill `{{PATH_TO_REPO}}` / `{{STORE_DIR}}`, `launchctl load` |
+| Linux systemd | Copy `docs/systemd/whatsapp-mcp.service` to `~/.config/systemd/user/`, fill placeholders, `systemctl --user enable --now whatsapp-mcp` |
+| Claude Code hook | Put `docs/hooks/setup.sh` in `.claude/hooks/` and call it from `settings.json` (idempotent) |
+| Manual | `./bin/whatsapp-mcp serve` |
+
+**Docker.** The image (`debian:bookworm-slim` plus ffmpeg, a few hundred MB) runs `-store /home/app/store`; persist that volume. Pair with a one-off `login` container first, because `login` and a running `serve` cannot share the store lock:
+
+```bash
+docker build -t whatsapp-mcp --build-arg VERSION=$(git describe --tags --always) .
+docker run --rm -it -v whatsapp-mcp-store:/home/app/store whatsapp-mcp login
+TOKEN=$(openssl rand -hex 32); echo "$TOKEN"
+docker run -d --name whatsapp-mcp -v whatsapp-mcp-store:/home/app/store \
+  -p 127.0.0.1:8765:8765 -e WHATSAPP_MCP_TOKEN="$TOKEN" \
+  whatsapp-mcp serve -addr 0.0.0.0:8765 -allow-remote
+```
+
+Clients then send `Authorization: Bearer $TOKEN`. The container binds loopback by default, so `-allow-remote` plus a token is what makes `-p` work. To re-pair after WhatsApp rotates the session (about every 20 days), stop the container, rerun the `login` container and start it again.
+
+## Architecture
 
 ```
 cmd/whatsapp-mcp/       login / serve / smoke subcommands
 internal/client/        whatsmeow client wrapper (send, download, events, history, features)
-internal/daemon/        HTTP server, pairing state machine, /pair endpoint
+internal/daemon/        HTTP server, pairing state machine, /pair endpoints
 internal/mcp/           mark3labs/mcp-go v1 server + tool registrations
 internal/media/         ogg parsing, waveform synthesis, ffmpeg shell-out
 internal/security/      path allowlisting, filename sanitisation, log redaction
 internal/store/         SQLite cache, LID resolution, query layer
 ```
 
-### Process lifecycle
-
-`serve` runs as a long-lived HTTP daemon. MCP clients connect and disconnect freely; the daemon stays up and continues receiving WhatsApp events. A `flock(2)` on `store/.lock` prevents two instances racing on the same store (WhatsApp would kick one of the two linked-device connections anyway).
-
-The trade-off: events are persisted to SQLite **only while `serve` is running**. If the daemon stops, the WhatsApp connection closes. On the next start, whatsmeow emits `events.HistorySync` events that backfill conversations into SQLite, but the recovery window is governed by WhatsApp's server-side retention for multidevice clients — not by this codebase. Messages that arrive during a gap long enough to outlast WhatsApp's retention are not recoverable. For shorter, known gaps, the `request_sync` tool triggers a per-chat backfill on demand.
-
-### Data storage
-
-Everything lives under `./store/` (override with `-store DIR`):
-
-- `store/messages.db` — local chat/message cache, indexed for search.
-- `store/whatsapp.db` — whatsmeow's own device/session state.
-- `store/.lock` — ephemeral advisory lock for single-instance `serve`.
-
-### Data flow
-
-1. The client sends a JSON-RPC `tools/call` to `serve` over HTTP.
-2. The MCP layer dispatches to an internal handler.
-3. The handler either queries the local SQLite store or calls whatsmeow directly (send, download, reactions, etc.).
-4. Incoming WhatsApp events are persisted to the store in a background goroutine inside the same process, so query tools always see current state.
-
-### Running the daemon
-
-The daemon is designed to run independently of any MCP client. Three supported lifecycle models:
-
-**macOS — launchd.** Template at `docs/launchd/com.sealjay.whatsapp-mcp.plist`. Copy to `~/Library/LaunchAgents/`, replace `{{PATH_TO_REPO}}` / `{{STORE_DIR}}` placeholders, `launchctl load`. Daemon runs from login onwards.
-
-**Linux — systemd user unit.** Template at `docs/systemd/whatsapp-mcp.service`. Copy to `~/.config/systemd/user/`, replace placeholders, `systemctl --user enable --now whatsapp-mcp`.
-
-**Claude Code SessionStart hook.** For project-scoped lifetimes, drop `docs/hooks/setup.sh` into your project's `.claude/hooks/` and configure `settings.json` to invoke it. The hook is idempotent — safe to run alongside launchd/systemd.
-
-**Manual.** `./bin/whatsapp-mcp serve -addr 127.0.0.1:8765` in any terminal. Ctrl-C to stop.
-
-**Docker.** A multi-stage `Dockerfile` builds the binary and ships it on `debian:bookworm-slim` with ffmpeg and CA certs. `ENTRYPOINT` bakes in `-store /home/app/store`; `CMD` defaults to `serve` and is a normal Docker command override (`docker run whatsapp-mcp smoke`, `... login`, `... serve -addr ...`). Persist `/home/app/store` or you lose the paired session on every restart:
-
-```bash
-docker build -t whatsapp-mcp --build-arg VERSION=$(git describe --tags --always) .
-```
-
-Pair once, before starting the long-running daemon — `login` and `serve` both take an exclusive lock on the store, so running `login` via `docker exec` against an already-running `serve` container fails with `another whatsapp-mcp instance is already running`. A one-off container sharing the same volume avoids that: no `serve` is running yet, so there's nothing to contend with, and the QR renders straight to your terminal with no browser or auth header involved.
-
-```bash
-docker run --rm -it -v whatsapp-mcp-store:/home/app/store whatsapp-mcp login
-```
-
-Then start the daemon proper:
-
-```bash
-docker run -d --name whatsapp-mcp -v whatsapp-mcp-store:/home/app/store whatsapp-mcp
-```
-
-The image binds `127.0.0.1:8765` inside the container by default, same as the binary — a plain `-p 8765:8765` publish won't reach it, since Docker's port NAT requires the process to accept connections on a non-loopback interface, which this daemon refuses without an explicit opt-in. To make it reachable from the host, override `CMD` with the same `-allow-remote` + token pair described above:
-
-```bash
-TOKEN=$(openssl rand -hex 32)
-echo "$TOKEN"   # your MCP client needs this — it's the bearer token below
-
-docker run -d --name whatsapp-mcp \
-  -v whatsapp-mcp-store:/home/app/store \
-  -p 127.0.0.1:8765:8765 \
-  -e WHATSAPP_MCP_TOKEN="$TOKEN" \
-  whatsapp-mcp serve -addr 0.0.0.0:8765 -allow-remote
-```
-
-Point your MCP client at `http://127.0.0.1:8765/mcp` with an `Authorization: Bearer $TOKEN` header — pairing is already done from the `login` step above, so nothing further is needed.
-
-WhatsApp rotates the linked-device session roughly every 20 days. Outside Docker the running daemon just hands out a fresh QR at `/pair` when that happens (see below) — but in Docker, `/pair` isn't reachable the same way (the basic run above never publishes the port; the remote-bind one needs the same bearer header as `/mcp`, which a plain browser visit can't send). Re-pair by repeating the `login` step instead: `docker stop whatsapp-mcp`, re-run the one-off `login` container above, then `docker start whatsapp-mcp`.
-
-The image is a few hundred MB, almost entirely ffmpeg's Debian dependency chain (libav*, X11 render libs it pulls in incidentally) rather than the ~30MB Go binary itself.
-
-Outside Docker, first-time pairing happens in a browser instead: start the daemon, open `http://127.0.0.1:8765/pair`, scan the QR with your phone. No terminal required. WhatsApp's multidevice protocol rotates the linked-device session roughly every 20 days; when that happens, the `/pair` page serves a fresh QR automatically — visit it again and re-pair. The `/pair/*` endpoints are rate-limited (15 GET/min, 1 POST/min on `/pair/reset`) and CSRF-protected.
-
-Flags and environment variables for `serve`:
-
-- `-addr host:port` (env `WHATSAPP_MCP_ADDR`, default `127.0.0.1:8765`).
-- `-allow-remote` (explicit opt-in to bind a non-loopback address; requires `WHATSAPP_MCP_TOKEN`).
-- `WHATSAPP_MCP_TOKEN` — bearer token for `/mcp` and `/pair/*` when `-allow-remote` is set. Required; `serve` exits if missing.
-- `WHATSAPP_MCP_MEDIA_ROOT` — allowed root for `send_file` / `send_audio_message` `media_path` and `download_media` `output_path`.
-- `WHATSAPP_MCP_DEBUG=1` — enable verbose logging with partial phone-number redaction (last 5 digits visible).
+Data lives under `./store/` (`-store DIR`): `messages.db` (message cache), `whatsapp.db` (whatsmeow session) and `.lock`. Query tools read SQLite; send and action tools call whatsmeow; incoming events are written to SQLite by a goroutine in the same process.
 
 ## Tools
 
@@ -304,12 +220,10 @@ Intentionally not exposed yet:
 ## Limitations
 
 - **Prompt-injection risk:** as with many MCP servers, this one is subject to [the lethal trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/). Prompt injection in incoming messages could lead to private data exfiltration — treat the tool surface accordingly.
-- **Re-authentication:** WhatsApp may invalidate the linked-device session periodically; re-run `./bin/whatsapp-mcp login` when that happens.
-- **Message gaps when `serve` isn't running:** events only flow into SQLite while the binary is alive. Messages sent during an offline window are recovered on next reconnect only if WhatsApp's multidevice retention still holds them; for longer gaps use `request_sync` per chat, or accept the loss.
+- **Message gaps:** see [Running the daemon](#running-the-daemon).
 - **Single instance per store:** only one `whatsapp-mcp serve` can hold the store lock. Parallel MCP clients must point at different `-store` directories (and therefore different paired sessions).
 - **Windows:** requires CGO and a C compiler — see [docs/windows.md](docs/windows.md).
 - **Upstream bounds:** message fetch/send is bounded by what [whatsmeow](https://github.com/tulir/whatsmeow) supports against the WhatsApp web multidevice API.
-- **Log redaction is obfuscation, not anonymisation.** Partial knowledge of your contacts allows correlation from the last 5 visible digits. Symlinks inside `./store/uploads/` are resolved before the path check so they cannot escape, but the root itself is a trust boundary — only place files you intend to send inside it.
 
 ## Development
 
@@ -345,18 +259,7 @@ This bumps `go.mau.fi/whatsmeow@main`, re-tidies, builds, and tests. If green, c
 
 ### Debug logging
 
-By default, JIDs in stderr logs are redacted to `…<last-4-chars-of-user-part>` and message bodies are summarised as `[<length>B: text|url|command]`. Media CDN URLs are collapsed to `<scheme>://<host>/…`. To see message content while actively debugging:
-
-- As a flag: `./bin/whatsapp-mcp -debug serve`
-- As an env var in your MCP client config:
-
-  ```json
-  "env": { "WHATSAPP_MCP_DEBUG": "1" }
-  ```
-
-Even with debug mode on, phone-number-shaped digit sequences in bodies and JIDs are partially masked — only the last 5 digits are visible (e.g. `+15551234567` → `****34567`). This means debug logs are safe to share in bug reports without leaking full phone numbers.
-
-**Honesty disclaimer.** The partial-redaction scheme is obfuscation for log-reader convenience, not anonymisation. Someone with independent knowledge of your contacts can still correlate the last 5 digits with a specific phone number. Treat redacted logs as "probably safe to paste into a GitHub issue", not "anonymised".
+By default, stderr logs redact JIDs to `…<last-4>`, summarise bodies as `[<length>B: text|url|command]` and collapse media URLs to `<scheme>://<host>/…`. To see content while debugging, run `./bin/whatsapp-mcp -debug serve` or set `WHATSAPP_MCP_DEBUG=1`. Even then, phone-number-shaped digits show only their last 5 (`+15551234567` → `****34567`). That is obfuscation, not anonymisation: someone who knows your contacts can still correlate them.
 
 For Claude Desktop integration issues, see the [MCP documentation](https://modelcontextprotocol.io/quickstart/server#claude-for-desktop-integration-issues).
 

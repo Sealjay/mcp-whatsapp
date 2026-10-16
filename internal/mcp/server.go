@@ -29,10 +29,14 @@ type Server struct {
 // NewServer constructs an MCP server with all tools registered against the
 // provided WhatsApp client. cache may be nil (smoke/tests); pairing_status is
 // the only tool that consults it.
+// Version is reported as serverInfo.version. cmd/whatsapp-mcp sets it from its
+// -ldflags build version so the two cannot drift.
+var Version = "dev"
+
 func NewServer(c *client.Client, cache pairingCache) *Server {
 	mcpSrv := server.NewMCPServer(
 		"whatsapp",
-		"0.5.1",
+		Version,
 		server.WithToolCapabilities(true),
 	)
 	s := &Server{client: c, mcp: mcpSrv, cache: cache}
