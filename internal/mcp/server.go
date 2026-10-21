@@ -16,6 +16,7 @@ import (
 type pairingCache interface {
 	Paired() bool
 	QR() string
+	Expired() bool
 }
 
 // Server holds the MCP server, its bound WhatsApp client, and an optional

@@ -5,11 +5,13 @@ import (
 	"crypto/rand"
 	"embed"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"html/template"
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/sealjay/mcp-whatsapp/internal/client"
 )
@@ -30,6 +32,12 @@ const (
 // pairPageData is the template context for pair pages.
 type pairPageData struct {
 	CSRFToken string
+	// Expired is set when the last pairing session ended without pairing
+	// and no new one started on this load.
+	Expired bool
+	// RetryIn is the number of seconds before a new session may start, when
+	// this load could not start one yet.
+	RetryIn int
 }
 
 // resetter is the dependency `handlePairReset` needs. Production wiring
@@ -52,6 +60,12 @@ type pairHandlers struct {
 	// coder may be nil: drivers that do not support phone-number pairing
 	// leave it unset and /pair/code returns 501 Not Implemented.
 	coder pairCoder
+	// flow may be nil (handler unit tests). When set, loading /pair or
+	// requesting a code starts a new pairing session after the previous
+	// one expired.
+	flow *pairFlow
+	// readyTimeout bounds how long /pair/code waits for a new session.
+	readyTimeout time.Duration
 
 	// One rate limiter per endpoint.
 	pairGetLimiter   *Limiter
@@ -78,6 +92,7 @@ func newPairHandlers(cache *PairCache, reset resetter, coder pairCoder) *pairHan
 		pairQRLimiter:    NewLimiter(15.0/60.0, 10), // 15/min, burst 10
 		pairResetLimiter: NewLimiter(1.0/60.0, 1),   // 1/min, burst 1
 		pairCodeLimiter:  NewLimiter(3.0/60.0, 1),   // 3/min, burst 1; WhatsApp limits code requests server-side too
+		readyTimeout:     pairReadyTimeout,
 	}
 }
 
@@ -134,6 +149,17 @@ func (h *pairHandlers) handlePairPage(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	// WhatsApp closes an unused pairing session after a few minutes, so a
+	// visit starts a new one when the previous session expired. The page's
+	// own auto-refresh (?auto=1) never does, so a forgotten tab does not keep
+	// opening sessions.
+	if h.flow != nil && r.URL.Query().Get("auto") == "" {
+		var backoff *pairBackoffError
+		if _, err := h.flow.ensure(); errors.As(err, &backoff) {
+			data.RetryIn = backoff.seconds()
+		}
+	}
+	data.Expired = h.cache.Expired()
 	if err := pairTmpl.Execute(w, data); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
 	}
@@ -239,7 +265,7 @@ func (h *pairHandlers) handlePairCode(w http.ResponseWriter, r *http.Request) {
 	if phone == "" {
 		data.Phone = ""
 		data.Message = "Enter a valid international phone number (country code first, digits only)."
-	} else if code, err := h.coder.PairPhone(r.Context(), phone); err != nil {
+	} else if code, err := h.requestCode(r.Context(), phone); err != nil {
 		data.Message = fmt.Sprintf("Pairing-code request failed: %v", err)
 	} else {
 		data.Code = client.FormatPairingCode(code)
@@ -247,4 +273,22 @@ func (h *pairHandlers) handlePairCode(w http.ResponseWriter, r *http.Request) {
 	if err := pairCodeTmpl.Execute(w, data); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
 	}
+}
+
+// requestCode asks the driver for a pairing code. If the previous pairing
+// session expired it starts a new one first and waits until its socket is
+// ready, since whatsmeow can only request a code on a live session.
+func (h *pairHandlers) requestCode(ctx context.Context, phone string) (string, error) {
+	if h.flow != nil {
+		run, err := h.flow.ensure()
+		if err != nil {
+			return "", err
+		}
+		if run != nil {
+			if err := run.waitReady(ctx, h.readyTimeout); err != nil {
+				return "", err
+			}
+		}
+	}
+	return h.coder.PairPhone(ctx, phone)
 }

@@ -23,8 +23,14 @@ func (p *productionDriver) IsLoggedIn() bool { return p.c.IsLoggedIn() }
 
 func (p *productionDriver) IsConnected() bool { return p.c.IsConnected() }
 
-func (p *productionDriver) StartPairing(ctx context.Context, onQR func(string), onSuccess func()) error {
+func (p *productionDriver) StartPairing(ctx context.Context, onQR func(string), onSuccess func(), onExpired func()) error {
 	p.c.StartEventHandler()
+	// An expired session's socket can still be closing when a new session
+	// starts; GetQRChannel refuses a connected client. The daemon only
+	// starts a session while unpaired and none is live, so it is safe to drop.
+	if p.c.IsConnected() {
+		p.c.Disconnect()
+	}
 	qrCh, err := p.c.QRChannel(ctx)
 	if err != nil {
 		return err
@@ -39,6 +45,11 @@ func (p *productionDriver) StartPairing(ctx context.Context, onQR func(string), 
 				return
 			}
 		}
+		// The channel closed without "success": WhatsApp closed the session
+		// after its QR codes ran out ("timeout"), the socket dropped, pairing
+		// failed, or ctx ended. whatsmeow does not reconnect an unpaired
+		// client, so the daemon has to start a new session.
+		onExpired()
 	}()
 	// Must call Connect AFTER QRChannel per whatsmeow docs.
 	return p.c.Connect(ctx, client.ConnectOpts{AllowUnpaired: true})

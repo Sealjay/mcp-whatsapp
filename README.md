@@ -53,6 +53,7 @@ Scan the QR with WhatsApp (*Settings → Linked Devices → Link a Device*). The
 
 - **No browser:** `./bin/whatsapp-mcp login` renders the QR in the terminal.
 - **No QR scan:** use the phone-number form on `/pair` (or `login -phone +<international number>`), then type the code into *Link a Device → Link with phone number instead*.
+- **Expired session:** WhatsApp closes an unused pairing session once its QR codes run out (about three minutes). Opening `/pair` or requesting a pairing code then starts a new one, at most one every 30 seconds; a `/pair` tab left open does not restart it by itself.
 - The `/pair/*` endpoints are CSRF-protected and rate-limited (15 GET/min, 1 reset/min, 3 code requests/min).
 
 #### Full history at pairing
@@ -240,7 +241,7 @@ Enable with `serve -enable-labels` or `WHATSAPP_MCP_LABELS=1`. Label tools are n
 |---|---|
 | `is_on_whatsapp` | Batch-check which phone numbers are registered on WhatsApp |
 | `get_status` | Report whether the bridge is connected and which account it's paired as |
-| `pairing_status` | Report the device-pairing state as a structured `setup_state` envelope (`ready` / `awaiting_qr` + `qr_payload` / `error`) for programmatic supervisors that surface the linking QR |
+| `pairing_status` | Report the device-pairing state as a structured `setup_state` envelope (`ready` / `awaiting_qr` + `qr_payload` or `expired` / `error`) for programmatic supervisors that surface the linking QR |
 
 ### Deferred
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -15,10 +16,16 @@ import (
 type fakePairDriver struct {
 	loggedIn bool
 	logoutFn func(context.Context) error
+	startErr error
 
 	qrCh   chan string
 	pairCh chan struct{}
+	expCh  chan struct{}
 	outCh  chan struct{}
+
+	starts   atomic.Int32 // StartPairing calls
+	connects atomic.Int32 // Connect calls
+	qrSeen   atomic.Bool  // the current session emitted a QR (socket ready)
 }
 
 func newFakePairDriver(initiallyLoggedIn bool) *fakePairDriver {
@@ -26,23 +33,34 @@ func newFakePairDriver(initiallyLoggedIn bool) *fakePairDriver {
 		loggedIn: initiallyLoggedIn,
 		qrCh:     make(chan string, 4),
 		pairCh:   make(chan struct{}, 1),
+		expCh:    make(chan struct{}, 1),
 		outCh:    make(chan struct{}, 1),
 	}
 }
 
 func (f *fakePairDriver) IsLoggedIn() bool { return f.loggedIn }
 
-func (f *fakePairDriver) StartPairing(ctx context.Context, onQR func(string), onSuccess func()) error {
+func (f *fakePairDriver) StartPairing(ctx context.Context, onQR func(string), onSuccess func(), onExpired func()) error {
+	f.starts.Add(1)
+	f.qrSeen.Store(false)
+	if f.startErr != nil {
+		return f.startErr
+	}
 	go func() {
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case code := <-f.qrCh:
+				f.qrSeen.Store(true)
 				onQR(code)
 			case <-f.pairCh:
 				f.loggedIn = true
 				onSuccess()
+				return
+			case <-f.expCh:
+				f.qrSeen.Store(false)
+				onExpired()
 				return
 			}
 		}
@@ -51,6 +69,7 @@ func (f *fakePairDriver) StartPairing(ctx context.Context, onQR func(string), on
 }
 
 func (f *fakePairDriver) Connect(ctx context.Context, onLoggedOut func()) error {
+	f.connects.Add(1)
 	go func() {
 		select {
 		case <-ctx.Done():
