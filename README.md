@@ -84,6 +84,7 @@ Restart the client. The daemon outlives client restarts.
 
 - **Sending:** `send_file` and `send_audio_message` take a `media_path` under the root.
 - **Receiving:** `download_media` caches to `<store>/<chat_jid>/<hex(message_id)>/<safe_filename>` (checked against the stored size and SHA-256). An optional `output_path` also places the file under the root; an existing file there makes the call a no-op.
+- **Expired media links:** media links from history sync carry a signed expiry and usually fail with HTTP 403 by the time you ask. `download_media` (and reads of the `whatsapp://media/…` resource) then asks the account's own phone to re-upload the file (WhatsApp's media retry receipt, the same request WhatsApp Web sends), waits up to 30 seconds for the answer, saves the new link and downloads once more. The phone must be online; media it has deleted cannot be recovered. This happens only for the message you asked for, never in bulk.
 
 Paths outside the root, including symlinks that resolve outside it, are rejected. Anything inside the root is readable and writable by the tools, so keep secrets out.
 

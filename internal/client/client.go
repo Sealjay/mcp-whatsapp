@@ -49,6 +49,7 @@ type Config struct {
 type Client struct {
 	wa               *whatsmeow.Client
 	downloadMedia    func(context.Context, whatsmeow.DownloadableMessage) ([]byte, error)
+	sendMediaRetry   func(context.Context, *types.MessageInfo, []byte) error
 	store            *store.Store
 	log              waLog.Logger
 	handlerID        uint32
@@ -70,6 +71,12 @@ type Client struct {
 	// rate-limited sendMessage); tests replace them.
 	isConnected func() bool
 	waSend      func(context.Context, types.JID, *waProto.Message, ...whatsmeow.SendRequestExtra) (whatsmeow.SendResponse, error)
+
+	// mediaRetries tracks media retry receipts awaiting the phone's answer
+	// (see mediaretry.go); mediaRetryTimeout overrides
+	// defaultMediaRetryTimeout when positive.
+	mediaRetries      mediaRetryRegistry
+	mediaRetryTimeout time.Duration
 }
 
 // newWAClient creates the whatsmeow client for device. whatsmeow logs through
@@ -172,6 +179,7 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		downloadMedia:    wa.Download,
 		isConnected:      wa.IsConnected,
 		waSend:           wa.SendMessage,
+		sendMediaRetry:   wa.SendMediaRetryReceipt,
 		store:            cfg.Store,
 		log:              logger,
 		allowedMediaRoot: cfg.AllowedMediaRoot,

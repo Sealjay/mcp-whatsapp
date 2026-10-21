@@ -51,8 +51,22 @@ func (d *MediaDownloader) GetMediaType() whatsmeow.MediaType {
 // <StoreDir>/<chat_sanitized>/<hex(message_id)>/<filename>. If outputPath is non-empty, the
 // decrypted bytes are additionally placed at that location (validated against
 // the configured media root). The cache is always populated so subsequent
-// calls remain idempotent.
+// calls remain idempotent. Download never contacts the phone; see
+// DownloadWithMediaRetry.
 func (c *Client) Download(ctx context.Context, messageID, chatJID, outputPath string) DownloadResult {
+	return c.download(ctx, messageID, chatJID, outputPath, false)
+}
+
+// DownloadWithMediaRetry is Download for an explicit request for one message
+// (the download_media tool and media resource reads). When the CDN refuses
+// the stored link (403/404/410) it asks the account's own phone once to
+// re-upload the media, stores the new link and downloads again. Automatic or
+// bulk callers use Download, so they never send retry receipts.
+func (c *Client) DownloadWithMediaRetry(ctx context.Context, messageID, chatJID, outputPath string) DownloadResult {
+	return c.download(ctx, messageID, chatJID, outputPath, true)
+}
+
+func (c *Client) download(ctx context.Context, messageID, chatJID, outputPath string, mediaRetry bool) DownloadResult {
 	// Validate output_path first so a bad path fails the call before any DB
 	// or network work. The skip-if-exists check waits until after we have
 	// the media metadata (so the success response carries the right fields).
@@ -159,13 +173,18 @@ func (c *Client) Download(ctx context.Context, messageID, chatJID, outputPath st
 		MediaType:     waMediaType,
 	}
 
-	var data []byte
-	if c.downloadMedia != nil {
-		data, err = c.downloadMedia(ctx, downloader)
-	} else if c.wa != nil {
-		data, err = c.wa.Download(ctx, downloader)
-	} else {
-		err = errors.New("media downloader is unavailable")
+	data, err := c.fetchMedia(ctx, downloader)
+	if err != nil && mediaRetry && isExpiredMediaError(err) {
+		// The stored CDN path has expired (typical for history-synced
+		// messages) or the CDN dropped the file. Ask the phone to re-upload
+		// it, then try once more with the fresh path.
+		c.log.Infof("Media link for message %s no longer works (%v)", c.redactor.MsgID(messageID), err)
+		newPath, retryErr := c.recoverMediaPath(ctx, messageID, chatJID, mediaKey)
+		if retryErr != nil {
+			return DownloadResult{Success: false, Message: fmt.Sprintf("failed to download media: %v; asking the phone to re-upload it failed: %v", err, retryErr)}
+		}
+		downloader.DirectPath = newPath
+		data, err = c.fetchMedia(ctx, downloader)
 	}
 	if err != nil {
 		return DownloadResult{Success: false, Message: fmt.Sprintf("failed to download media: %v", err)}
@@ -180,6 +199,17 @@ func (c *Client) Download(ctx context.Context, messageID, chatJID, outputPath st
 
 	c.log.Infof("Successfully downloaded %s media (%d bytes)", mediaType, len(data))
 	return finalizeDownload(localPath, absPath, resolvedOutput, mediaType, filename)
+}
+
+// fetchMedia downloads and decrypts the payload described by d.
+func (c *Client) fetchMedia(ctx context.Context, d *MediaDownloader) ([]byte, error) {
+	if c.downloadMedia != nil {
+		return c.downloadMedia(ctx, d)
+	}
+	if c.wa != nil {
+		return c.wa.Download(ctx, d)
+	}
+	return nil, errors.New("media downloader is unavailable")
 }
 
 func validateCachedMedia(path string, fileLength uint64, fileSHA256 []byte) error {

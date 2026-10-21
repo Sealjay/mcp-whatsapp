@@ -30,6 +30,8 @@ func (c *Client) StartEventHandler() {
 			c.handleMessage(v)
 		case *events.HistorySync:
 			c.handleHistorySync(v)
+		case *events.MediaRetry:
+			c.handleMediaRetry(v)
 		case *events.Connected:
 			c.log.Infof("Connected to WhatsApp")
 			if c.labelsEnabled {
