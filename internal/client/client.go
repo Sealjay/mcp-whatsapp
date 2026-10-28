@@ -77,6 +77,10 @@ type Client struct {
 	// defaultMediaRetryTimeout when positive.
 	mediaRetries      mediaRetryRegistry
 	mediaRetryTimeout time.Duration
+	// mediaRetryGroupInfo and mediaRetryLIDs replace wa.GetGroupInfo and the
+	// device's LID store in tests (see mediaRetrySender).
+	mediaRetryGroupInfo func(context.Context, types.JID) (*types.GroupInfo, error)
+	mediaRetryLIDs      wmstore.LIDStore
 }
 
 // newWAClient creates the whatsmeow client for device. whatsmeow logs through

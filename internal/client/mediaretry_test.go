@@ -16,6 +16,7 @@ import (
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waMmsRetry"
+	wmstore "go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	"go.mau.fi/whatsmeow/util/gcmutil"
@@ -485,17 +486,17 @@ func TestMediaRetryMessageInfo(t *testing.T) {
 	seed("GROUP-NO-SENDER", retryGroupJID, "", false)
 	c := newClientWithStore(t, s)
 
-	info, err := c.mediaRetryMessageInfo("DM-MINE", dm)
+	info, err := c.mediaRetryMessageInfo(context.Background(), "DM-MINE", dm)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if info.IsGroup || !info.IsFromMe || !info.Sender.IsEmpty() || info.Chat.String() != dm {
 		t.Fatalf("direct chat info: %+v", info.MessageSource)
 	}
-	if _, err := c.mediaRetryMessageInfo("GROUP-NO-SENDER", retryGroupJID); err == nil {
+	if _, err := c.mediaRetryMessageInfo(context.Background(), "GROUP-NO-SENDER", retryGroupJID); err == nil {
 		t.Fatal("group message without a sender should be refused")
 	}
-	if _, err := c.mediaRetryMessageInfo("MISSING", dm); err == nil {
+	if _, err := c.mediaRetryMessageInfo(context.Background(), "MISSING", dm); err == nil {
 		t.Fatal("missing message should be refused")
 	}
 }
@@ -503,4 +504,92 @@ func TestMediaRetryMessageInfo(t *testing.T) {
 func TestHandleMediaRetry_IgnoresUnknownMessage(t *testing.T) {
 	c := newClientWithStore(t, nil)
 	c.handleMediaRetry(&events.MediaRetry{MessageID: "NOBODY-WAITS"})
+}
+
+// fakeLIDStore is a device LID map holding only the given phone → LID pairs.
+type fakeLIDStore struct {
+	byPN    map[types.JID]types.JID
+	lookups int
+}
+
+func (f *fakeLIDStore) PutManyLIDMappings(context.Context, []wmstore.LIDMapping) error { return nil }
+func (f *fakeLIDStore) PutLIDMapping(context.Context, types.JID, types.JID) error      { return nil }
+func (f *fakeLIDStore) GetPNForLID(context.Context, types.JID) (types.JID, error) {
+	return types.JID{}, nil
+}
+func (f *fakeLIDStore) GetLIDForPN(_ context.Context, pn types.JID) (types.JID, error) {
+	f.lookups++
+	return f.byPN[pn], nil
+}
+func (f *fakeLIDStore) GetManyLIDsForPNs(context.Context, []types.JID) (map[types.JID]types.JID, error) {
+	return nil, nil
+}
+
+// In a LID-addressed group the cached sender (a phone number, resolved from
+// the LID at ingest) is mapped back to the LID the message key carries.
+func TestDownload_MediaRetryNamesLIDSenderInLIDGroup(t *testing.T) {
+	f := newRetryFixture(t, "GROUP-LID-MSG")
+	senderLID := types.NewJID("123456789012345", types.HiddenUserServer)
+	f.c.mediaRetryLIDs = &fakeLIDStore{byPN: map[types.JID]types.JID{
+		types.NewJID(retrySender, types.DefaultUserServer): senderLID,
+	}}
+	f.c.mediaRetryGroupInfo = func(_ context.Context, jid types.JID) (*types.GroupInfo, error) {
+		return &types.GroupInfo{JID: jid, AddressingMode: types.AddressingModeLID}, nil
+	}
+	f.answer = func(info *types.MessageInfo) *events.MediaRetry {
+		return successAnswer(t, string(info.ID), retryNewPath)
+	}
+
+	got := f.c.DownloadWithMediaRetry(context.Background(), f.msgID, retryGroupJID, "")
+	f.waitIdle(t)
+	if !got.Success {
+		t.Fatalf("download failed: %+v", got)
+	}
+	if f.receiptCount() != 1 {
+		t.Fatalf("receipts: got %d, want 1", f.receiptCount())
+	}
+	if s := f.receipts[0].Sender; s != senderLID {
+		t.Fatalf("receipt sender = %s, want the LID %s", s, senderLID)
+	}
+}
+
+func TestMediaRetrySender(t *testing.T) {
+	pn := types.NewJID(retrySender, types.DefaultUserServer)
+	lid := types.NewJID("123456789012345", types.HiddenUserServer)
+	group := types.NewJID("120363000000000001", types.GroupServer)
+	for _, tc := range []struct {
+		name     string
+		sender   types.JID
+		mode     types.AddressingMode
+		groupErr error
+		mapped   bool
+		want     types.JID
+	}{
+		{name: "LID group maps the phone to its LID", sender: pn, mode: types.AddressingModeLID, mapped: true, want: lid},
+		{name: "phone-number group keeps the phone", sender: pn, mode: types.AddressingModePN, mapped: true, want: pn},
+		{name: "LID group without a mapping keeps the phone", sender: pn, mode: types.AddressingModeLID, want: pn},
+		{name: "group info unavailable keeps the phone", sender: pn, groupErr: errors.New("offline"), mapped: true, want: pn},
+		{name: "a stored LID is used as is", sender: lid, mode: types.AddressingModeLID, mapped: true, want: lid},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lids := &fakeLIDStore{byPN: map[types.JID]types.JID{}}
+			if tc.mapped {
+				lids.byPN[pn] = lid
+			}
+			c := newClientWithStore(t, nil)
+			c.mediaRetryLIDs = lids
+			c.mediaRetryGroupInfo = func(_ context.Context, jid types.JID) (*types.GroupInfo, error) {
+				if jid != group {
+					t.Fatalf("group info for %s, want %s", jid, group)
+				}
+				if tc.groupErr != nil {
+					return nil, tc.groupErr
+				}
+				return &types.GroupInfo{JID: jid, AddressingMode: tc.mode}, nil
+			}
+			if got := c.mediaRetrySender(context.Background(), group, tc.sender); got != tc.want {
+				t.Fatalf("sender = %s, want %s", got, tc.want)
+			}
+		})
+	}
 }
