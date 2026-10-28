@@ -134,6 +134,7 @@ func (c *Client) normalizeIncomingMessage(
 
 // handleMessage persists an incoming message and its chat metadata.
 func (c *Client) handleMessage(msg *events.Message) {
+	ctx := context.Background()
 	nm := c.normalizeIncomingMessage(
 		msg.Info.Chat.String(),
 		msg.Info.Sender.String(),
@@ -164,13 +165,20 @@ func (c *Client) handleMessage(msg *events.Message) {
 		return
 	}
 
+	// Edits and deletes for everyone change the cached original instead of
+	// adding a row.
+	if ch, ok := c.messageChangeOf(ctx, msg.Message, msg); ok {
+		c.applyChange(ctx, nm.chatJID, msg.Info.Chat, changerOf(msg), ch)
+		return
+	}
+
 	pollOptions := applyPollCreation(&nm, msg.Message)
 
 	if nm.msg.Content == "" && nm.msg.MediaType == "" {
 		return
 	}
 
-	if err := c.storeNormalized(context.Background(), nm, pollOptions); err != nil {
+	if err := c.storeNormalized(ctx, nm, pollOptions); err != nil {
 		c.log.Warnf("Failed to store message: %v", err)
 		return
 	}
@@ -246,6 +254,11 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 		}
 		_ = c.store.StoreChat(chatJID, name, time.Unix(int64(ts), 0))
 
+		// Edits and deletes for everyone are applied once the
+		// conversation's messages are stored: they may target a message
+		// further on in the same batch (history runs newest first).
+		var changes []pendingChange
+
 		for _, msg := range messages {
 			if msg == nil || msg.Message == nil {
 				continue
@@ -259,9 +272,17 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 
 			// History messages keep the wrappers live events arrive without
 			// (ephemeral, view-once, document with caption, device-sent, ...).
-			// Edits and other protocol messages are not stored.
 			evt := (&events.Message{RawMessage: msg.Message.GetMessage()}).UnwrapRaw()
-			if evt.IsEdit || evt.Message.GetProtocolMessage() != nil {
+
+			// Edits and deletes for everyone are queued; applying one needs
+			// its sender, which ParseWebMessage derives as for live events.
+			// Other protocol messages are not stored.
+			if evt.IsEdit || evt.Message.GetProtocolMessage() != nil || evt.Message.GetSecretEncryptedMessage() != nil {
+				if parsed, err := c.wa.ParseWebMessage(jid, msg.Message); err == nil {
+					if ch, ok := c.messageChangeOf(ctx, evt.Message, parsed); ok {
+						changes = append(changes, pendingChange{who: changerOf(parsed), ch: ch})
+					}
+				}
 				continue
 			}
 
@@ -327,6 +348,10 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 					timestamp.Format("2006-01-02 15:04:05"), c.redactor.JID(nm.msg.Sender), c.redactor.JID(chatJID), c.redactor.Body(nm.msg.Content))
 			}
 		}
+
+		for _, p := range changes {
+			c.applyChange(ctx, chatJID, jid, p.who, p.ch)
+		}
 	}
 
 	c.log.Infof("History sync complete. Stored %d messages.", syncedCount)
@@ -359,6 +384,13 @@ func (c *Client) storeNormalized(ctx context.Context, nm normalizedMessage, poll
 		}
 	}
 	return nil
+}
+
+// pendingChange is an edit or revoke from a history-sync batch, held until
+// the batch's messages are stored.
+type pendingChange struct {
+	who changer
+	ch  messageChange
 }
 
 // GetChatName determines the appropriate name for a chat. It checks the

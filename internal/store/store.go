@@ -55,6 +55,12 @@ type Message struct {
 	DirectPath  string `json:"direct_path,omitempty"`
 	ChatName    string `json:"chat_name,omitempty"`
 	PhoneNumber string `json:"phone_number,omitempty"`
+	// Edited and Revoked report that the sender edited the message or
+	// deleted it for everyone (see ApplyEdit and ApplyRevoke).
+	Edited  bool `json:"edited,omitempty"`
+	Revoked bool `json:"revoked,omitempty"`
+	// RevokedAt is when the message was deleted for everyone (nil if it was not).
+	RevokedAt *time.Time `json:"revoked_at,omitempty"`
 }
 
 // Chat is a cached WhatsApp chat.
@@ -165,17 +171,33 @@ func (s *Store) StoreChat(jid, name string, lastMessageTime time.Time) error {
 	return err
 }
 
-// StoreMessage inserts or replaces a message row. Messages with no content and
+// StoreMessage inserts or updates a message row. Messages with no content and
 // no media type are dropped to avoid polluting the cache with signal-only
-// events (typing, receipts, key exchange, etc.).
+// events (typing, receipts, key exchange, etc.). A message that is delivered
+// again (history sync, request_sync) keeps what edits and revokes did to it:
+// an edited row keeps its edited content and a revoked row is left as is.
 func (s *Store) StoreMessage(ctx context.Context, m Message, mediaKey, fileSHA256, fileEncSHA256 []byte, fileLength uint64) error {
 	if m.Content == "" && m.MediaType == "" {
 		return nil
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT OR REPLACE INTO messages
+		`INSERT INTO messages
 		(id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, direct_path, media_key, file_sha256, file_enc_sha256, file_length)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT (id, chat_jid) DO UPDATE SET
+			sender = excluded.sender,
+			content = CASE WHEN messages.edited_at IS NULL THEN excluded.content ELSE messages.content END,
+			timestamp = excluded.timestamp,
+			is_from_me = excluded.is_from_me,
+			media_type = excluded.media_type,
+			filename = excluded.filename,
+			url = excluded.url,
+			direct_path = excluded.direct_path,
+			media_key = excluded.media_key,
+			file_sha256 = excluded.file_sha256,
+			file_enc_sha256 = excluded.file_enc_sha256,
+			file_length = excluded.file_length
+		WHERE messages.revoked_at IS NULL`,
 		m.ID, m.ChatJID, m.Sender, m.Content, m.Timestamp, m.IsFromMe,
 		m.MediaType, m.Filename, m.URL, m.DirectPath, mediaKey, fileSHA256, fileEncSHA256, fileLength,
 	)
@@ -324,6 +346,8 @@ CREATE TABLE IF NOT EXISTS messages (
 	file_enc_sha256 BLOB,
 	file_length INTEGER,
 	poll_options_json TEXT,
+	edited_at TIMESTAMP,
+	revoked_at TIMESTAMP,
 	PRIMARY KEY (id, chat_jid),
 	FOREIGN KEY (chat_jid) REFERENCES chats(jid)
 );
@@ -350,6 +374,8 @@ func migrateSchema(db *sql.DB) error {
 	defer rows.Close()
 	hasPollOptions := false
 	hasDirectPath := false
+	hasEditedAt := false
+	hasRevokedAt := false
 	for rows.Next() {
 		var (
 			cid        int
@@ -368,6 +394,12 @@ func migrateSchema(db *sql.DB) error {
 		if name == "direct_path" {
 			hasDirectPath = true
 		}
+		if name == "edited_at" {
+			hasEditedAt = true
+		}
+		if name == "revoked_at" {
+			hasRevokedAt = true
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate table_info(messages): %w", err)
@@ -380,6 +412,16 @@ func migrateSchema(db *sql.DB) error {
 	if !hasDirectPath {
 		if _, err := db.Exec("ALTER TABLE messages ADD COLUMN direct_path TEXT"); err != nil {
 			return fmt.Errorf("add column direct_path: %w", err)
+		}
+	}
+	if !hasEditedAt {
+		if _, err := db.Exec("ALTER TABLE messages ADD COLUMN edited_at TIMESTAMP"); err != nil {
+			return fmt.Errorf("add column edited_at: %w", err)
+		}
+	}
+	if !hasRevokedAt {
+		if _, err := db.Exec("ALTER TABLE messages ADD COLUMN revoked_at TIMESTAMP"); err != nil {
+			return fmt.Errorf("add column revoked_at: %w", err)
 		}
 	}
 	return nil
