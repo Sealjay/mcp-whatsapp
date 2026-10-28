@@ -146,7 +146,7 @@ func (c *Client) runMediaRetry(ctx context.Context, call *mediaRetryCall, chatJI
 }
 
 func (c *Client) awaitMediaRetry(ctx context.Context, call *mediaRetryCall, chatJID string) (string, error) {
-	info, err := c.mediaRetryMessageInfo(call.messageID, chatJID)
+	info, err := c.mediaRetryMessageInfo(ctx, call.messageID, chatJID)
 	if err != nil {
 		return "", err
 	}
@@ -181,7 +181,7 @@ func (c *Client) mediaRetryWait() time.Duration {
 
 // mediaRetryMessageInfo rebuilds the message key fields SendMediaRetryReceipt
 // reads (ID, chat, from-me, and the sender in groups) from the cached row.
-func (c *Client) mediaRetryMessageInfo(messageID, chatJID string) (*types.MessageInfo, error) {
+func (c *Client) mediaRetryMessageInfo(ctx context.Context, messageID, chatJID string) (*types.MessageInfo, error) {
 	sender, isFromMe, err := c.store.GetMessageOrigin(messageID, chatJID)
 	if err != nil {
 		return nil, fmt.Errorf("look up message: %w", err)
@@ -212,8 +212,47 @@ func (c *Client) mediaRetryMessageInfo(messageID, chatJID string) (*types.Messag
 		} else {
 			info.Sender = types.NewJID(sender, types.DefaultUserServer)
 		}
+		info.Sender = c.mediaRetrySender(ctx, chat, info.Sender)
 	}
 	return info, nil
+}
+
+// mediaRetrySender returns the participant a group retry receipt names. The
+// cache keeps the sender LID-resolved to a phone number, but in a LID-addressed
+// group the message key names the sender's LID, so the number is mapped back
+// with the device's LID store. Without a group answer or a mapping the cached
+// sender is used as is.
+func (c *Client) mediaRetrySender(ctx context.Context, chat, sender types.JID) types.JID {
+	if sender.Server != types.DefaultUserServer {
+		return sender
+	}
+	lids := c.mediaRetryLIDs
+	groupInfo := c.mediaRetryGroupInfo
+	if c.wa != nil && c.wa.Store != nil {
+		if lids == nil {
+			lids = c.wa.Store.LIDs
+		}
+		if groupInfo == nil {
+			groupInfo = c.wa.GetGroupInfo
+		}
+	}
+	if lids == nil || groupInfo == nil {
+		return sender
+	}
+	group, err := groupInfo(ctx, chat)
+	if err != nil {
+		c.log.Debugf("Media retry: group info for %s unavailable, naming the cached sender: %v", c.redactor.JID(chat.String()), err)
+		return sender
+	}
+	if group.AddressingMode != types.AddressingModeLID {
+		return sender
+	}
+	lid, err := lids.GetLIDForPN(ctx, sender)
+	if err != nil || lid.IsEmpty() {
+		c.log.Debugf("Media retry: no LID known for sender %s in a LID group", c.redactor.JID(sender.String()))
+		return sender
+	}
+	return lid
 }
 
 // handleMediaRetry hands the phone's answer to the waiting retry. Answers
