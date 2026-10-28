@@ -53,6 +53,8 @@ methods=(
   BuildPollVote
   EncryptPollVote
   DecryptPollVote
+  ParseWebMessage
+  DecryptSecretEncryptedMessage
 )
 
 missing=()

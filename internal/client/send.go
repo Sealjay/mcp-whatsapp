@@ -341,10 +341,7 @@ func documentMimeType(ext string) string {
 // persistSent writes a cache row for a message we sent so the local history
 // stays complete regardless of device multiplexing.
 func (c *Client) persistSent(ctx context.Context, recipientJID types.JID, msgID, message, mediaPath string, msg *waProto.Message) {
-	chatJID := recipientJID.String()
-	if !strings.HasSuffix(chatJID, "@g.us") {
-		chatJID = c.store.ResolveLIDToJID(chatJID)
-	}
+	chatJID := c.cacheChatJID(recipientJID)
 
 	chatName := c.resolveChatNameFallback(ctx, recipientJID, "")
 
