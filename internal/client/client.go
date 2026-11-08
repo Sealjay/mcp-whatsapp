@@ -24,6 +24,7 @@ import (
 	"github.com/sealjay/mcp-whatsapp/internal/ratelimit"
 	"github.com/sealjay/mcp-whatsapp/internal/security"
 	"github.com/sealjay/mcp-whatsapp/internal/store"
+	"github.com/sealjay/mcp-whatsapp/internal/transcribe"
 )
 
 // Config configures a new Client.
@@ -53,6 +54,11 @@ type Client struct {
 	limiter          *ratelimit.Limiter
 	statusMu         sync.RWMutex
 	status           ConnectionStatus
+
+	// Speech-to-text (see transcribe.go). transcribeFn is a test seam.
+	transcribeCfg transcribe.Config
+	transcribeFn  func(ctx context.Context, cfg transcribe.Config, path, language string) (transcribe.Result, error)
+	transcribeMu  sync.Mutex
 
 	// isConnected and waSend are wa's IsConnected and SendMessage, used by
 	// SendReply, SendReaction, polls and contact cards (waSend through the
@@ -151,6 +157,7 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		redactor:         redactor,
 		limiter:          limiter,
 		status:           ConnectionStatus{State: "disconnected", Since: time.Now().UTC()},
+		transcribeCfg:    transcribe.ConfigFromEnv(),
 	}, nil
 }
 
