@@ -75,6 +75,9 @@ func (c Config) endpoint() (string, error) {
 	if !c.AllowRemote && !isLoopbackHost(u.Hostname()) {
 		return "", fmt.Errorf("transcription: refusing %q: audio would leave this machine; set WHATSAPP_MCP_TRANSCRIBE_ALLOW_REMOTE=1 to allow a non-loopback service", u.Hostname())
 	}
+	if u.Scheme != "https" && !isLoopbackHost(u.Hostname()) {
+		return "", errors.New("transcription: non-loopback services require HTTPS to protect audio and credentials")
+	}
 	base := strings.TrimRight(u.String(), "/")
 	if !strings.HasSuffix(base, "/audio/transcriptions") {
 		base = strings.TrimSuffix(base, "/v1") + "/v1/audio/transcriptions"
