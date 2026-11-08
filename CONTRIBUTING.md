@@ -1,59 +1,52 @@
 # Contributing
 
-Thanks for your interest in contributing!
-
 ## About this project
 
-This repository is an MCP (Model Context Protocol) server that **wraps the [whatsmeow](https://github.com/tulir/whatsmeow) Go library** to expose a personal WhatsApp account to LLMs. The Go bridge is a thin layer over whatsmeow that adds:
+This repository wraps the [whatsmeow](https://github.com/tulir/whatsmeow) Go library to expose a personal WhatsApp account through an HTTP MCP server. The Go application adds a local SQLite message cache, LID resolution, history sync, and MCP tools.
 
-- A local SQLite store for message history
-- LID resolution, disappearing-message handling, and targeted history sync
-- An MCP surface served over HTTP via a lightweight daemon
+Protocol, session-management, and media-transfer issues usually belong in whatsmeow. The MCP server, cache, and LID-resolution code belong here.
 
-When making changes, keep this framing in mind: anything related to the underlying WhatsApp protocol, session management, or media upload/download should usually be solved upstream in whatsmeow, not reimplemented here.
+## Before you start
 
-## Ground rules
+- Open an issue before substantial work so the scope can be agreed.
+- Keep each pull request focused on one logical change.
+- Match the existing Go style in `cmd/` and `internal/`.
+- Do not commit `.env` files, databases (`*.db`), session state, or media.
+- Start from `main` on a `feat/<slug>` or `fix-<issue>` branch. Use a worktree under `.claude/worktrees/` when following the repository workflow.
 
-- Open an issue before starting non-trivial work so we can agree on scope.
-- One logical change per pull request. Keep diffs focused and reviewable.
-- Match existing code style in Go (`cmd/`, `internal/`).
-- Do not commit `.env` files, database files (`*.db`), session state, or media.
+## Build and test
 
-## Development workflow
+```bash
+make build        # writes ./bin/whatsapp-mcp
+make lint         # go vet and verify gofmt
+make test         # unit tests
+make test-race    # race detector
+make e2e          # build and run the HTTP MCP end-to-end tests
+make smoke        # boot-test without connecting to WhatsApp
+```
 
-1. Fork the repo and create a branch off `main`.
-2. Build and test:
+Run the checks relevant to your change. The unit tests use local fixtures and do not need a WhatsApp account. For manual integration testing, pair a device with:
 
-   ```bash
-   make build        # writes ./bin/whatsapp-mcp
-   make test         # unit tests
-   make test-race    # race detector
-   make vet          # go vet
-   make upgrade-check  # bump go.mau.fi/whatsmeow, re-tidy, build, test
-   ```
+```bash
+./bin/whatsapp-mcp login
+```
 
-3. Pair your phone for integration testing:
-
-   ```bash
-   ./bin/whatsapp-mcp login
-   ```
-
-4. Test against a real WhatsApp account — there is no offline fixture for whatsmeow sessions.
+`make upgrade-check` updates the whatsmeow dependency to `@main`, tidies modules, builds, and tests. It changes `go.mod` and `go.sum`; use it when working on an intentional dependency update and review those changes before committing.
 
 ## Pull requests
 
-- Describe the user-facing change and the rationale in the PR description.
+- Open pull requests against `main`; the repository does not use a `dev` branch.
+- Describe the user-facing change and its rationale.
 - Link the issue it closes, if any.
-- Call out any breaking changes to MCP tool signatures or database schema.
+- Call out breaking changes to MCP tool signatures or the database schema.
+- Squash-merge after the required checks pass.
 
-## Upstream considerations
+## Upstream issues
 
-Because this project wraps whatsmeow, some classes of bug belong upstream:
+- Protocol issues such as authentication failures, message decryption, or presence: [whatsmeow issues](https://github.com/tulir/whatsmeow/issues).
+- MCP, storage, or LID-resolution issues: this repository.
 
-- Protocol-level issues (auth failures, message decryption, presence) → [whatsmeow issues](https://github.com/tulir/whatsmeow/issues)
-- MCP surface, storage, or LID resolution issues → this repo
-
-If you're unsure, open an issue here first and we'll triage.
+If you are unsure where an issue belongs, open an issue here for triage.
 
 ## Licence
 

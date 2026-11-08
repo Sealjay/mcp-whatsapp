@@ -50,7 +50,7 @@ make upgrade-check
 
 ## Feature implementation map
 
-The MCP tool surface has 43 tools by default. Four WhatsApp Business label tools are registered only when `serve -enable-labels` or `WHATSAPP_MCP_LABELS=1` is set. Transcription is excluded from read-only mode because it uploads private audio to another service.
+The MCP tool surface has 43 tools by default and 47 when the four WhatsApp Business label tools are enabled with `serve -enable-labels` or `WHATSAPP_MCP_LABELS=1`. Read-only mode exposes 15 tools by default or 19 when labels are enabled. The label tools are read-only; transcription is excluded from read-only mode because it uploads private audio to another service.
 
 1. **LID resolution** — `internal/store/lid.go` normalises `@lid` JIDs to real phone numbers via `whatsmeow_lid_map`.
 2. **Sent-message storage** — `internal/client/send.go` persists outgoing messages after `SendMessage` returns.
@@ -61,7 +61,7 @@ The MCP tool surface has 43 tools by default. Four WhatsApp Business label tools
 7. **Blocklist** — `internal/client/features_blocklist.go` wraps `GetBlocklist` and `UpdateBlocklist`. Every call fetches the full list; it does not cache a `dhash`. `get_blocklist` retains its `DHash`/`JIDs`/`Contacts` JSON shape; phone numbers come from `BlocklistItem.PN` or fall back to the LID map.
 8. **Polls, contact cards, and view-once** — poll and contact-card sends live in `internal/client/features_media.go`; polls, votes, and contact cards use the rate-limited `Client.sendMessage`. vCard 3.0 synthesis is in `internal/client/vcard.go`; `ViewOnce` is plumbed through `SendMediaOptions` in `internal/client/send.go`. `SendPoll` uses `wa.BuildPollCreation` to attach the required `MessageSecret`. Vote ingest and tally are in `internal/client/events.go::handlePollVote` and `internal/store/poll.go`.
 9. **Presence, privacy, and status message** — `internal/client/features_privacy.go` implements own availability, privacy settings with strict enum validation, and the "About" status message.
-10. **Opt-in transcription** — `internal/client/transcribe.go` downloads audio, enforces the actual Ogg/Opus duration limit, and caches transcripts through `internal/store/transcripts.go`. `internal/transcribe` uploads to the configured OpenAI-compatible endpoint, rejects redirects, and requires an explicit opt-in for non-loopback services. The shared Ogg parser rejects malformed streams rather than guessing a duration.
+10. **Opt-in transcription** — `internal/client/transcribe.go` downloads audio, enforces the actual Ogg/Opus duration limit, and caches transcripts through `internal/store/transcripts.go`. `internal/transcribe` uploads to the configured OpenAI-compatible endpoint, rejects redirects, and requires HTTPS plus `WHATSAPP_MCP_TRANSCRIBE_ALLOW_REMOTE=1` for non-loopback services. The shared Ogg parser rejects malformed streams rather than guessing a duration.
 11. **WhatsApp Business labels** — `internal/client/labels.go` persists label edits and chat associations; full-sync events are enabled once during client construction when the opt-in flag is set. The four read-only tools live in `internal/mcp/tools_labels.go`.
 12. **Media retry for expired links** — `internal/client/mediaretry.go`. When `DownloadWithMediaRetry` (the `download_media` tool and media resource reads; plain `Download` never retries) gets HTTP 403/404/410 from the CDN (`whatsmeow.ErrMediaDownloadFailedWith403/404/410`; history-synced media links carry a signed `oe=` expiry), it sends one `SendMediaRetryReceipt` to the account's own phone, built from the cached row (ID, chat, from-me, group sender; in a LID-addressed group, per live `GetGroupInfo`, the cached phone-number sender is mapped back to its LID via the device's `LIDs.GetLIDForPN`), waits up to `defaultMediaRetryTimeout` (30 s) for the matching `*events.MediaRetry`, and decrypts it with `DecryptMediaRetryNotification`. It retries the download once, checks the decrypted payload against the cached length and SHA-256, and only then stores the new direct path (`store.UpdateMediaDirectPath`). Retry responses are matched by message ID and normalized chat JID. Concurrent calls for the same message share one receipt (`mediaRetryRegistry`); a caller's ctx only ends its own wait. On demand only: nothing retries in the background.
 
@@ -102,7 +102,7 @@ After the release changes have merged to `main`, cut a release from a clean, up-
 1. Determine the bump from commits since the latest tag: breaking changes require major; a new feature or tool requires minor; otherwise use patch. An explicit `major`, `minor`, or `patch` selection overrides automatic classification.
 2. Run `make lint` and `make test`; stop if either fails.
 3. Create and push the matching `vMAJOR.MINOR.PATCH` tag.
-4. Create the GitHub release with generated notes, for example `gh release create vX.Y.Z --generate-notes`.
+4. Create the GitHub release with generated notes, for example `github-account-route gh release create vX.Y.Z --generate-notes`.
 5. Report the version, release URL, and a one-line summary.
 
 Do not push feature work directly to `main`; the pull request flow above lands the release changes before tagging.
