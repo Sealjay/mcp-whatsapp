@@ -50,7 +50,7 @@ make upgrade-check
 
 ## Feature implementation map
 
-The MCP tool surface has 42 tools registered from `internal/mcp/tools.go`, `tools_groups.go`, `tools_media.go`, and `tools_privacy.go`.
+The MCP tool surface has 43 tools registered from `internal/mcp/tools.go`, `tools_groups.go`, `tools_media.go`, `tools_privacy.go`, and `tools_transcribe.go`. Transcription is excluded from read-only mode because it uploads private audio to another service.
 
 1. **LID resolution** — `internal/store/lid.go` normalises `@lid` JIDs to real phone numbers via `whatsmeow_lid_map`.
 2. **Sent-message storage** — `internal/client/send.go` persists outgoing messages after `SendMessage` returns.
@@ -61,6 +61,7 @@ The MCP tool surface has 42 tools registered from `internal/mcp/tools.go`, `tool
 7. **Blocklist** — `internal/client/features_blocklist.go` wraps `GetBlocklist` and `UpdateBlocklist`. Every call fetches the full list; it does not cache a `dhash`. `get_blocklist` retains its `DHash`/`JIDs`/`Contacts` JSON shape; phone numbers come from `BlocklistItem.PN` or fall back to the LID map.
 8. **Polls, contact cards, and view-once** — poll and contact-card sends live in `internal/client/features_media.go`; polls, votes, and contact cards use the rate-limited `Client.sendMessage`. vCard 3.0 synthesis is in `internal/client/vcard.go`; `ViewOnce` is plumbed through `SendMediaOptions` in `internal/client/send.go`. `SendPoll` uses `wa.BuildPollCreation` to attach the required `MessageSecret`. Vote ingest and tally are in `internal/client/events.go::handlePollVote` and `internal/store/poll.go`.
 9. **Presence, privacy, and status message** — `internal/client/features_privacy.go` implements own availability, privacy settings with strict enum validation, and the "About" status message.
+10. **Opt-in transcription** — `internal/client/transcribe.go` downloads audio, enforces the actual Ogg/Opus duration limit, and caches transcripts through `internal/store/transcripts.go`. `internal/transcribe` uploads to the configured OpenAI-compatible endpoint, rejects redirects, and requires an explicit opt-in for non-loopback services. The shared Ogg parser rejects malformed streams rather than guessing a duration.
 
 ## MCP tool descriptions and Glama
 

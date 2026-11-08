@@ -84,6 +84,20 @@ func TestHTTP_ReadOnlyMode(t *testing.T) {
 	}
 }
 
+func TestHTTP_TranscriptionNotConfigured(t *testing.T) {
+	t.Setenv("WHATSAPP_MCP_TRANSCRIBE_URL", "")
+	h := newHarness(t)
+	h.initializeMCP()
+	result := h.callTool("transcribe_audio", map[string]any{
+		"message_id": "AUDIO-1",
+		"chat_jid":   "447700000123@s.whatsapp.net",
+	})
+	if !result.IsError || !strings.Contains(result.Text, "WHATSAPP_MCP_TRANSCRIBE_URL") {
+		t.Fatalf("expected an actionable configuration error, got %+v", result)
+	}
+	t.Logf("First-use response: %s", result.Text)
+}
+
 // TestHTTP_Stateless2026 speaks the 2026-07-28 revision: no initialize, the
 // protocol version rides in _meta and the Mcp-Protocol-Version header. It
 // discovers, lists and calls a tool.

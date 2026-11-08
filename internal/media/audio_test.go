@@ -2,6 +2,8 @@ package media
 
 import (
 	"context"
+	"encoding/binary"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -94,28 +96,93 @@ func TestAnalyzeOggOpus_InvalidBytes(t *testing.T) {
 }
 
 func TestAnalyzeOggOpus_TruncatedHeader(t *testing.T) {
-	// "OggS" alone passes the initial 4-byte signature check but is too
-	// short for the 27-byte page header scan. Due to current implementation,
-	// the parse loop immediately breaks and duration falls back to the
-	// length-based estimate.
-	//
-	// The task spec asserts this should return an error; with the code as
-	// written it does not. Run the call to confirm behaviour.
-	dur, wf, err := AnalyzeOggOpus([]byte("OggS"))
-	if err != nil {
-		// Desired behaviour per spec: truncated header errors out.
-		return
+	if _, _, err := AnalyzeOggOpus([]byte("OggS")); err == nil {
+		t.Fatal("expected an error for a truncated Ogg header")
 	}
-	// Document actual behaviour: no error, returns clamped duration (>=1)
-	// and a 64-byte waveform. We flag this via t.Log so the test still
-	// passes against the current code, but the spec's expectation is noted.
-	if dur < 1 {
-		t.Fatalf("expected clamped duration >= 1, got %d", dur)
+}
+
+func oggPage(sequence uint32, granule uint64, flags byte, payload []byte) []byte {
+	page := make([]byte, 28+len(payload))
+	copy(page, "OggS")
+	page[5] = flags
+	binary.LittleEndian.PutUint64(page[6:14], granule)
+	binary.LittleEndian.PutUint32(page[14:18], 1)
+	binary.LittleEndian.PutUint32(page[18:22], sequence)
+	page[26] = 1
+	page[27] = byte(len(payload))
+	copy(page[28:], payload)
+	return page
+}
+
+func opusPages(granule uint64, rate uint32) []byte {
+	head := make([]byte, 19)
+	copy(head, "OpusHead")
+	head[8], head[9] = 1, 1
+	binary.LittleEndian.PutUint16(head[10:12], 312)
+	binary.LittleEndian.PutUint32(head[12:16], rate)
+	return append(oggPage(0, 0, 2, head), oggPage(1, granule, 4, []byte{0})...)
+}
+
+func TestAnalyzeOggOpus_Duration(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		samples uint64
+		rate    uint32
+		want    uint32
+	}{
+		{"pre-skip", 3 * 48000, 48000, 3},
+		{"input rate is only a hint", 3 * 48000, 24000, 3},
+		{"unspecified input rate", 3 * 48000, 0, 3},
+		{"long audio is not clamped", 601 * 48000, 48000, 601},
+		{"fractional second rounds up", 600*48000 + 1, 48000, 601},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			duration, waveform, err := AnalyzeOggOpus(opusPages(tc.samples+312, tc.rate))
+			if err != nil || duration != tc.want || len(waveform) != 64 {
+				t.Fatalf("duration=%d waveform=%d err=%v; want %d seconds", duration, len(waveform), err, tc.want)
+			}
+		})
 	}
-	if len(wf) != 64 {
-		t.Fatalf("expected 64-byte waveform, got %d", len(wf))
+}
+
+func TestAnalyzeOggOpus_MalformedPages(t *testing.T) {
+	valid := opusPages(48000+312, 48000)
+	truncatedBody := append([]byte(nil), valid[:47]...)
+	truncatedBody[27] = 255
+	noEOS := append([]byte(nil), valid...)
+	noEOS[47+5] = 0
+	backwards := append(oggPage(0, 0, 2, valid[28:47]), oggPage(1, 48000+312, 0, []byte{0})...)
+	backwards = append(backwards, oggPage(2, 24000+312, 4, []byte{0})...)
+	unfinished := append(oggPage(0, 0, 2, valid[28:47]), oggPage(1, 48000+312, 4, make([]byte, 255))...)
+	emptyEOS := make([]byte, 27)
+	copy(emptyEOS, "OggS")
+	emptyEOS[5] = 4
+	binary.LittleEndian.PutUint64(emptyEOS[6:14], 48000+312)
+	unfinishedThenEmptyEOS := append(oggPage(0, 0, 2, valid[28:47]), oggPage(1, math.MaxUint64, 0, make([]byte, 255))...)
+	unfinishedThenEmptyEOS = append(unfinishedThenEmptyEOS, emptyEOS...)
+	for _, tc := range []struct {
+		name string
+		data []byte
+	}{
+		{"truncated segment table", append(valid[:26:26], 2, 19)},
+		{"truncated page body", truncatedBody},
+		{"truncated OpusHead", oggPage(0, 0, 2, []byte("OpusHead"))},
+		{"missing OpusHead", oggPage(0, 48000, 4, []byte("not opus"))},
+		{"granule below pre-skip", opusPages(100, 48000)},
+		{"undefined final granule", opusPages(math.MaxUint64, 48000)},
+		{"duration overflows uint32", opusPages((uint64(math.MaxUint32)+1)*48000+312, 48000)},
+		{"missing end of stream", noEOS},
+		{"backwards granule", backwards},
+		{"unfinished final packet", unfinished},
+		{"unfinished packet before empty EOS", unfinishedThenEmptyEOS},
+		{"trailing truncated page", append(valid[:len(valid):len(valid)], []byte("OggS")...)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, _, err := AnalyzeOggOpus(tc.data); err == nil {
+				t.Fatal("expected a parse error")
+			}
+		})
 	}
-	t.Log("AnalyzeOggOpus did not return an error for truncated 'OggS' input; current implementation falls through to length-based duration estimate rather than erroring on short pages")
 }
 
 func TestAnalyzeOggOpus_ValidSynthetic(t *testing.T) {
