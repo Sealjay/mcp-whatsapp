@@ -29,6 +29,7 @@ Commands:
   login   Pair this device with your WhatsApp account via QR code (terminal)
   serve   Run the always-on HTTP MCP daemon (tracks events + serves MCP on 127.0.0.1:8765)
   smoke   Non-interactive boot check (CI): opens store + builds MCP server without connecting
+  healthcheck  Probe local daemon readiness (for container health checks)
   help    Show this help
 
 Global flags (before the command):
@@ -39,6 +40,8 @@ Global flags (before the command):
 Serve-specific flags (after 'serve'):
   -addr host:port   HTTP bind address (default: 127.0.0.1:8765, env WHATSAPP_MCP_ADDR)
   -allow-remote     Allow binding to a non-loopback address (dangerous)
+Pairing flag (after 'login' or 'serve'; only affects a new pairing):
+  -full-history     Ask the phone for a full history sync (env WHATSAPP_MCP_FULL_HISTORY)
   -read-only        Exclude WhatsApp mutation tools (env WHATSAPP_MCP_READ_ONLY)
   -enable-labels    Enable WhatsApp Business label sync and tools (env WHATSAPP_MCP_LABELS)
 `
@@ -93,6 +96,8 @@ func main() {
 		code = runServe(storeDir, redactor, rest)
 	case "smoke":
 		code = runSmoke(storeDir, redactor, rest)
+	case "healthcheck":
+		code = runHealthcheck(rest)
 	case "help", "-h", "--help":
 		fmt.Fprint(os.Stdout, usage)
 		code = 0

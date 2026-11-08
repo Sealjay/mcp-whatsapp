@@ -46,6 +46,7 @@ var readOnlyToolAccess = map[string]bool{
 	"set_group_topic":           false,
 	"set_privacy_setting":       false,
 	"set_status_message":        false,
+	"transcribe_audio":          false,
 	"unblock_contact":           false,
 	"update_group_participants": false,
 }
@@ -77,4 +78,6 @@ func (s *Server) registerTools() {
 	if s.labelsEnabled {
 		s.registerLabelTools()
 	}
+	// Speech-to-text for voice notes (opt-in; needs WHATSAPP_MCP_TRANSCRIBE_URL).
+	s.registerTranscribeTools()
 }

@@ -59,6 +59,7 @@ var expectedToolNames = []string{
 	"set_group_topic",
 	"set_privacy_setting",
 	"set_status_message",
+	"transcribe_audio",
 	"unblock_contact",
 	"update_group_participants",
 }
@@ -126,7 +127,7 @@ func TestNewServer_RegistersAllTools(t *testing.T) {
 
 func TestNewServer_ToolCount(t *testing.T) {
 	s := NewServer(nil, nil, true)
-	const want = 46
+	const want = 47
 	if got := len(s.MCP().ListTools()); got != want {
 		t.Errorf("tool count = %d, want %d", got, want)
 	}
@@ -139,8 +140,8 @@ func TestNewServer_LabelsDisabledDoesNotAdvertiseLabelTools(t *testing.T) {
 			t.Errorf("label tool %q is advertised while labels are disabled", name)
 		}
 	}
-	if got := len(s.MCP().ListTools()); got != 42 {
-		t.Fatalf("default tool count = %d, want 42", got)
+	if got := len(s.MCP().ListTools()); got != 43 {
+		t.Fatalf("default tool count = %d, want 43", got)
 	}
 }
 
@@ -157,13 +158,14 @@ func TestToolsByDomain(t *testing.T) {
 
 	// domain file → representative tool name(s) that MUST be present.
 	domains := map[string][]string{
-		"tools_query.go":   {"list_chats", "search_contacts"},
-		"tools_send.go":    {"send_message", "send_file"},
-		"tools_message.go": {"edit_message", "mark_read"},
-		"tools_groups.go":  {"create_group", "leave_group"},
-		"tools_media.go":   {"send_poll", "send_contact_card"},
-		"tools_labels.go":  {"list_labels"},
-		"tools_privacy.go": {"get_blocklist", "send_presence"},
+		"tools_query.go":      {"list_chats", "search_contacts"},
+		"tools_send.go":       {"send_message", "send_file"},
+		"tools_message.go":    {"edit_message", "mark_read"},
+		"tools_groups.go":     {"create_group", "leave_group"},
+		"tools_media.go":      {"send_poll", "send_contact_card"},
+		"tools_labels.go":     {"list_labels"},
+		"tools_privacy.go":    {"get_blocklist", "send_presence"},
+		"tools_transcribe.go": {"transcribe_audio"},
 	}
 
 	for file, names := range domains {
