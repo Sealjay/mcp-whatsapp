@@ -55,6 +55,8 @@ type Client struct {
 	allowedMediaRoot string
 	redactor         *security.Redactor
 	limiter          *ratelimit.Limiter
+	statusMu         sync.RWMutex
+	status           ConnectionStatus
 
 	// Speech-to-text (see transcribe.go). transcribeFn is a test seam.
 	transcribeCfg transcribe.Config
@@ -170,6 +172,7 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		allowedMediaRoot: cfg.AllowedMediaRoot,
 		redactor:         redactor,
 		limiter:          limiter,
+		status:           ConnectionStatus{State: "disconnected", Since: time.Now().UTC()},
 		transcribeCfg:    transcribe.ConfigFromEnv(),
 	}, nil
 }
@@ -207,7 +210,11 @@ func (c *Client) QRChannel(ctx context.Context) (<-chan whatsmeow.QRChannelItem,
 // the local session. After this call, IsLoggedIn returns false and the next
 // Connect will start a fresh pairing flow.
 func (c *Client) Logout(ctx context.Context) error {
-	return c.wa.Logout(ctx)
+	if err := c.wa.Logout(ctx); err != nil {
+		return err
+	}
+	c.trackConnectionEvent(&events.LoggedOut{})
+	return nil
 }
 
 // ConnectOpts controls the behaviour of Connect.
@@ -329,6 +336,7 @@ func (c *Client) Disconnect() {
 	if c.wa != nil {
 		c.wa.Disconnect()
 	}
+	c.trackConnectionEvent(&events.Disconnected{})
 }
 
 // IsConnected reports whether the underlying whatsmeow client currently
