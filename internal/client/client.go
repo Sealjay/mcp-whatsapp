@@ -206,6 +206,18 @@ func (c *Client) QRChannel(ctx context.Context) (<-chan whatsmeow.QRChannelItem,
 	return c.wa.GetQRChannel(ctx)
 }
 
+// NewPairingSession creates an independent whatsmeow client for one pairing
+// attempt while sharing the device store, so its connection teardown cannot
+// affect this Client's connection.
+func (c *Client) NewPairingSession() *Client {
+	return &Client{
+		wa:       newWAClient(c.wa.Store, c.log, c.redactor),
+		store:    c.store,
+		log:      c.log,
+		redactor: c.redactor,
+	}
+}
+
 // Logout drops the currently paired device from WhatsApp's server and clears
 // the local session. After this call, IsLoggedIn returns false and the next
 // Connect will start a fresh pairing flow.
