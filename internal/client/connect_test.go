@@ -51,6 +51,7 @@ func TestConnect_AllowUnpairedSkipsGuard(t *testing.T) {
 
 func TestNewPairingSessionSharesDeviceStoreButIsolatesClient(t *testing.T) {
 	c := newUnpairedClient()
+	c.labelsEnabled = true
 
 	session := c.NewPairingSession()
 	if session == c {
@@ -61,5 +62,8 @@ func TestNewPairingSessionSharesDeviceStoreButIsolatesClient(t *testing.T) {
 	}
 	if session.wa.Store != c.wa.Store {
 		t.Fatal("pairing session did not share the paired device store")
+	}
+	if !session.labelsEnabled || !session.wa.EmitAppStateEventsOnFullSync {
+		t.Fatal("pairing session did not preserve the labels configuration")
 	}
 }

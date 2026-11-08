@@ -217,10 +217,11 @@ func (c *Client) QRChannel(ctx context.Context) (<-chan whatsmeow.QRChannelItem,
 // affect this Client's connection.
 func (c *Client) NewPairingSession() *Client {
 	return &Client{
-		wa:       newWAClient(c.wa.Store, c.log, c.redactor),
-		store:    c.store,
-		log:      c.log,
-		redactor: c.redactor,
+		wa:            newWAClient(c.wa.Store, c.log, c.redactor, c.labelsEnabled),
+		store:         c.store,
+		log:           c.log,
+		redactor:      c.redactor,
+		labelsEnabled: c.labelsEnabled,
 	}
 }
 

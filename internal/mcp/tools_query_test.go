@@ -95,7 +95,7 @@ func TestPairingStatus_AwaitingQRGenerating(t *testing.T) {
 // (supervisors switch on it) and flags expired so the caller knows the QR
 // will not appear until a new session starts.
 func TestPairingStatus_AwaitingQRExpired(t *testing.T) {
-	env := callPairingStatus(t, NewServer(nil, fakePairCache{expired: true}))
+	env := callPairingStatus(t, NewServer(nil, fakePairCache{expired: true}, false))
 	if env["state"] != "awaiting_qr" {
 		t.Fatalf("state = %v, want awaiting_qr", env["state"])
 	}

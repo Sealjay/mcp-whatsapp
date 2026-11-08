@@ -20,6 +20,7 @@ type pairingSession interface {
 
 type pairingAttempt struct {
 	session pairingSession
+	cancel  context.CancelFunc
 }
 
 // productionDriver adapts *client.Client to the daemon.pairDriver interface
@@ -51,7 +52,8 @@ func (p *productionDriver) StartPairing(ctx context.Context, onQR func(string), 
 	if session == nil {
 		return errors.New("failed to create pairing session")
 	}
-	attempt := &pairingAttempt{session: session}
+	attemptCtx, cancel := context.WithCancel(ctx)
+	attempt := &pairingAttempt{session: session, cancel: cancel}
 	p.pairingMu.Lock()
 	p.activePairing = attempt
 	p.pairingMu.Unlock()
@@ -62,45 +64,59 @@ func (p *productionDriver) StartPairing(ctx context.Context, onQR func(string), 
 			p.c.Disconnect()
 		}
 	}
-	qrCh, err := session.QRChannel(ctx)
+	qrCh, err := session.QRChannel(attemptCtx)
 	if err != nil {
+		cancel()
 		p.clearPairingAttempt(attempt)
 		return err
 	}
 	go func() {
+		defer cancel()
 		terminalEvent := ""
-		for item := range qrCh {
-			switch item.Event {
-			case "code":
-				if onQR != nil {
-					onQR(item.Code)
+		for {
+			select {
+			case <-attemptCtx.Done():
+				if ctx.Err() != nil {
+					session.Disconnect()
 				}
-			case "success":
-				session.Disconnect()
 				p.clearPairingAttempt(attempt)
-				if onSuccess != nil {
-					onSuccess()
-				}
 				return
-			default:
-				terminalEvent = item.Event
+			case item, ok := <-qrCh:
+				if !ok {
+					// The channel closed without "success": WhatsApp closed the
+					// session after QR expiry or pairing failure. On QR timeout,
+					// its emitter disconnects this isolated client after closing
+					// the channel.
+					if terminalEvent != "" && terminalEvent != whatsmeow.QRChannelTimeout.Event {
+						session.Disconnect()
+					}
+					p.clearPairingAttempt(attempt)
+					if onExpired != nil {
+						onExpired()
+					}
+					return
+				}
+				switch item.Event {
+				case "code":
+					if onQR != nil {
+						onQR(item.Code)
+					}
+				case "success":
+					session.Disconnect()
+					p.clearPairingAttempt(attempt)
+					if onSuccess != nil {
+						onSuccess()
+					}
+					return
+				default:
+					terminalEvent = item.Event
+				}
 			}
-		}
-		// The channel closed without "success": WhatsApp closed the session
-		// after its QR codes ran out ("timeout"), the socket dropped, pairing
-		// failed, or ctx ended. On QR timeout, whatsmeow closes the channel
-		// before disconnecting this session. Keep the attempt isolated so that
-		// its late disconnect cannot tear down a replacement attempt.
-		if terminalEvent != "" && terminalEvent != whatsmeow.QRChannelTimeout.Event {
-			session.Disconnect()
-		}
-		p.clearPairingAttempt(attempt)
-		if onExpired != nil {
-			onExpired()
 		}
 	}()
 	// Must call Connect AFTER QRChannel per whatsmeow docs.
-	if err := session.Connect(ctx, client.ConnectOpts{AllowUnpaired: true}); err != nil {
+	if err := session.Connect(attemptCtx, client.ConnectOpts{AllowUnpaired: true}); err != nil {
+		cancel()
 		session.Disconnect()
 		p.clearPairingAttempt(attempt)
 		return err
@@ -138,6 +154,7 @@ func (p *productionDriver) Disconnect() {
 	p.activePairing = nil
 	p.pairingMu.Unlock()
 	if attempt != nil {
+		attempt.cancel()
 		attempt.session.Disconnect()
 	}
 	if p.c != nil {
