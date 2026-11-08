@@ -29,6 +29,7 @@ Commands:
   login   Pair this device with your WhatsApp account via QR code (terminal)
   serve   Run the always-on HTTP MCP daemon (tracks events + serves MCP on 127.0.0.1:8765)
   smoke   Non-interactive boot check (CI): opens store + builds MCP server without connecting
+  healthcheck  Probe local daemon readiness (for container health checks)
   help    Show this help
 
 Global flags (before the command):
@@ -92,6 +93,8 @@ func main() {
 		code = runServe(storeDir, redactor, rest)
 	case "smoke":
 		code = runSmoke(storeDir, redactor, rest)
+	case "healthcheck":
+		code = runHealthcheck(rest)
 	case "help", "-h", "--help":
 		fmt.Fprint(os.Stdout, usage)
 		code = 0

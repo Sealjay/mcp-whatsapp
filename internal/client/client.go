@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/mdp/qrterminal"
@@ -50,6 +51,8 @@ type Client struct {
 	allowedMediaRoot string
 	redactor         *security.Redactor
 	limiter          *ratelimit.Limiter
+	statusMu         sync.RWMutex
+	status           ConnectionStatus
 
 	// isConnected and waSend are wa's IsConnected and SendMessage, used by
 	// SendReply, SendReaction, polls and contact cards (waSend through the
@@ -147,6 +150,7 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		allowedMediaRoot: cfg.AllowedMediaRoot,
 		redactor:         redactor,
 		limiter:          limiter,
+		status:           ConnectionStatus{State: "disconnected", Since: time.Now().UTC()},
 	}, nil
 }
 
