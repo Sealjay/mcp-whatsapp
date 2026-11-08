@@ -9,6 +9,7 @@ import (
 
 	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
+	"go.mau.fi/whatsmeow/proto/waAdv"
 	wmstore "go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
@@ -445,4 +446,56 @@ func storedRevoked(t *testing.T, s *store.Store, id string) bool {
 		t.Fatalf("read %s: %v", id, err)
 	}
 	return revoked
+}
+
+func TestHandleHistorySync_ImportsPollVotes(t *testing.T) {
+	c, _ := newOfflinePairedClient(t, nil)
+	ctx := context.Background()
+	s := c.store
+	const chat = "447700000001@s.whatsapp.net"
+	if err := s.StoreChat(chat, "Alex", time.Now()); err != nil {
+		t.Fatalf("StoreChat: %v", err)
+	}
+	// Message secrets belong to a saved device row.
+	c.wa.Store.Account = &waAdv.ADVSignedDeviceIdentity{Details: []byte{}, AccountSignature: make([]byte, 64), AccountSignatureKey: make([]byte, 32), DeviceSignature: make([]byte, 64)}
+	if err := c.wa.Store.Save(ctx); err != nil {
+		t.Fatalf("save device: %v", err)
+	}
+	pollSender := types.NewJID("447700000001", types.DefaultUserServer)
+	secret := make([]byte, 32)
+	secret[0] = 1
+	if err := c.wa.Store.MsgSecrets.PutMessageSecret(ctx, pollSender, pollSender, "POLL-1", secret); err != nil {
+		t.Fatalf("PutMessageSecret: %v", err)
+	}
+
+	runHistorySync(c, chat, historyMsg(historyKey(chat, "POLL-1", false, ""), &waProto.Message{
+		PollCreationMessage: &waProto.PollCreationMessage{
+			Name: proto.String("Lunch?"),
+			Options: []*waProto.PollCreationMessage_Option{
+				{OptionName: proto.String("Yes")},
+				{OptionName: proto.String("No")},
+			},
+		},
+	}))
+
+	vote, err := c.wa.BuildPollVote(ctx, &types.MessageInfo{
+		ID:            "POLL-1",
+		MessageSource: types.MessageSource{Chat: pollSender.ToNonAD(), Sender: pollSender.ToNonAD()},
+	}, []string{"Yes"})
+	if err != nil {
+		t.Fatalf("BuildPollVote: %v", err)
+	}
+	runHistorySync(c, chat, historyMsg(historyKey(chat, "VOTE-1", true, ""), vote))
+
+	_, results, err := s.GetPollResults(ctx, "POLL-1", chat)
+	if err != nil {
+		t.Fatalf("GetPollResults: %v", err)
+	}
+	got := map[string]int{}
+	for _, r := range results {
+		got[r.Option] = r.Votes
+	}
+	if got["Yes"] != 1 || got["No"] != 0 {
+		t.Errorf("poll tally = %v, want Yes=1 No=0", got)
+	}
 }
