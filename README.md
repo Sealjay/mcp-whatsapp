@@ -154,7 +154,7 @@ Data lives under `./store/` (`-store DIR`): `messages.db` (message cache), `what
 | `send_poll` | Send a poll with a question and 2+ options; `selectable_count` controls how many options a voter may pick. Generates the 32-byte `MessageSecret` required for votes to decrypt |
 | `send_poll_vote` | Cast a vote on a previously-seen poll; `options` must match option names exactly |
 | `get_poll_results` | Return the tally for a poll we have cached (includes 0-vote options) |
-| `send_contact_card` | Send a contact card; synthesises a vCard 3.0 from `name` + `phone`, or pass a raw `vcard` to skip synthesis |
+| `send_contact_card` | Send a contact card; synthesises a vCard 3.0 from `name` + `phone`, or pass a raw `vcard` to skip synthesis. Incoming contact cards are stored as text (`[Contact] Name: +phone`) |
 
 ### Message actions
 
