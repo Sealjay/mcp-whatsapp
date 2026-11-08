@@ -10,7 +10,7 @@ ENV CGO_ENABLED=1
 RUN go build -trimpath -ldflags "-s -w -X main.Version=${VERSION}" \
     -o /out/whatsapp-mcp ./cmd/whatsapp-mcp
 
-FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8
+FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8 AS runtime
 
 # ffmpeg: only needed by send_audio_message for non-Opus input (see
 # internal/media/audio.go); the tool degrades to a clear error without it,
