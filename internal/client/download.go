@@ -60,8 +60,9 @@ func (c *Client) Download(ctx context.Context, messageID, chatJID, outputPath st
 // DownloadWithMediaRetry is Download for an explicit request for one message
 // (the download_media tool and media resource reads). When the CDN refuses
 // the stored link (403/404/410) it asks the account's own phone once to
-// re-upload the media, stores the new link and downloads again. Automatic or
-// bulk callers use Download, so they never send retry receipts.
+// re-upload the media and retries with the returned link. It persists that
+// link only after the payload passes validation. Automatic or bulk callers
+// use Download, so they never send retry receipts.
 func (c *Client) DownloadWithMediaRetry(ctx context.Context, messageID, chatJID, outputPath string) DownloadResult {
 	return c.download(ctx, messageID, chatJID, outputPath, true)
 }
