@@ -1,5 +1,7 @@
 # Security Guards Implementation Plan
 
+> Historical planning record (2026-04-18). This document records decisions and proposed work from that date. Implementation status, tool counts, and file references may have changed; see [README](../../../README.md) and [AGENTS.md](../../../AGENTS.md) for current behaviour.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Port forward three security guards from the retired Go HTTP bridge into the new single-binary architecture: path allowlist for `send_file`/`send_audio_message`, received-filename sanitisation for incoming documents, and JID/body redaction in logs.
