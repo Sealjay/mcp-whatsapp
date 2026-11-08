@@ -88,7 +88,7 @@ Paths outside the root, including symlinks that resolve outside it, are rejected
 - `-addr host:port` (env `WHATSAPP_MCP_ADDR`, default `127.0.0.1:8765`).
 - `-allow-remote`: bind a non-loopback address. Requires `WHATSAPP_MCP_TOKEN`, a bearer token for `/mcp` and `/pair/*`; `serve` exits without it.
 - `WHATSAPP_MCP_MEDIA_ROOT`: the file allowlist root above.
-- `WHATSAPP_MCP_TRANSCRIBE_URL`: enables `transcribe_audio`. Base URL of a speech-to-text service that implements the OpenAI-compatible `POST /v1/audio/transcriptions` (a local whisper.cpp or faster-whisper server, LocalAI, or a hosted API). Unset = feature off. A non-loopback host is refused unless `WHATSAPP_MCP_TRANSCRIBE_ALLOW_REMOTE=1`, so audio never leaves the machine by accident.
+- `WHATSAPP_MCP_TRANSCRIBE_URL`: enables `transcribe_audio`. Base URL of a speech-to-text service that implements the OpenAI-compatible `POST /v1/audio/transcriptions` (a local whisper.cpp or faster-whisper server, LocalAI, or a hosted API). Unset = feature off. A non-loopback host is refused unless `WHATSAPP_MCP_TRANSCRIBE_ALLOW_REMOTE=1`, so audio never leaves the machine by accident. HTTP redirects are refused; configure the final transcription endpoint directly.
   Optional: `WHATSAPP_MCP_TRANSCRIBE_MODEL`, `WHATSAPP_MCP_TRANSCRIBE_LANGUAGE` (ISO 639-1; empty = autodetect), `WHATSAPP_MCP_TRANSCRIBE_TOKEN` (bearer token for the service), `WHATSAPP_MCP_TRANSCRIBE_MAX_SECONDS` (default 600). Transcripts are third-party content and are cached in `messages.db`.
 - `WHATSAPP_MCP_DEBUG=1` or `-debug`: verbose logs (see [Debug logging](#debug-logging)).
 

@@ -158,11 +158,19 @@ func Transcribe(ctx context.Context, cfg Config, path, language string) (Result,
 		req.Header.Set("Authorization", "Bearer "+cfg.Token)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	httpClient := &http.Client{
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return Result{}, fmt.Errorf("transcription: request failed: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		return Result{}, fmt.Errorf("transcription: service returned %s; redirects are not allowed; configure the endpoint directly", resp.Status)
+	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
 		return Result{}, fmt.Errorf("transcription: read response: %w", err)

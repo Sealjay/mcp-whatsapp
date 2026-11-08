@@ -7,7 +7,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -85,6 +87,56 @@ func TestTranscribe_Timeout(t *testing.T) {
 	cfg := Config{URL: srv.URL, Timeout: 50 * time.Millisecond}
 	if _, err := Transcribe(context.Background(), cfg, writeAudio(t, "A"), ""); err == nil {
 		t.Fatal("expected a timeout error")
+	}
+}
+
+func TestTranscribe_RejectsRedirects(t *testing.T) {
+	for _, status := range []int{301, 302, 303, 307, 308} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			var requests atomic.Int32
+			target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				_, _ = w.Write([]byte(`{"text":"redirected"}`))
+			}))
+			defer target.Close()
+			source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, target.URL, status)
+			}))
+			defer source.Close()
+
+			_, err := Transcribe(context.Background(), Config{URL: source.URL, Token: "test-token"}, writeAudio(t, "AUDIO"), "")
+			if requests.Load() != 0 {
+				t.Fatal("transcription followed the redirect")
+			}
+			if err == nil || !strings.Contains(err.Error(), strconv.Itoa(status)) || !strings.Contains(err.Error(), "redirect") {
+				t.Fatalf("want an explicit redirect error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestTranscribe_RejectsHTTPSDowngrade(t *testing.T) {
+	var requests atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		_, _ = w.Write([]byte(`{"text":"redirected"}`))
+	}))
+	defer target.Close()
+	source := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+	}))
+	defer source.Close()
+
+	originalTransport := http.DefaultTransport
+	http.DefaultTransport = source.Client().Transport
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
+
+	_, err := Transcribe(context.Background(), Config{URL: source.URL, AllowRemote: true, Token: "test-token"}, writeAudio(t, "AUDIO"), "")
+	if requests.Load() != 0 {
+		t.Fatal("transcription followed an HTTPS-to-HTTP redirect")
+	}
+	if err == nil || !strings.Contains(err.Error(), "redirect") {
+		t.Fatalf("want an explicit redirect error, got %v", err)
 	}
 }
 
