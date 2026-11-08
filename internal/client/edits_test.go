@@ -255,6 +255,46 @@ func TestReviewHistoryEditedThenRevokedMatchesLiveArchive(t *testing.T) {
 	}
 }
 
+func TestReviewHistorySameSecondCaptionRemovalThenRevoke(t *testing.T) {
+	live, liveStore := newEditTestClient(t)
+	history, historyStore := newEditTestClient(t)
+	const id = "same-second-caption-1"
+	captionEdit := func(caption string) *waProto.Message {
+		change := editOf(participantKey(groupJID, bobJID, id), caption)
+		change.EditedMessage.Message.ProtocolMessage.EditedMessage = &waProto.Message{
+			ImageMessage: &waProto.ImageMessage{Caption: proto.String(caption)},
+		}
+		return change
+	}
+	original := &waProto.Message{ImageMessage: &waProto.ImageMessage{Caption: proto.String("obsolete caption")}}
+
+	liveMsg(live, groupJID, bobJID, false, id, liveTS, original)
+	liveMsg(live, groupJID, bobJID, false, "live-edit-1", liveTS, captionEdit("intermediate caption"))
+	liveMsg(live, groupJID, bobJID, false, "live-edit-2", liveTS, captionEdit(""))
+	liveMsg(live, groupJID, bobJID, false, "live-revoke", liveTS, revokeOf(participantKey(groupJID, bobJID, id)))
+
+	historyChange := func(eventID string, change *waProto.Message) *waProto.HistorySyncMsg {
+		event := historyMsg(historyKey(groupJID.String(), eventID, false, bobJID.String()), change)
+		event.Message.MessageTimestamp = proto.Uint64(historyTS)
+		return event
+	}
+	runHistorySync(history, groupJID.String(),
+		historyChange("history-revoke", revokeOf(participantKey(groupJID, bobJID, id))),
+		historyChange("history-edit-2", captionEdit("")),
+		historyChange("history-edit-1", captionEdit("intermediate caption")),
+		historyMsg(historyKey(groupJID.String(), id, false, bobJID.String()), original),
+	)
+
+	liveRow := mustCached(t, liveStore, groupJID, id)
+	historyRow := mustCached(t, historyStore, groupJID, id)
+	if liveRow != historyRow {
+		t.Fatalf("same-second history archive = %+v, live archive = %+v", historyRow, liveRow)
+	}
+	if historyRow.content != "" || !historyRow.edited || !historyRow.revoked || historyRow.mediaType != "image" {
+		t.Fatalf("same-second archive after caption removal and revoke = %+v, want empty caption retained and marked edited and revoked", historyRow)
+	}
+}
+
 func TestHandleMessage_ThirdPartyCannotEditOrRevoke(t *testing.T) {
 	c, s := newEditTestClient(t)
 	lookups := 0

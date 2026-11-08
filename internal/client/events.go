@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -367,6 +368,7 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 			}
 		}
 
+		slices.Reverse(changes)
 		sort.SliceStable(changes, func(i, j int) bool {
 			return changes[i].ch.at.Before(changes[j].ch.at)
 		})
