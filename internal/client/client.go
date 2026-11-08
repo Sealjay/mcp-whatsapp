@@ -166,9 +166,9 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 	return &Client{
 		wa:               wa,
 		downloadMedia:    wa.Download,
-		groupInfo:        wa.GetGroupInfo,
 		isConnected:      wa.IsConnected,
 		waSend:           wa.SendMessage,
+		groupInfo:        wa.GetGroupInfo,
 		store:            cfg.Store,
 		log:              logger,
 		allowedMediaRoot: cfg.AllowedMediaRoot,

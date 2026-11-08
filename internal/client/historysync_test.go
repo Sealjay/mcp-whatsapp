@@ -258,6 +258,40 @@ func TestHandleHistorySync_AppliesEditsAndRevokes(t *testing.T) {
 	}
 }
 
+func TestHandleHistorySync_RevokeRemainsMarkedAfterRedelivery(t *testing.T) {
+	s := newTestStoreWithLIDMap(t, nil)
+	c := newHistoryTestClient(t, s)
+
+	const (
+		group = "123456789@g.us"
+		bob   = "447700000002@s.whatsapp.net"
+		id    = "redelivered-after-revoke"
+		body  = "archived message text"
+	)
+	if err := s.StoreChat(group, "Project Team", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	original := historyMsg(historyKey(group, id, false, bob), &waProto.Message{Conversation: proto.String(body)})
+	runHistorySync(c, group, original)
+
+	revoke := &waProto.Message{ProtocolMessage: &waProto.ProtocolMessage{
+		Type: waProto.ProtocolMessage_REVOKE.Enum(),
+		Key:  historyKey(group, id, false, bob),
+	}}
+	runHistorySync(c, group, historyMsg(historyKey(group, "revoke-event", false, bob), revoke))
+	runHistorySync(c, group, original)
+
+	r := mustStored(t, s, id)
+	if r.content != body || !storedRevoked(t, s, id) {
+		t.Fatalf("redelivered message = %+v, want original content retained and revoke marker preserved", r)
+	}
+	msgContext, err := s.GetMessageContext(context.Background(), id, 0, 0)
+	if err != nil || msgContext.Message.Content != body || !msgContext.Message.Revoked || msgContext.Message.RevokedAt == nil {
+		t.Fatalf("redelivered message context = %+v, %v; want retained content and revoked metadata", msgContext, err)
+	}
+}
+
 func TestHandleHistorySync_GroupParticipantResync(t *testing.T) {
 	s := newTestStoreWithLIDMap(t, map[string]string{"99887766": "447700000002"})
 	c := newHistoryTestClient(t, s)
