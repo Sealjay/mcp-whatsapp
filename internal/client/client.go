@@ -34,6 +34,7 @@ type Config struct {
 	Logger           waLog.Logger       // optional; defaults to stderr at INFO
 	AllowedMediaRoot string             // absolute path; media_path args must live under this
 	Redactor         *security.Redactor // optional; defaults to a redacting instance
+	LabelsEnabled    bool               // opt in to full app-state events for label sync; default false
 	// RateLimiter throttles outbound sends and usync lookups. Optional; New
 	// installs one built from ratelimit.DefaultConfig when nil. Pass an
 	// explicitly-configured limiter to override the defaults, or leave the
@@ -56,6 +57,7 @@ type Client struct {
 	allowedMediaRoot string
 	redactor         *security.Redactor
 	limiter          *ratelimit.Limiter
+	labelsEnabled    bool
 	statusMu         sync.RWMutex
 	status           ConnectionStatus
 
@@ -73,8 +75,11 @@ type Client struct {
 
 // newWAClient creates the whatsmeow client for device. whatsmeow logs through
 // a redactingLogger, so the JIDs in its own log lines are masked like ours.
-func newWAClient(device *wmstore.Device, logger waLog.Logger, redactor *security.Redactor) *whatsmeow.Client {
-	return whatsmeow.NewClient(device, redactingLogger{inner: logger, redactor: redactor})
+func newWAClient(device *wmstore.Device, logger waLog.Logger, redactor *security.Redactor, labelsEnabled bool) *whatsmeow.Client {
+	wa := whatsmeow.NewClient(device, redactingLogger{inner: logger, redactor: redactor})
+	// whatsmeow reads this during sync; configure it before Connect and never toggle it.
+	wa.EmitAppStateEventsOnFullSync = labelsEnabled
+	return wa
 }
 
 // New constructs a Client. It sets the latest WhatsApp version best-effort,
@@ -158,7 +163,7 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		}
 	}
 
-	wa := newWAClient(device, logger, redactor)
+	wa := newWAClient(device, logger, redactor, cfg.LabelsEnabled)
 	if wa == nil {
 		return nil, errors.New("failed to create whatsmeow client")
 	}
@@ -174,6 +179,7 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		allowedMediaRoot: cfg.AllowedMediaRoot,
 		redactor:         redactor,
 		limiter:          limiter,
+		labelsEnabled:    cfg.LabelsEnabled,
 		status:           ConnectionStatus{State: "disconnected", Since: time.Now().UTC()},
 		transcribeCfg:    transcribe.ConfigFromEnv(),
 	}, nil
