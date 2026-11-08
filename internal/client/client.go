@@ -50,6 +50,7 @@ type Client struct {
 	wa               *whatsmeow.Client
 	downloadMedia    func(context.Context, whatsmeow.DownloadableMessage) ([]byte, error)
 	groupInfo        func(context.Context, types.JID) (*types.GroupInfo, error)
+	sendMediaRetry   func(context.Context, *types.MessageInfo, []byte) error
 	store            *store.Store
 	log              waLog.Logger
 	handlerID        uint32
@@ -61,11 +62,19 @@ type Client struct {
 	statusMu         sync.RWMutex
 	status           ConnectionStatus
 
+	// mediaRetries tracks media retry receipts awaiting the phone's answer
+	// (see mediaretry.go); mediaRetryTimeout overrides
+	// defaultMediaRetryTimeout when positive.
+	mediaRetries      mediaRetryRegistry
+	mediaRetryTimeout time.Duration
+	// mediaRetryGroupInfo and mediaRetryLIDs replace wa.GetGroupInfo and the
+	// device's LID store in tests (see mediaRetrySender).
+	mediaRetryGroupInfo func(context.Context, types.JID) (*types.GroupInfo, error)
+	mediaRetryLIDs      wmstore.LIDStore
 	// Speech-to-text (see transcribe.go). transcribeFn is a test seam.
 	transcribeCfg transcribe.Config
 	transcribeFn  func(ctx context.Context, cfg transcribe.Config, path, language string) (transcribe.Result, error)
 	transcribeMu  sync.Mutex
-
 	// isConnected and waSend are wa's IsConnected and SendMessage, used by
 	// SendReply, SendReaction, polls and contact cards (waSend through the
 	// rate-limited sendMessage); tests replace them.
@@ -171,6 +180,7 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 	return &Client{
 		wa:               wa,
 		downloadMedia:    wa.Download,
+		sendMediaRetry:   wa.SendMediaRetryReceipt,
 		isConnected:      wa.IsConnected,
 		waSend:           wa.SendMessage,
 		groupInfo:        wa.GetGroupInfo,
@@ -212,6 +222,19 @@ func (c *Client) IsLoggedIn() bool {
 // events while pairing is in progress and closes on success.
 func (c *Client) QRChannel(ctx context.Context) (<-chan whatsmeow.QRChannelItem, error) {
 	return c.wa.GetQRChannel(ctx)
+}
+
+// NewPairingSession creates an independent whatsmeow client for one pairing
+// attempt while sharing the device store, so its connection teardown cannot
+// affect this Client's connection.
+func (c *Client) NewPairingSession() *Client {
+	return &Client{
+		wa:            newWAClient(c.wa.Store, c.log, c.redactor, c.labelsEnabled),
+		store:         c.store,
+		log:           c.log,
+		redactor:      c.redactor,
+		labelsEnabled: c.labelsEnabled,
+	}
 }
 
 // Logout drops the currently paired device from WhatsApp's server and clears

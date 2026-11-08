@@ -224,6 +224,78 @@ func TestStoreMessage_DirectPathRoundTrip(t *testing.T) {
 	}
 }
 
+// UpdateMediaDirectPath swaps only direct_path (the phone's re-upload answer
+// carries nothing else) and reports a missing row.
+func TestUpdateMediaDirectPath(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	const (
+		msgID   = "dp-retry"
+		chatJID = "447700000001@s.whatsapp.net"
+		oldPath = "/v/t62.7118-24/old.enc?ccb=11-4&oh=SIG&oe=EXPIRED&_nc_sid=SID"
+		newPath = "/v/t62.7118-24/new.enc?ccb=11-4&oh=SIG&oe=FRESH&_nc_sid=SID"
+	)
+	if err := s.StoreMessage(ctx, Message{
+		ID: msgID, ChatJID: chatJID, Sender: "447700000001",
+		Timestamp: time.Date(2026, 1, 12, 9, 0, 0, 0, time.UTC),
+		MediaType: "image", Filename: "photo.jpg",
+		URL: "https://mmg.whatsapp.net" + oldPath, DirectPath: oldPath,
+	}, []byte{0xaa}, []byte{0xbb}, []byte{0xcc}, 1024); err != nil {
+		t.Fatalf("StoreMessage: %v", err)
+	}
+
+	if err := s.UpdateMediaDirectPath(msgID, chatJID, newPath); err != nil {
+		t.Fatalf("UpdateMediaDirectPath: %v", err)
+	}
+	mt, _, url, dp, mk, fs, fe, fl, err := s.GetMediaInfo(msgID, chatJID)
+	if err != nil {
+		t.Fatalf("GetMediaInfo: %v", err)
+	}
+	if dp != newPath {
+		t.Fatalf("direct_path: got %q, want %q", dp, newPath)
+	}
+	if mt != "image" || url != "https://mmg.whatsapp.net"+oldPath || !bytes.Equal(mk, []byte{0xaa}) ||
+		!bytes.Equal(fs, []byte{0xbb}) || !bytes.Equal(fe, []byte{0xcc}) || fl != 1024 {
+		t.Fatalf("other media fields changed: type=%q url=%q key=%x sha=%x enc=%x len=%d", mt, url, mk, fs, fe, fl)
+	}
+
+	if err := s.UpdateMediaDirectPath("missing", chatJID, newPath); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("missing row: got %v, want sql.ErrNoRows", err)
+	}
+}
+
+func TestGetMessageOrigin(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	const groupJID = "123456789@g.us" // seeded chat
+	if err := s.StoreMessage(ctx, Message{
+		ID: "origin-1", ChatJID: groupJID, Sender: "447700000002", Content: "hi",
+		Timestamp: time.Date(2026, 1, 12, 9, 0, 0, 0, time.UTC),
+	}, nil, nil, nil, 0); err != nil {
+		t.Fatalf("StoreMessage: %v", err)
+	}
+	if err := s.StoreMessage(ctx, Message{
+		ID: "origin-2", ChatJID: groupJID, Sender: "447700000009", Content: "mine",
+		Timestamp: time.Date(2026, 1, 12, 9, 1, 0, 0, time.UTC), IsFromMe: true,
+	}, nil, nil, nil, 0); err != nil {
+		t.Fatalf("StoreMessage: %v", err)
+	}
+
+	sender, fromMe, err := s.GetMessageOrigin("origin-1", groupJID)
+	if err != nil || sender != "447700000002" || fromMe {
+		t.Fatalf("origin-1: got (%q, %v, %v)", sender, fromMe, err)
+	}
+	sender, fromMe, err = s.GetMessageOrigin("origin-2", groupJID)
+	if err != nil || sender != "447700000009" || !fromMe {
+		t.Fatalf("origin-2: got (%q, %v, %v)", sender, fromMe, err)
+	}
+	if _, _, err := s.GetMessageOrigin("missing", groupJID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("missing row: got %v, want sql.ErrNoRows", err)
+	}
+}
+
 // TestMigrateSchema_AddsDirectPath: an existing database that predates the
 // direct_path column should have it added by Open (via migrateSchema),
 // with existing rows preserved and direct_path defaulting to NULL. Open

@@ -52,6 +52,7 @@ Scan the QR with WhatsApp (*Settings → Linked Devices → Link a Device*). The
 
 - **No browser:** `./bin/whatsapp-mcp login` renders the QR in the terminal.
 - **No QR scan:** use the phone-number form on `/pair` (or `login -phone +<international number>`), then type the code into *Link a Device → Link with phone number instead*.
+- **Expired session:** WhatsApp closes an unused pairing session once its QR codes run out (about three minutes). Opening `/pair` or requesting a pairing code then starts a new one, at most one every 30 seconds; a `/pair` tab left open does not restart it by itself.
 - The `/pair/*` endpoints are CSRF-protected and rate-limited (15 GET/min, 1 reset/min, 3 code requests/min).
 
 #### Full history at pairing
@@ -83,6 +84,7 @@ Restart the client. The daemon outlives client restarts.
 
 - **Sending:** `send_file` and `send_audio_message` take a `media_path` under the root.
 - **Receiving:** `download_media` caches to `<store>/<chat_jid>/<hex(message_id)>/<safe_filename>` (checked against the stored size and SHA-256). An optional `output_path` also places the file under the root; an existing file there makes the call a no-op.
+- **Expired media links:** media links from history sync carry a signed expiry and usually fail with HTTP 403 by the time you ask. `download_media` (and reads of the `whatsapp://media/…` resource) then asks the account's own phone to re-upload the file (WhatsApp's media retry receipt, the same request WhatsApp Web sends), waits up to 30 seconds for the answer, and downloads once more. The link is saved only after whatsmeow decrypts the payload and its size and SHA-256 match the cached message. This explicit recovery also works in read-only mode; the request goes only to your own phone, with no notification to the sender or chat. The phone must be online; media it has deleted cannot be recovered. This happens only for the message you asked for, never in bulk.
 
 Paths outside the root, including symlinks that resolve outside it, are rejected. Anything inside the root is readable and writable by the tools, so keep secrets out.
 
@@ -256,7 +258,7 @@ Enable with `serve -enable-labels` or `WHATSAPP_MCP_LABELS=1`. Label tools are n
 |---|---|
 | `is_on_whatsapp` | Batch-check which phone numbers are registered on WhatsApp |
 | `get_status` | Report whether the bridge is connected and which account it's paired as |
-| `pairing_status` | Report the device-pairing state as a structured `setup_state` envelope (`ready` / `awaiting_qr` + `qr_payload` / `error`) for programmatic supervisors that surface the linking QR |
+| `pairing_status` | Report the device-pairing state as a structured `setup_state` envelope (`ready` / `awaiting_qr` + `qr_payload` or `expired` / `error`) for programmatic supervisors that surface the linking QR |
 
 ### Deferred
 

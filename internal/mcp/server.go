@@ -16,6 +16,7 @@ import (
 type pairingCache interface {
 	Paired() bool
 	QR() string
+	Expired() bool
 }
 
 // Server holds the MCP server, its bound WhatsApp client, and an optional
@@ -47,7 +48,7 @@ func NewReadOnlyServer(c *client.Client, cache pairingCache, labelsEnabled bool)
 func newServer(c *client.Client, cache pairingCache, readOnly, labelsEnabled bool) *Server {
 	instructions := ""
 	if readOnly {
-		instructions = "This server is in read-only mode: tools cannot send messages or mutate the WhatsApp account. Downloads and history requests can still retrieve data and write the local cache. Pairing remains an operator action through /pair."
+		instructions = "This server is in read-only mode: tools cannot send messages or mutate the WhatsApp account. Downloads and history requests can still retrieve data and write the local cache. An explicit media download may ask your own phone to re-upload an expired attachment; it never notifies the sender or chat. Pairing remains an operator action through /pair."
 	}
 	mcpSrv := server.NewMCPServer(
 		"whatsapp",

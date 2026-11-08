@@ -3,7 +3,8 @@
 #
 # mdtest/ was removed from the whatsmeow module upstream, so instead of
 # grepping mdtest we verify every whatsmeow client method we call is still
-# defined as "func (cli *Client) Method(" somewhere in the module. If upstream
+# defined as "func (cli *Client) Method(" (or, for package-level functions,
+# "func Name(") somewhere in the module. If upstream
 # renames or removes one of these, CI fails and we know to act before shipping.
 set -euo pipefail
 
@@ -55,6 +56,12 @@ methods=(
   DecryptPollVote
   ParseWebMessage
   DecryptSecretEncryptedMessage
+  SendMediaRetryReceipt
+)
+
+# Package-level functions we call, checked the same way.
+functions=(
+  DecryptMediaRetryNotification
 )
 
 missing=()
@@ -64,12 +71,18 @@ for m in "${methods[@]}"; do
   fi
 done
 
+for f in "${functions[@]}"; do
+  if ! grep -rq "^func ${f}(" "$mod_dir"; then
+    missing+=("$f")
+  fi
+done
+
 if (( ${#missing[@]} > 0 )); then
   echo "error: whatsmeow API parity check failed." >&2
-  echo "The following methods are no longer defined on *whatsmeow.Client:" >&2
+  echo "The following methods or functions are no longer defined in whatsmeow:" >&2
   printf '  - %s\n' "${missing[@]}" >&2
   echo "Upstream renamed or removed them. Fix call sites in internal/client/." >&2
   exit 1
 fi
 
-echo "whatsmeow API parity: all ${#methods[@]} tracked methods still present at ${mod_version}."
+echo "whatsmeow API parity: all $(( ${#methods[@]} + ${#functions[@]} )) tracked methods and functions still present at ${mod_version}."

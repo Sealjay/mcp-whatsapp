@@ -1,14 +1,19 @@
 <!doctype html>
 <html><head>
 <meta charset="utf-8">
-<meta http-equiv="refresh" content="5">
+{{if not (or .Expired .RetryIn)}}<meta http-equiv="refresh" content="5;url=/pair?auto=1">{{end}}
 <title>Pair WhatsApp</title>
 <style>body{font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem}</style>
 </head><body>
 <h1>Pair WhatsApp</h1>
+{{if or .Expired .RetryIn}}
+<p><strong>The pairing session expired.</strong> WhatsApp closes an unused pairing session after a few minutes.</p>
+{{if .RetryIn}}<p>A new session can start in {{.RetryIn}} seconds: reload this page then.</p>{{else}}<p><a href="/pair">Start a new pairing session</a></p>{{end}}
+{{else}}
 <p>Open WhatsApp on your phone &rarr; <em>Settings</em> &rarr; <em>Linked Devices</em> &rarr; <em>Link a Device</em>, then scan:</p>
 <p><img src="/pair/qr.png" alt="WhatsApp pairing QR"></p>
 <p><small>This page auto-refreshes every 5 seconds while the QR rotates.</small></p>
+{{end}}
 <hr>
 <p>Or pair without scanning: enter your phone number (country code first) and type the code into WhatsApp via <em>Link with phone number instead</em>.</p>
 <form method="post" action="/pair/code">
