@@ -2,8 +2,7 @@
 
 [![License: MIT](https://img.shields.io/github/license/Sealjay/mcp-whatsapp)](LICENSE)
 [![CI](https://github.com/Sealjay/mcp-whatsapp/actions/workflows/ci.yml/badge.svg)](https://github.com/Sealjay/mcp-whatsapp/actions/workflows/ci.yml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/Sealjay/mcp-whatsapp)](https://goreportcard.com/report/github.com/Sealjay/mcp-whatsapp)
-[![Go 1.26+](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go&logoColor=white)](https://go.dev/)
+[![Go 1.26.0](https://img.shields.io/badge/Go-1.26.0-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 [![MCP](https://img.shields.io/badge/MCP-protocol-6366f1)](https://modelcontextprotocol.io/)
 [![43 tools](https://img.shields.io/badge/tools-43-blue)]()
 [![whatsmeow](https://img.shields.io/badge/whatsmeow-multidevice-25D366?logo=whatsapp&logoColor=white)](https://github.com/tulir/whatsmeow)
@@ -86,14 +85,14 @@ Paths outside the root, including symlinks that resolve outside it, are rejected
 ### Serve flags and environment
 
 - `-addr host:port` (env `WHATSAPP_MCP_ADDR`, default `127.0.0.1:8765`).
-- `-allow-remote`: bind a non-loopback address. Requires `WHATSAPP_MCP_TOKEN`, a bearer token for `/mcp` and `/pair/*`; `serve` exits without it. It does not waive TLS: use HTTPS for non-loopback access. For remote clients, terminate TLS at an HTTPS reverse proxy and keep the daemon on loopback HTTP.
+- `-allow-remote`: bind a non-loopback address. Requires `WHATSAPP_MCP_TOKEN`, a bearer token for `/mcp` and `/pair/*`; `serve` exits without it. The flag enables the bind but does not configure TLS. When exposing the daemon beyond loopback, use an HTTPS reverse proxy and keep the daemon's upstream on loopback HTTP.
 - `-read-only` (env `WHATSAPP_MCP_READ_ONLY=1`): expose only the 15 tools that cannot send messages, mark messages read, publish presence, or change the WhatsApp account. Removed tools are rejected even when called directly. `get_status` reports `read_only`, and MCP instructions report the mode.
 - `WHATSAPP_MCP_MEDIA_ROOT`: the file allowlist root above.
 - `WHATSAPP_MCP_TRANSCRIBE_URL`: enables `transcribe_audio`. Base URL of a speech-to-text service that implements the OpenAI-compatible `POST /v1/audio/transcriptions` (a local whisper.cpp or faster-whisper server, LocalAI, or a hosted API). Unset = feature off. Loopback HTTP endpoints are allowed; non-loopback endpoints require HTTPS and explicit opt-in with `WHATSAPP_MCP_TRANSCRIBE_ALLOW_REMOTE=1`. That opt-in sends audio to another service, so use a trusted endpoint. HTTP redirects are refused; configure the final transcription endpoint directly.
   Optional: `WHATSAPP_MCP_TRANSCRIBE_MODEL`, `WHATSAPP_MCP_TRANSCRIBE_LANGUAGE` (ISO 639-1; empty = autodetect), `WHATSAPP_MCP_TRANSCRIBE_TOKEN` (bearer token for the service), `WHATSAPP_MCP_TRANSCRIBE_MAX_SECONDS` (default 600). Ogg/Opus duration is checked before upload; malformed streams are rejected. Other formats rely on the service's duration limit. Transcripts are third-party content and are cached in `messages.db`. The first transcript is reused; changing the model or language affects only messages without a cached transcript.
 - `WHATSAPP_MCP_DEBUG=1` or `-debug`: verbose logs (see [Debug logging](#debug-logging)).
 
-For remote clients, put an HTTPS reverse proxy in front of the daemon, keep its upstream bound to loopback, and configure the client to use `https://whatsapp.example.com/mcp` with the `WHATSAPP_MCP_TOKEN` bearer token. `-allow-remote` permits a non-loopback bind; it does not permit plaintext HTTP for remote access.
+For remote clients, put an HTTPS reverse proxy in front of the daemon, keep its upstream bound to loopback, and configure the client to use `https://whatsapp.example.com/mcp` with the `WHATSAPP_MCP_TOKEN` bearer token.
 
 For an archive or summarisation client, start with `./bin/whatsapp-mcp serve -read-only`. Downloads, history requests and metadata queries still work and can write the local cache; this mode is not offline-only. Transcription is excluded because it uploads private audio to another service. Pairing and reset remain operator actions through `/pair`, and the mode does not restrict which cached data a client can read. The default still exposes all 43 tools. `-read-only=false` overrides an enabled environment setting; invalid environment values stop startup rather than silently enabling mutation tools.
 
