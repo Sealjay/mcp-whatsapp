@@ -1,6 +1,7 @@
 package client
 
 import (
+	"fmt"
 	"testing"
 
 	"go.mau.fi/whatsmeow/types/events"
@@ -47,5 +48,33 @@ func TestDisconnectUpdatesConnectionStatus(t *testing.T) {
 	c.Disconnect()
 	if got := c.ConnectionStatus().State; got != "disconnected" {
 		t.Fatalf("local disconnect left state %q", got)
+	}
+}
+
+func TestLateKeepalivePreservesTerminal(t *testing.T) {
+	for _, event := range []any{
+		&events.LoggedOut{},
+		&events.StreamReplaced{},
+		&events.ClientOutdated{},
+		&events.TemporaryBan{},
+		&events.ConnectFailure{},
+		&events.Disconnected{},
+	} {
+		t.Run(fmt.Sprintf("%T", event), func(t *testing.T) {
+			c := &Client{}
+			c.trackConnectionEvent(&events.Connected{})
+			c.trackConnectionEvent(event)
+			want := c.ConnectionStatus()
+			for _, late := range []any{&events.KeepAliveTimeout{}, &events.KeepAliveRestored{}, &events.Disconnected{}} {
+				c.trackConnectionEvent(late)
+				if got := c.ConnectionStatus(); got != want {
+					t.Fatalf("after %T: got %+v, want %+v", late, got, want)
+				}
+			}
+			c.trackConnectionEvent(&events.Connected{})
+			if got := c.ConnectionStatus().State; got != "connected" {
+				t.Fatalf("genuine connection did not recover: %s", got)
+			}
+		})
 	}
 }

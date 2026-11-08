@@ -43,7 +43,9 @@ func (c *Client) trackConnectionEvent(event any) {
 	case *events.ConnectFailure:
 		state = "connect_failure"
 	case *events.KeepAliveTimeout:
-		state = "keepalive_timeout"
+		if c.status.State == "connected" || c.status.State == "keepalive_timeout" {
+			state = "keepalive_timeout"
+		}
 	case *events.KeepAliveRestored:
 		if c.status.State == "keepalive_timeout" {
 			state = "connected"
