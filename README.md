@@ -259,7 +259,7 @@ This bumps `go.mau.fi/whatsmeow@main`, re-tidies, builds, and tests. If green, c
 
 ### Debug logging
 
-By default, stderr logs redact JIDs to `…<last-4>`, summarise bodies as `[<length>B: text|url|command]` and collapse media URLs to `<scheme>://<host>/…`. To see content while debugging, run `./bin/whatsapp-mcp -debug serve` or set `WHATSAPP_MCP_DEBUG=1`. Even then, phone-number-shaped digits show only their last 5 (`+15551234567` → `****34567`). That is obfuscation, not anonymisation: someone who knows your contacts can still correlate them.
+By default, stderr logs redact JIDs to `…<last-4>`, summarise bodies, chat and contact names and filenames as `[<length>B: text|url|command]` and collapse media URLs to `<scheme>://<host>/…`. Logged errors keep their text, with phone-number digits masked and file paths (cache paths name the chat) dropped. Lines logged by whatsmeow itself keep their text with phone-number digits masked, so the JIDs and LIDs in them show only their last 5 digits (`****00123@s.whatsapp.net`), with or without `-debug`. To see content while debugging, run `./bin/whatsapp-mcp -debug serve` or set `WHATSAPP_MCP_DEBUG=1`. Even then, phone-number-shaped digits show only their last 5 (`+12025550123` → `****50123`). That is obfuscation, not anonymisation: someone who knows your contacts can still correlate them.
 
 For Claude Desktop integration issues, see the [MCP documentation](https://modelcontextprotocol.io/quickstart/server#claude-for-desktop-integration-issues).
 
