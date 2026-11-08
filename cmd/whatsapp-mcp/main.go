@@ -39,6 +39,7 @@ Global flags (before the command):
 Serve-specific flags (after 'serve'):
   -addr host:port   HTTP bind address (default: 127.0.0.1:8765, env WHATSAPP_MCP_ADDR)
   -allow-remote     Allow binding to a non-loopback address (dangerous)
+  -read-only        Exclude WhatsApp mutation tools (env WHATSAPP_MCP_READ_ONLY)
 `
 
 func main() {

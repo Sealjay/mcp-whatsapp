@@ -87,8 +87,11 @@ Paths outside the root, including symlinks that resolve outside it, are rejected
 
 - `-addr host:port` (env `WHATSAPP_MCP_ADDR`, default `127.0.0.1:8765`).
 - `-allow-remote`: bind a non-loopback address. Requires `WHATSAPP_MCP_TOKEN`, a bearer token for `/mcp` and `/pair/*`; `serve` exits without it.
+- `-read-only` (env `WHATSAPP_MCP_READ_ONLY=1`): expose only the 15 tools that cannot send messages, mark messages read, publish presence, or change the WhatsApp account. Removed tools are rejected even when called directly. `get_status` reports `read_only`, and MCP instructions report the mode.
 - `WHATSAPP_MCP_MEDIA_ROOT`: the file allowlist root above.
 - `WHATSAPP_MCP_DEBUG=1` or `-debug`: verbose logs (see [Debug logging](#debug-logging)).
+
+For an archive or summarisation client, start with `./bin/whatsapp-mcp serve -read-only`. Downloads, history requests and metadata queries still work and can write the local cache; this mode is not offline-only. Pairing and reset remain operator actions through `/pair`, and the mode does not restrict which cached data a client can read. The default still exposes all 42 tools. `-read-only=false` overrides an enabled environment setting; invalid environment values stop startup rather than silently enabling mutation tools.
 
 ## Running the daemon
 
