@@ -230,6 +230,28 @@ func TestDownload_MediaRetryRecoversExpiredLink(t *testing.T) {
 	}
 }
 
+func TestDownload_MediaRetryDoesNotPersistUnverifiedPath(t *testing.T) {
+	f := newRetryFixture(t, "M-RETRY-BAD-PAYLOAD")
+	f.answer = func(info *types.MessageInfo) *events.MediaRetry {
+		return successAnswer(t, string(info.ID), retryNewPath)
+	}
+	f.c.downloadMedia = func(_ context.Context, media whatsmeow.DownloadableMessage) ([]byte, error) {
+		if media.GetDirectPath() == retryOldPath {
+			return nil, whatsmeow.ErrMediaDownloadFailedWith403
+		}
+		return []byte("payload does not match the cached message hash"), nil
+	}
+
+	got := f.c.DownloadWithMediaRetry(context.Background(), f.msgID, retryGroupJID, "")
+	if got.Success || !strings.Contains(got.Message, "downloaded media failed validation") {
+		t.Fatalf("expected payload validation failure, got %+v", got)
+	}
+	f.waitIdle(t)
+	if dp := f.storedPath(t); dp != retryOldPath {
+		t.Fatalf("unverified direct_path persisted: got %q", dp)
+	}
+}
+
 // Each way the phone can turn the request down ends the download with a clear
 // error and leaves the stored path alone.
 func TestDownload_MediaRetryPhoneFailures(t *testing.T) {

@@ -174,6 +174,7 @@ func (c *Client) download(ctx context.Context, messageID, chatJID, outputPath st
 	}
 
 	data, err := c.fetchMedia(ctx, downloader)
+	var retriedDirectPath string
 	if err != nil && mediaRetry && isExpiredMediaError(err) {
 		// The stored CDN path has expired (typical for history-synced
 		// messages) or the CDN dropped the file. Ask the phone to re-upload
@@ -184,6 +185,7 @@ func (c *Client) download(ctx context.Context, messageID, chatJID, outputPath st
 			return DownloadResult{Success: false, Message: fmt.Sprintf("failed to download media: %v; asking the phone to re-upload it failed: %v", err, retryErr)}
 		}
 		downloader.DirectPath = newPath
+		retriedDirectPath = newPath
 		data, err = c.fetchMedia(ctx, downloader)
 	}
 	if err != nil {
@@ -192,6 +194,11 @@ func (c *Client) download(ctx context.Context, messageID, chatJID, outputPath st
 
 	if err := validateMediaPayload(data, fileLength, fileSHA256); err != nil {
 		return DownloadResult{Success: false, Message: fmt.Sprintf("downloaded media failed validation: %v", err)}
+	}
+	if retriedDirectPath != "" {
+		if err := c.store.UpdateMediaDirectPath(messageID, chatJID, retriedDirectPath); err != nil {
+			c.log.Warnf("Failed to store re-uploaded media path for message %s: %v", c.redactor.MsgID(messageID), err)
+		}
 	}
 	if err := replaceCacheFile(messageDir, localPath, data); err != nil {
 		return DownloadResult{Success: false, Message: fmt.Sprintf("failed to save media file: %v", err)}

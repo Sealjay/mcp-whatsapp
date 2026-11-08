@@ -62,7 +62,7 @@ func isExpiredMediaError(err error) bool {
 
 // recoverMediaPath asks the account's own phone to re-upload the media of a
 // cached message (whatsmeow's media retry receipt) and returns the new direct
-// path. On success the path is also persisted, so later downloads use it.
+// path. Download persists it only after the fetched payload passes validation.
 //
 // Concurrent calls for the same message share one receipt. The retry runs in
 // its own goroutine, bounded by the retry timeout: a caller whose ctx ends
@@ -126,9 +126,6 @@ func (c *Client) runMediaRetry(ctx context.Context, call *mediaRetryCall, chatJI
 
 	directPath, err := c.awaitMediaRetry(ctx, call, chatJID)
 	if err == nil {
-		if perr := c.store.UpdateMediaDirectPath(call.messageID, chatJID, directPath); perr != nil {
-			c.log.Warnf("Failed to store re-uploaded media path for message %s: %v", c.redactor.MsgID(call.messageID), perr)
-		}
 		c.log.Infof("Phone re-uploaded media for message %s", c.redactor.MsgID(call.messageID))
 	} else {
 		c.log.Warnf("Media re-upload for message %s failed: %v", c.redactor.MsgID(call.messageID), err)
