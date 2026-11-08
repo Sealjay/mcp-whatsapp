@@ -221,6 +221,39 @@ func TestHandleMessage_LiveRevoke(t *testing.T) {
 	}
 }
 
+func TestReviewHistoryEditedThenRevokedMatchesLiveArchive(t *testing.T) {
+	live, liveStore := newEditTestClient(t)
+	history, historyStore := newEditTestClient(t)
+	const id = "archive-order-1"
+	const finalText = "final agreed text"
+
+	liveMsg(live, groupJID, bobJID, false, id, liveTS, text("draft text"))
+	liveMsg(live, groupJID, bobJID, false, "live-edit", liveTS.Add(time.Second),
+		editOf(participantKey(groupJID, bobJID, id), finalText))
+	liveMsg(live, groupJID, bobJID, false, "live-revoke", liveTS.Add(2*time.Second),
+		revokeOf(participantKey(groupJID, bobJID, id)))
+
+	historyChange := func(eventID string, offset uint64, change *waProto.Message) *waProto.HistorySyncMsg {
+		event := historyMsg(historyKey(groupJID.String(), eventID, false, bobJID.String()), change)
+		event.Message.MessageTimestamp = proto.Uint64(historyTS + offset)
+		return event
+	}
+	runHistorySync(history, groupJID.String(),
+		historyChange("history-revoke", 2, revokeOf(participantKey(groupJID, bobJID, id))),
+		historyChange("history-edit", 1, editOf(participantKey(groupJID, bobJID, id), finalText)),
+		historyMsg(historyKey(groupJID.String(), id, false, bobJID.String()), text("draft text")),
+	)
+
+	liveRow := mustCached(t, liveStore, groupJID, id)
+	historyRow := mustCached(t, historyStore, groupJID, id)
+	if liveRow != historyRow {
+		t.Fatalf("history archive = %+v, live archive = %+v", historyRow, liveRow)
+	}
+	if historyRow.content != finalText || !historyRow.edited || !historyRow.revoked {
+		t.Fatalf("archive after edit then revoke = %+v, want final edited text retained and marked edited and revoked", historyRow)
+	}
+}
+
 func TestHandleMessage_ThirdPartyCannotEditOrRevoke(t *testing.T) {
 	c, s := newEditTestClient(t)
 	lookups := 0

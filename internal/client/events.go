@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"sort"
 	"strings"
 	"time"
 
@@ -366,6 +367,9 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 			}
 		}
 
+		sort.SliceStable(changes, func(i, j int) bool {
+			return changes[i].ch.at.Before(changes[j].ch.at)
+		})
 		for _, p := range changes {
 			c.applyChange(ctx, chatJID, jid, p.who, p.ch)
 		}
