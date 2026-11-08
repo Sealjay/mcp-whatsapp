@@ -66,8 +66,8 @@ func isExpiredMediaError(err error) bool {
 //
 // Concurrent calls for the same message share one receipt. The retry runs in
 // its own goroutine, bounded by the retry timeout: a caller whose ctx ends
-// returns ctx.Err() at once, while the retry still completes (and persists a
-// new path) for any other caller.
+// returns ctx.Err() at once, while the retry still completes for any other
+// caller.
 func (c *Client) recoverMediaPath(ctx context.Context, messageID, chatJID string, mediaKey []byte) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -128,7 +128,7 @@ func (c *Client) runMediaRetry(ctx context.Context, call *mediaRetryCall, chatJI
 	if err == nil {
 		c.log.Infof("Phone re-uploaded media for message %s", c.redactor.MsgID(call.messageID))
 	} else {
-		c.log.Warnf("Media re-upload for message %s failed: %v", c.redactor.MsgID(call.messageID), err)
+		c.log.Warnf("Media re-upload for message %s failed: %s", c.redactor.MsgID(call.messageID), c.redactor.Err(err))
 	}
 
 	r := &c.mediaRetries
@@ -238,7 +238,7 @@ func (c *Client) mediaRetrySender(ctx context.Context, chat, sender types.JID) t
 	}
 	group, err := groupInfo(ctx, chat)
 	if err != nil {
-		c.log.Debugf("Media retry: group info for %s unavailable, naming the cached sender: %v", c.redactor.JID(chat.String()), err)
+		c.log.Debugf("Media retry: group info for %s unavailable, naming the cached sender: %s", c.redactor.JID(chat.String()), c.redactor.Err(err))
 		return sender
 	}
 	if group.AddressingMode != types.AddressingModeLID {

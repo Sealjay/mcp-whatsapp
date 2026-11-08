@@ -180,7 +180,7 @@ func (c *Client) download(ctx context.Context, messageID, chatJID, outputPath st
 		// The stored CDN path has expired (typical for history-synced
 		// messages) or the CDN dropped the file. Ask the phone to re-upload
 		// it, then try once more with the fresh path.
-		c.log.Infof("Media link for message %s no longer works (%v)", c.redactor.MsgID(messageID), err)
+		c.log.Infof("Media link for message %s no longer works (%s)", c.redactor.MsgID(messageID), c.redactor.Err(err))
 		newPath, retryErr := c.recoverMediaPath(ctx, messageID, chatJID, mediaKey)
 		if retryErr != nil {
 			return DownloadResult{Success: false, Message: fmt.Sprintf("failed to download media: %v; asking the phone to re-upload it failed: %v", err, retryErr)}
@@ -198,7 +198,7 @@ func (c *Client) download(ctx context.Context, messageID, chatJID, outputPath st
 	}
 	if retriedDirectPath != "" {
 		if err := c.store.UpdateMediaDirectPath(messageID, chatJID, retriedDirectPath); err != nil {
-			c.log.Warnf("Failed to store re-uploaded media path for message %s: %v", c.redactor.MsgID(messageID), err)
+			c.log.Warnf("Failed to store re-uploaded media path for message %s: %s", c.redactor.MsgID(messageID), c.redactor.Err(err))
 		}
 	}
 	if err := replaceCacheFile(messageDir, localPath, data); err != nil {

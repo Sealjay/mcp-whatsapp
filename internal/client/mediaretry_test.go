@@ -3,11 +3,13 @@ package client
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"sync"
@@ -19,6 +21,7 @@ import (
 	wmstore "go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
+	"go.mau.fi/whatsmeow/util/cbcutil"
 	"go.mau.fi/whatsmeow/util/gcmutil"
 	"go.mau.fi/whatsmeow/util/hkdfutil"
 	"google.golang.org/protobuf/proto"
@@ -55,6 +58,13 @@ type retryFixture struct {
 }
 
 func newRetryFixture(t *testing.T, msgID string) *retryFixture {
+	payload := []byte("RE-UPLOADED-JPEG-BYTES")
+	digest := sha256.Sum256(payload)
+	encDigest := sha256.Sum256([]byte("original encrypted image bytes"))
+	return newRetryFixtureWithHashes(t, msgID, payload, retryMediaKey, digest[:], encDigest[:])
+}
+
+func newRetryFixtureWithHashes(t *testing.T, msgID string, payload, mediaKey, fileSHA256, fileEncSHA256 []byte) *retryFixture {
 	t.Helper()
 	t.Chdir(t.TempDir())
 	s, err := store.Open("./store")
@@ -63,9 +73,6 @@ func newRetryFixture(t *testing.T, msgID string) *retryFixture {
 	}
 	t.Cleanup(func() { s.Close() })
 
-	payload := []byte("RE-UPLOADED-JPEG-BYTES")
-	digest := sha256.Sum256(payload)
-	encDigest := sha256.Sum256([]byte("original encrypted image bytes"))
 	if err := s.StoreChat(retryGroupJID, "group", time.Now().UTC()); err != nil {
 		t.Fatalf("seed chat: %v", err)
 	}
@@ -73,7 +80,7 @@ func newRetryFixture(t *testing.T, msgID string) *retryFixture {
 		ID: msgID, ChatJID: retryGroupJID, Sender: retrySender, Timestamp: time.Now().UTC(),
 		MediaType: "image", Filename: "photo.jpg",
 		URL: "https://mmg.whatsapp.net" + retryOldPath, DirectPath: retryOldPath,
-	}, retryMediaKey, digest[:], encDigest[:], uint64(len(payload))); err != nil {
+	}, mediaKey, fileSHA256, fileEncSHA256, uint64(len(payload))); err != nil {
 		t.Fatalf("seed message: %v", err)
 	}
 
@@ -253,8 +260,29 @@ func TestDownload_MediaRetryDoesNotPersistUnverifiedPath(t *testing.T) {
 	}
 }
 
-func TestDownload_MediaRetryRejectsMismatchedCiphertext(t *testing.T) {
-	f := newRetryFixture(t, "M-RETRY-BAD-CIPHERTEXT")
+func TestDownload_MediaRetryRejectsMismatchedMediaKey(t *testing.T) {
+	payload := []byte("valid encrypted media plaintext")
+	mediaKey := bytes.Repeat([]byte{0x24}, 32)
+	wrongMediaKey := retryMediaKey
+	expanded := hkdfutil.SHA256(mediaKey, nil, []byte(whatsmeow.MediaImage), 112)
+	iv, cipherKey, macKey := expanded[:16], expanded[16:48], expanded[48:80]
+	ciphertext, err := cbcutil.Encrypt(cipherKey, iv, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mac := hmac.New(sha256.New, macKey)
+	mac.Write(iv)
+	mac.Write(ciphertext)
+	encryptedFile := append(ciphertext, mac.Sum(nil)[:10]...)
+	fileSHA := sha256.Sum256(payload)
+	fileEncSHA := sha256.Sum256(encryptedFile)
+
+	f := newRetryFixtureWithHashes(t, "M-RETRY-WRONG-KEY", payload, wrongMediaKey, fileSHA[:], fileEncSHA[:])
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(encryptedFile)
+	}))
+	defer server.Close()
+	f.c.wa = whatsmeow.NewClient(&wmstore.Device{}, NewStderrLogger("test", "ERROR", false))
 	f.answer = func(info *types.MessageInfo) *events.MediaRetry {
 		return successAnswer(t, string(info.ID), retryNewPath)
 	}
@@ -268,24 +296,15 @@ func TestDownload_MediaRetryRejectsMismatchedCiphertext(t *testing.T) {
 		if media.GetDirectPath() != retryNewPath {
 			t.Fatalf("unexpected media path %q", media.GetDirectPath())
 		}
-		downloader, ok := media.(*MediaDownloader)
-		wantEncDigest := sha256.Sum256([]byte("original encrypted image bytes"))
-		wantFileDigest := sha256.Sum256(f.payload)
-		if !ok || !bytes.Equal(media.GetMediaKey(), retryMediaKey) ||
-			!bytes.Equal(media.GetFileEncSHA256(), wantEncDigest[:]) ||
-			!bytes.Equal(media.GetFileSHA256(), wantFileDigest[:]) ||
-			downloader.FileLength != uint64(len(f.payload)) {
-			t.Fatal("retry did not retain the original media key and integrity metadata")
-		}
-
-		// whatsmeow.Download returns this when the replacement ciphertext does
-		// not match the original message's FileEncSHA256.
-		return nil, whatsmeow.ErrInvalidMediaEncSHA256
+		return f.c.wa.DangerousInternals().DownloadAndDecrypt(
+			context.Background(), server.URL, media.GetMediaKey(), whatsmeow.GetMediaType(media),
+			media.GetFileEncSHA256(), media.GetFileSHA256(),
+		)
 	}
 
 	got := f.c.DownloadWithMediaRetry(context.Background(), f.msgID, retryGroupJID, "")
-	if got.Success || got.Path != "" || !strings.Contains(got.Message, whatsmeow.ErrInvalidMediaEncSHA256.Error()) {
-		t.Fatalf("expected explicit encrypted-hash failure, got %+v", got)
+	if got.Success || got.Path != "" || !strings.Contains(got.Message, whatsmeow.ErrInvalidMediaHMAC.Error()) {
+		t.Fatalf("expected explicit media-key authentication failure, got %+v", got)
 	}
 	if paths := f.paths(); len(paths) != 2 || paths[0] != retryOldPath || paths[1] != retryNewPath {
 		t.Fatalf("CDN requests: %q", paths)
