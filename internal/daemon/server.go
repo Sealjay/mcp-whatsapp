@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -106,6 +107,18 @@ func (s *Server) Run(ctx context.Context) error {
 	handlers := newPairHandlers(s.cache, s.cfg.Driver, coder)
 	handlers.flow = s.flow
 	handlers.mount(mux)
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		writeProbe(w, http.StatusOK, "ok", true)
+	})
+	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) {
+		driver, ok := s.cfg.Driver.(interface{ IsConnected() bool })
+		ready := ok && s.cache.Paired() && driver.IsConnected()
+		code := http.StatusServiceUnavailable
+		if ready {
+			code = http.StatusOK
+		}
+		writeProbe(w, code, "ready", ready)
+	})
 	if s.cfg.MCPMount != nil {
 		s.cfg.MCPMount(mux)
 	} else {
@@ -158,6 +171,13 @@ func (s *Server) Run(ctx context.Context) error {
 	_ = httpSrv.Shutdown(shutdownCtx)
 	s.cfg.Driver.Disconnect()
 	return nil
+}
+
+func writeProbe(w http.ResponseWriter, code int, key string, value bool) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(map[string]bool{key: value})
 }
 
 // bootDriver inspects the driver's IsLoggedIn and either starts pairing

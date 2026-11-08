@@ -21,10 +21,10 @@ func newProductionDriver(c *client.Client) *productionDriver {
 
 func (p *productionDriver) IsLoggedIn() bool { return p.c.IsLoggedIn() }
 
+func (p *productionDriver) IsConnected() bool { return p.c.IsConnected() }
+
 func (p *productionDriver) StartPairing(ctx context.Context, onQR func(string), onSuccess func(), onExpired func()) error {
-	// An expired session's socket can still be closing when a new session
-	// starts; GetQRChannel refuses a connected client. The daemon only
-	// starts a session while unpaired and none is live, so it is safe to drop.
+	p.c.StartEventHandler()
 	if p.c.IsConnected() {
 		p.c.Disconnect()
 	}
@@ -53,8 +53,8 @@ func (p *productionDriver) StartPairing(ctx context.Context, onQR func(string), 
 }
 
 func (p *productionDriver) Connect(ctx context.Context, onLoggedOut func()) error {
-	p.c.AddLoggedOutHandler(func(_ *events.LoggedOut) { onLoggedOut() })
 	p.c.StartEventHandler()
+	p.c.AddLoggedOutHandler(func(_ *events.LoggedOut) { onLoggedOut() })
 	if p.c.IsConnected() {
 		// The pairing flow already connected this client; just install
 		// the post-pair handlers and return.
