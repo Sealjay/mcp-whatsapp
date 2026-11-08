@@ -92,7 +92,7 @@ func TestRequestSync_ArgValidation(t *testing.T) {
 		{name: "negative count", args: map[string]any{"chat_jid": "447967960994@s.whatsapp.net", "count": -1}},
 		{name: "negative count as string", args: map[string]any{"chat_jid": "447967960994@s.whatsapp.net", "count": "-1"}},
 	}
-	s := NewServer(nil, nil)
+	s := NewServer(nil, nil, false)
 	tool, ok := s.MCP().ListTools()["request_sync"]
 	if !ok || tool == nil || tool.Handler == nil {
 		t.Fatal("request_sync not registered")
