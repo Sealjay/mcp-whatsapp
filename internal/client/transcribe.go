@@ -30,16 +30,9 @@ func (c *Client) TranscribeAudio(ctx context.Context, messageID, chatJID, langua
 	if strings.TrimSpace(messageID) == "" || strings.TrimSpace(chatJID) == "" {
 		return nil, false, errors.New("message_id and chat_jid are required")
 	}
-	if t, err := c.store.GetTranscript(ctx, messageID, chatJID); err != nil {
-		return nil, false, err
-	} else if t != nil {
-		return t, true, nil
-	}
-
-	// One transcription at a time: the service is typically CPU-bound.
 	c.transcribeMu.Lock()
 	defer c.transcribeMu.Unlock()
-	// Another call may have finished the same message while we waited.
+
 	if t, err := c.store.GetTranscript(ctx, messageID, chatJID); err != nil {
 		return nil, false, err
 	} else if t != nil {

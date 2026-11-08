@@ -58,6 +58,9 @@ type Client struct {
 	transcribeCfg transcribe.Config
 	transcribeFn  func(ctx context.Context, cfg transcribe.Config, path, language string) (transcribe.Result, error)
 	transcribeMu  sync.Mutex
+	// mediaMu lets downloads run concurrently, but makes a revoke wait before it purges a cache.
+	// ponytail: client-wide lock; use per-message locks only if unrelated revoke contention is measured.
+	mediaMu sync.RWMutex
 
 	// isConnected and waSend are wa's IsConnected and SendMessage, used by
 	// SendReply, SendReaction, polls and contact cards (waSend through the

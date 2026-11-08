@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -53,6 +52,9 @@ func (d *MediaDownloader) GetMediaType() whatsmeow.MediaType {
 // the configured media root). The cache is always populated so subsequent
 // calls remain idempotent.
 func (c *Client) Download(ctx context.Context, messageID, chatJID, outputPath string) DownloadResult {
+	c.mediaMu.RLock()
+	defer c.mediaMu.RUnlock()
+
 	// Validate output_path first so a bad path fails the call before any DB
 	// or network work. The skip-if-exists check waits until after we have
 	// the media metadata (so the success response carries the right fields).
@@ -95,16 +97,17 @@ func (c *Client) Download(ctx context.Context, messageID, chatJID, outputPath st
 		}
 	}
 
-	storeDir, err := filepath.Abs(c.store.Dir())
+	messageDir, err := c.store.CachedMediaDir(chatJID, messageID)
 	if err != nil {
-		return DownloadResult{Success: false, Message: fmt.Sprintf("resolve store dir: %v", err)}
+		return DownloadResult{Success: false, Message: fmt.Sprintf("resolve media cache directory: %v", err)}
 	}
-	storeDir = filepath.Clean(storeDir)
-	chatDir := filepath.Clean(filepath.Join(storeDir, strings.ReplaceAll(chatJID, ":", "_")))
-	if !strings.HasPrefix(chatDir, storeDir+string(filepath.Separator)) {
-		return DownloadResult{Success: false, Message: "invalid chat directory: path escapes store"}
+	if info, statErr := os.Lstat(messageDir); statErr == nil {
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return DownloadResult{Success: false, Message: "invalid media cache directory"}
+		}
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return DownloadResult{Success: false, Message: fmt.Sprintf("failed to inspect media cache directory: %v", statErr)}
 	}
-	messageDir := filepath.Join(chatDir, hex.EncodeToString([]byte(messageID)))
 	if err := os.MkdirAll(messageDir, 0o700); err != nil {
 		return DownloadResult{Success: false, Message: fmt.Sprintf("failed to create chat directory: %v", err)}
 	}

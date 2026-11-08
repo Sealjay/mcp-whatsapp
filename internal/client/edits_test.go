@@ -67,6 +67,10 @@ func senderKey(chat types.JID, id string) *waProto.MessageKey {
 	return &waProto.MessageKey{RemoteJID: proto.String(chat.String()), FromMe: proto.Bool(true), ID: proto.String(id)}
 }
 
+func otherSenderKey(chat types.JID, id string) *waProto.MessageKey {
+	return &waProto.MessageKey{RemoteJID: proto.String(chat.String()), FromMe: proto.Bool(false), ID: proto.String(id)}
+}
+
 // participantKey names another participant's message (a group admin's revoke).
 func participantKey(chat, participant types.JID, id string) *waProto.MessageKey {
 	return &waProto.MessageKey{RemoteJID: proto.String(chat.String()), FromMe: proto.Bool(false), ID: proto.String(id), Participant: proto.String(participant.String())}
@@ -195,26 +199,26 @@ func TestHandleMessage_LiveRevoke(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	liveMsg(c, aliceJID, aliceJID, false, "rv-1", liveTS.Add(time.Minute), revokeOf(senderKey(aliceJID, "doc-1")))
-	liveMsg(c, aliceJID, aliceJID, false, "rv-2", liveTS.Add(time.Minute), revokeOf(senderKey(aliceJID, "txt-1")))
+	liveMsg(c, aliceJID, aliceJID, false, "rv-1", liveTS.Add(time.Minute), revokeOf(otherSenderKey(aliceJID, "doc-1")))
+	liveMsg(c, aliceJID, aliceJID, false, "rv-2", liveTS.Add(time.Minute), revokeOf(otherSenderKey(aliceJID, "txt-1")))
 
-	if r := mustCached(t, s, aliceJID, "doc-1"); !r.revoked || r.mediaType != "document" {
-		t.Errorf("doc-1 after the revoke = %+v, want it marked deleted with its media kept", r)
+	if r := mustCached(t, s, aliceJID, "doc-1"); !r.revoked || r.mediaType != "" || r.content != "" {
+		t.Errorf("doc-1 after the revoke = %+v, want a content-free tombstone", r)
 	}
-	if r := mustCached(t, s, aliceJID, "txt-1"); !r.revoked || r.content != "my pin is 1234" {
-		t.Errorf("txt-1 after the revoke = %+v, want it marked deleted with its text kept", r)
+	if r := mustCached(t, s, aliceJID, "txt-1"); !r.revoked || r.content != "" {
+		t.Errorf("txt-1 after the revoke = %+v, want a content-free tombstone", r)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "contract.pdf")); err != nil {
-		t.Errorf("cached media of the revoked message must be kept: %v", err)
+	if _, err := os.Stat(filepath.Join(dir, "contract.pdf")); !os.IsNotExist(err) {
+		t.Errorf("cached media of a revoked message still exists: err=%v", err)
 	}
 
 	ctx := context.Background()
 	msgs, _ := s.ListMessages(ctx, store.ListMessagesParams{ChatJID: aliceJID.String(), Query: "pin"})
-	if len(msgs) != 1 || !msgs[0].Revoked || msgs[0].RevokedAt == nil || !msgs[0].RevokedAt.Equal(liveTS.Add(time.Minute)) {
-		t.Fatalf("search for the deleted text = %+v, want it marked deleted at the revoke's time", msgs)
+	if len(msgs) != 0 {
+		t.Fatalf("search for the deleted text = %+v, want no match", msgs)
 	}
-	if out := s.FormatMessage(ctx, msgs[0], false); !strings.Contains(out, "[deleted ") || !strings.HasSuffix(out, "] my pin is 1234\n") {
-		t.Errorf("formatted deleted message = %q", out)
+	if msg, err := s.GetMessageContext(ctx, "txt-1", 0, 0); err != nil || msg.Message.Content != "" || !msg.Message.Revoked {
+		t.Errorf("revoked message context = %+v, %v; want an empty tombstone", msg, err)
 	}
 	if rows := countRows(t, s); rows != 2 {
 		t.Errorf("cache holds %d rows, want the two originals and no revoke rows", rows)
@@ -282,7 +286,7 @@ func TestHandleMessage_AdminRevoke(t *testing.T) {
 	liveMsg(c, groupJID, carolJID, false, "a-3", at, revokeOf(participantKey(groupJID, bobJID, "g-3")))
 
 	for _, id := range []string{"g-1", "g-2"} {
-		if r := mustCached(t, s, groupJID, id); !r.revoked || r.content == "" {
+		if r := mustCached(t, s, groupJID, id); !r.revoked || r.content != "" {
 			t.Errorf("%s after the admin delete = %+v", id, r)
 		}
 	}
@@ -312,10 +316,33 @@ func TestHandleMessage_EditOfUnknownMessage(t *testing.T) {
 	c, s := newEditTestClient(t)
 
 	liveMsg(c, aliceJID, aliceJID, false, "e-1", liveTS, editOf(senderKey(aliceJID, "never-seen"), "edited"))
-	liveMsg(c, aliceJID, aliceJID, false, "r-1", liveTS, revokeOf(senderKey(aliceJID, "never-seen-2")))
+	liveMsg(c, aliceJID, aliceJID, false, "r-1", liveTS, revokeOf(otherSenderKey(aliceJID, "never-seen-2")))
+	liveMsg(c, aliceJID, aliceJID, false, "r-2", liveTS, revokeOf(&waProto.MessageKey{
+		RemoteJID: proto.String(aliceJID.String()), FromMe: proto.Bool(true), ID: proto.String("not-alice-message"),
+	}))
+	liveMsg(c, groupJID, aliceJID, false, "r-3", liveTS, revokeOf(&waProto.MessageKey{
+		RemoteJID: proto.String(groupJID.String()), FromMe: proto.Bool(false), ID: proto.String("unknown-group-author"),
+	}))
 
-	if n := countRows(t, s); n != 0 {
-		t.Errorf("rows = %d, want none: changes to uncached messages are ignored", n)
+	if n := countRows(t, s); n != 1 {
+		t.Errorf("rows = %d, want only a revoke tombstone", n)
+	}
+	if _, ok := readCached(t, s, aliceJID, "never-seen"); ok {
+		t.Error("edit of an unknown message must not create a row")
+	}
+	if r := mustCached(t, s, aliceJID, "never-seen-2"); !r.revoked || r.content != "" {
+		t.Errorf("revoke of an unknown message = %+v, want an empty tombstone", r)
+	}
+	for _, tc := range []struct {
+		chat types.JID
+		id   string
+	}{
+		{aliceJID, "not-alice-message"},
+		{groupJID, "unknown-group-author"},
+	} {
+		if _, ok := readCached(t, s, tc.chat, tc.id); ok {
+			t.Errorf("unauthorised revoke created tombstone %s", tc.id)
+		}
 	}
 }
 
@@ -387,7 +414,7 @@ func TestRecordOwnEditAndRevoke(t *testing.T) {
 	}
 
 	c.recordOwnRevoke(ctx, bobLID, c.wa.BuildRevoke(bobLID, types.EmptyJID, "me-1").GetProtocolMessage().GetKey())
-	if r := mustCached(t, s, bobJID, "me-1"); !r.revoked || r.content != "final" {
+	if r := mustCached(t, s, bobJID, "me-1"); !r.revoked || r.content != "" {
 		t.Errorf("me-1 after DeleteMessage = %+v", r)
 	}
 

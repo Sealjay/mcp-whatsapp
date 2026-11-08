@@ -3,8 +3,10 @@ package store
 import (
 	"context"
 	"database/sql"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -14,20 +16,26 @@ const editChat = "447700000001@s.whatsapp.net"
 var editTS = time.Date(2026, 2, 1, 9, 0, 0, 0, time.UTC)
 
 type editRow struct {
-	content, mediaType, filename, url string
-	mediaKey                          []byte
-	pollOptions                       sql.NullString
-	editedAt, revokedAt               sql.NullTime
-	timestamp                         time.Time
+	sender, content, mediaType, filename, url, directPath string
+	isFromMe                                              bool
+	mediaKey, fileSHA256, fileEncSHA256                   []byte
+	fileLength                                            int64
+	pollOptions                                           sql.NullString
+	editedAt, revokedAt                                   sql.NullTime
+	timestamp                                             time.Time
 }
 
 func readEditRow(t *testing.T, s *Store, id string) editRow {
 	t.Helper()
 	var r editRow
 	err := s.db.QueryRow(`
-		SELECT content, media_type, filename, url, media_key, poll_options_json, edited_at, revoked_at, timestamp
+		SELECT sender, content, is_from_me, media_type, filename, url, direct_path,
+		       media_key, file_sha256, file_enc_sha256, file_length, poll_options_json,
+		       edited_at, revoked_at, timestamp
 		FROM messages WHERE id = ? AND chat_jid = ?`, id, editChat,
-	).Scan(&r.content, &r.mediaType, &r.filename, &r.url, &r.mediaKey, &r.pollOptions, &r.editedAt, &r.revokedAt, &r.timestamp)
+	).Scan(&r.sender, &r.content, &r.isFromMe, &r.mediaType, &r.filename, &r.url, &r.directPath,
+		&r.mediaKey, &r.fileSHA256, &r.fileEncSHA256, &r.fileLength, &r.pollOptions,
+		&r.editedAt, &r.revokedAt, &r.timestamp)
 	if err != nil {
 		t.Fatalf("read %s: %v", id, err)
 	}
@@ -139,10 +147,16 @@ func TestApplyEdit_OnlyByAuthor(t *testing.T) {
 	}
 }
 
-func TestApplyRevoke_MarksAndKeepsTheMessage(t *testing.T) {
+func TestApplyRevoke_PurgesMessageAndKeepsTombstone(t *testing.T) {
 	s := openTestStore(t)
 	seedEditRows(t, s)
 	ctx := context.Background()
+	if err := s.PutTranscript(ctx, Transcript{MessageID: "e-media", ChatJID: editChat, Text: "private transcript"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.StorePollVote(ctx, "e-media", editChat, "voter@s.whatsapp.net", []string{"x"}, editTS); err != nil {
+		t.Fatal(err)
+	}
 
 	if ok, _ := s.ApplyRevoke(ctx, editChat, "e-media", Author{Senders: []string{"447700000002"}}, editTS); ok {
 		t.Fatal("a third party's revoke must not apply")
@@ -155,8 +169,29 @@ func TestApplyRevoke_MarksAndKeepsTheMessage(t *testing.T) {
 	if !r.revokedAt.Valid || !r.revokedAt.Time.Equal(editTS.Add(time.Minute)) {
 		t.Errorf("revoked_at = %+v, want %v", r.revokedAt, editTS.Add(time.Minute))
 	}
-	if r.content != "a caption" || r.mediaType != "document" || r.filename != "secret.pdf" || r.url == "" || r.mediaKey == nil || !r.pollOptions.Valid {
-		t.Errorf("revoked row = %+v, want content, media and poll fields kept", r)
+	if r.sender != "" || r.content != "" || r.isFromMe || r.mediaType != "" || r.filename != "" ||
+		r.url != "" || r.directPath != "" || len(r.mediaKey) != 0 || len(r.fileSHA256) != 0 ||
+		len(r.fileEncSHA256) != 0 || r.fileLength != 0 || r.pollOptions.Valid || r.editedAt.Valid {
+		t.Errorf("revoked row = %+v, want only its tombstone fields retained", r)
+	}
+	if got, err := s.GetTranscript(ctx, "e-media", editChat); err != nil || got != nil {
+		t.Errorf("revoked transcript = %+v, %v; want no transcript", got, err)
+	}
+	var votes int
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM poll_votes WHERE poll_message_id = ? AND poll_chat_jid = ?", "e-media", editChat).Scan(&votes); err != nil || votes != 0 {
+		t.Errorf("revoked poll votes = %d, %v; want none", votes, err)
+	}
+	if err := s.StorePollMetadata(ctx, "e-media", editChat, []string{"restored"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.StorePollVote(ctx, "e-media", editChat, "voter@s.whatsapp.net", []string{"restored"}, editTS.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GetPollOptions(ctx, "e-media", editChat); err != sql.ErrNoRows {
+		t.Errorf("redelivered poll metadata error = %v; want no poll options", err)
+	}
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM poll_votes WHERE poll_message_id = ? AND poll_chat_jid = ?", "e-media", editChat).Scan(&votes); err != nil || votes != 0 {
+		t.Errorf("redelivered poll votes = %d, %v; want none", votes, err)
 	}
 	if ok, _ := s.ApplyRevoke(ctx, editChat, "e-media", alice, editTS.Add(2*time.Minute)); ok {
 		t.Error("revoking twice must report no change")
@@ -168,13 +203,136 @@ func TestApplyRevoke_MarksAndKeepsTheMessage(t *testing.T) {
 		t.Error("an edit must not change a revoked message")
 	}
 
-	// Re-delivery of the original (history sync) leaves it revoked and intact.
+	// Re-delivery of the original (history sync) cannot resurrect its content.
 	if err := s.StoreMessage(ctx, Message{ID: "e-media", ChatJID: editChat, Sender: "447700000001", Content: "a caption",
-		Timestamp: editTS, MediaType: "document", Filename: "secret.pdf"}, []byte{1}, nil, nil, 42); err != nil {
+		Timestamp: editTS, MediaType: "document", Filename: "secret.pdf"}, []byte{1}, []byte{2}, []byte{3}, 42); err != nil {
 		t.Fatalf("re-store: %v", err)
 	}
-	if r := readEditRow(t, s, "e-media"); r.content != "a caption" || r.mediaType != "document" || !r.revokedAt.Valid {
-		t.Errorf("re-delivered revoked row = %+v, want it to stay revoked with its content", r)
+	if r := readEditRow(t, s, "e-media"); r.content != "" || r.mediaType != "" || r.filename != "" || !r.revokedAt.Valid {
+		t.Errorf("re-delivered revoked row = %+v, want an empty tombstone", r)
+	}
+}
+
+func TestApplyRevoke_UnknownMessageCreatesTombstone(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	revokedAt := editTS.Add(time.Minute)
+
+	ok, err := s.ApplyRevoke(ctx, editChat, "not-cached-yet", alice, revokedAt)
+	if err != nil || !ok {
+		t.Fatalf("ApplyRevoke = %v, %v; want a tombstone", ok, err)
+	}
+	if err := s.StoreMessage(ctx, Message{
+		ID: "not-cached-yet", ChatJID: editChat, Sender: "447700000001",
+		Content: "history redelivery must not restore this", Timestamp: editTS,
+		MediaType: "image", Filename: "private.jpg", URL: "https://example.invalid/media",
+	}, []byte{1}, []byte{2}, []byte{3}, 42); err != nil {
+		t.Fatal(err)
+	}
+	r := readEditRow(t, s, "not-cached-yet")
+	if r.content != "" || r.mediaType != "" || r.filename != "" || !r.revokedAt.Valid ||
+		!r.revokedAt.Time.Equal(revokedAt) || !r.timestamp.Equal(revokedAt) {
+		t.Fatalf("redelivered unknown message = %+v, want only the revoke tombstone", r)
+	}
+}
+
+func TestStoreMessage_RacingRevokeCannotRestoreContent(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	for i := range 12 {
+		id := "history-race-" + time.Unix(int64(i), 0).UTC().Format("150405")
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		var storeErr, revokeErr error
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			storeErr = s.StoreMessage(ctx, Message{
+				ID: id, ChatJID: editChat, Sender: "447700000001",
+				Content: "history sync payload", Timestamp: editTS,
+				MediaType: "image", Filename: "private.jpg", URL: "https://example.invalid/media",
+			}, []byte{1}, []byte{2}, []byte{3}, 42)
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			_, revokeErr = s.ApplyRevoke(ctx, editChat, id, alice, editTS.Add(time.Minute))
+		}()
+		close(start)
+		wg.Wait()
+		if storeErr != nil || revokeErr != nil {
+			t.Fatalf("iteration %d: StoreMessage=%v ApplyRevoke=%v", i, storeErr, revokeErr)
+		}
+		var content, mediaType string
+		var revoked sql.NullTime
+		if err := s.db.QueryRow("SELECT content, media_type, revoked_at FROM messages WHERE id = ? AND chat_jid = ?", id, editChat).Scan(&content, &mediaType, &revoked); err != nil {
+			t.Fatalf("iteration %d: select tombstone: %v", i, err)
+		}
+		if content != "" || mediaType != "" || !revoked.Valid {
+			t.Fatalf("iteration %d: content=%q media=%q revoked=%v; want an empty tombstone", i, content, mediaType, revoked)
+		}
+	}
+}
+
+func TestOpenPurgesLegacyRevokedPayloadAndCache(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	const id = "legacy-revoked"
+	if err := s.StoreChat(editChat, "Alice", editTS); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.StoreMessage(ctx, Message{
+		ID: id, ChatJID: editChat, Sender: "447700000001", Content: "legacy retained text",
+		Timestamp: editTS, MediaType: "document", Filename: "private.pdf", URL: "https://example.invalid/media",
+	}, []byte{1}, []byte{2}, []byte{3}, 42); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutTranscript(ctx, Transcript{MessageID: id, ChatJID: editChat, Text: "legacy transcript"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec("UPDATE messages SET revoked_at = ? WHERE id = ? AND chat_jid = ?", editTS.Add(time.Minute), id, editChat); err != nil {
+		t.Fatal(err)
+	}
+	cacheDir, err := s.CachedMediaDir(editChat, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cacheFile := filepath.Join(cacheDir, "private.pdf")
+	if err := os.WriteFile(cacheFile, []byte("legacy cached file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err = Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	var secureDelete int
+	if err := s.db.QueryRow("PRAGMA secure_delete").Scan(&secureDelete); err != nil || secureDelete != 1 {
+		t.Fatalf("secure_delete = %d, %v; want enabled", secureDelete, err)
+	}
+	r := readEditRow(t, s, id)
+	if r.content != "" || r.mediaType != "" || r.filename != "" || !r.revokedAt.Valid ||
+		!r.revokedAt.Time.Equal(editTS.Add(time.Minute)) || !r.timestamp.Equal(editTS) {
+		t.Fatalf("legacy revoked row = %+v; want an empty tombstone", r)
+	}
+	if got, err := s.GetTranscript(ctx, id, editChat); err != nil || got != nil {
+		t.Fatalf("legacy revoked transcript = %+v, %v; want none", got, err)
+	}
+	if _, err := os.Stat(cacheFile); !os.IsNotExist(err) {
+		t.Fatalf("legacy revoked cache file still exists: err=%v", err)
 	}
 }
 
@@ -238,9 +396,9 @@ func TestChatPreviewsMarkEditedAndRevokedMessages(t *testing.T) {
 	}
 	for _, chat := range chats {
 		if chat.JID == editChat {
-			want := "[deleted 2026-02-01 09:01:00 UTC] edited caption"
-			if chat.LastMessage != want {
-				t.Fatalf("ListChats preview = %q, want %q", chat.LastMessage, want)
+			want := "[deleted 2026-02-01 09:01:00 UTC]"
+			if chat.LastMessage != want || chat.LastSender != "" {
+				t.Fatalf("ListChats preview = %q, sender=%q; want %q and no sender", chat.LastMessage, chat.LastSender, want)
 			}
 			return
 		}
@@ -274,8 +432,8 @@ func TestListMessages_EditedAndRevoked(t *testing.T) {
 	if got := search("original"); len(got) != 0 {
 		t.Errorf("search for the pre-edit text = %+v, want no match", got)
 	}
-	if got := search("caption"); len(got) != 1 || !got[0].Revoked || got[0].RevokedAt == nil {
-		t.Errorf("search for a revoked caption = %+v, want e-media marked deleted", got)
+	if got := search("caption"); len(got) != 0 {
+		t.Errorf("search for a revoked caption = %+v, want no match", got)
 	}
 
 	all, err := s.ListMessages(ctx, ListMessagesParams{ChatJID: editChat, Limit: 100})
@@ -286,8 +444,9 @@ func TestListMessages_EditedAndRevoked(t *testing.T) {
 	if !strings.Contains(out, ": [edited] edited text\n") {
 		t.Errorf("formatted list lacks the edited marker:\n%s", out)
 	}
-	if !strings.Contains(out, "[document - Message ID: e-media - Chat JID: "+editChat+"] [deleted 2026-02-01 09:01:00 UTC] a caption\n") {
-		t.Errorf("formatted list lacks the deleted marker with its time:\n%s", out)
+	if !strings.Contains(out, "[deleted 2026-02-01 09:01:00 UTC]") || strings.Contains(out, "a caption") ||
+		strings.Contains(out, "[document - Message ID: e-media") {
+		t.Errorf("formatted list did not show a content-free deletion tombstone:\n%s", out)
 	}
 
 	mc, err := s.GetMessageContext(ctx, "e-media", 5, 5)
@@ -295,8 +454,8 @@ func TestListMessages_EditedAndRevoked(t *testing.T) {
 		t.Fatalf("GetMessageContext: %v", err)
 	}
 	if !mc.Message.Revoked || mc.Message.RevokedAt == nil || !mc.Message.RevokedAt.Equal(editTS.Add(time.Minute)) ||
-		mc.Message.Content != "a caption" || mc.Message.MediaType != "document" {
-		t.Errorf("context target = %+v, want revoked at its time with content and media kept", mc.Message)
+		mc.Message.Content != "" || mc.Message.MediaType != "" || mc.Message.Sender != "" {
+		t.Errorf("context target = %+v, want a content-free deletion tombstone", mc.Message)
 	}
 	edited := false
 	for _, m := range append(mc.Before, mc.After...) {
@@ -322,16 +481,15 @@ func TestFormatMessage_EditedAndRevokedMarkers(t *testing.T) {
 		{"plain", func(m Message) Message { m.Content = "hi"; return m }, "From: Me: hi\n"},
 		{"edited", func(m Message) Message { m.Content = "hi"; m.Edited = true; return m }, "From: Me: [edited] hi\n"},
 		{"revoked", func(m Message) Message { m.Revoked = true; return m }, "From: Me: [deleted]\n"},
-		{"revoked, content kept", func(m Message) Message { m.Content = "hi"; m.Revoked = true; m.Edited = true; return m }, "From: Me: [deleted] hi\n"},
+		{"minimal tombstone", func(m Message) Message {
+			m.Sender, m.IsFromMe, m.Revoked = "", false, true
+			return m
+		}, "[deleted]\n"},
 		{"revoked with time", func(m Message) Message {
 			at := time.Date(2026, 3, 4, 5, 6, 7, 0, time.FixedZone("x", 3600))
-			m.Content, m.Revoked, m.RevokedAt = "hi", true, &at
+			m.Revoked, m.RevokedAt = true, &at
 			return m
-		}, "From: Me: [deleted 2026-03-04 04:06:07 UTC] hi\n"},
-		{"revoked media, content kept", func(m Message) Message {
-			m.Content, m.MediaType, m.Revoked = "cap", "image", true
-			return m
-		}, "From: Me: [image - Message ID: m - Chat JID: " + editChat + "] [deleted] cap\n"},
+		}, "From: Me: [deleted 2026-03-04 04:06:07 UTC]\n"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

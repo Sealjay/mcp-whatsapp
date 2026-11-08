@@ -257,6 +257,70 @@ func TestDownload_InvalidCacheIsReplacedAfterValidatedDownload(t *testing.T) {
 	}
 }
 
+func TestRevokeRemovesCacheAfterInFlightDownload(t *testing.T) {
+	t.Chdir(t.TempDir())
+	s, err := store.Open("./store")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	const chat, id, sender = "447700000099@s.whatsapp.net", "M-REVOKE-DOWNLOAD", "447700000099"
+	payload := []byte("downloaded before revoke")
+	digest := sha256.Sum256(payload)
+	if err := s.StoreChat(chat, "test", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.StoreMessage(context.Background(), store.Message{
+		ID: id, ChatJID: chat, Sender: sender, Content: "caption", Timestamp: time.Now(),
+		MediaType: "image", Filename: "photo.jpg", URL: "https://example.invalid/media",
+	}, []byte{1}, digest[:], []byte{2}, uint64(len(payload))); err != nil {
+		t.Fatal(err)
+	}
+
+	c := newClientWithStore(t, s)
+	started, release := make(chan struct{}), make(chan struct{})
+	c.downloadMedia = func(context.Context, whatsmeow.DownloadableMessage) ([]byte, error) {
+		close(started)
+		<-release
+		return payload, nil
+	}
+	downloadDone := make(chan DownloadResult, 1)
+	go func() { downloadDone <- c.Download(context.Background(), id, chat, "") }()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("download did not reach the media fetch")
+	}
+
+	revokeStarted, revokeDone := make(chan struct{}), make(chan error, 1)
+	go func() {
+		close(revokeStarted)
+		_, err := c.revoke(context.Background(), chat, id, store.Author{Senders: []string{sender}}, time.Now())
+		revokeDone <- err
+	}()
+	<-revokeStarted
+	select {
+	case err := <-revokeDone:
+		t.Fatalf("revoke completed before the in-flight download: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	time.Sleep(10 * time.Millisecond)
+	close(release)
+	got := <-downloadDone
+	if !got.Success {
+		t.Fatalf("in-flight download: %+v", got)
+	}
+	if err := <-revokeDone; err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if _, err := os.Stat(got.Path); !os.IsNotExist(err) {
+		t.Fatalf("in-flight download recreated a revoked cache file: path=%s err=%v", got.Path, err)
+	}
+	if result := c.Download(context.Background(), id, chat, ""); result.Success {
+		t.Fatalf("subsequent Download returned revoked media: %+v", result)
+	}
+}
+
 // An unreadable cache entry is logged and ignored. The file-system error names
 // the cache path, which contains the chat JID and the filename, so the
 // non-debug log line keeps only the operation and cause.

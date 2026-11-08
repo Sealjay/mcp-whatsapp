@@ -61,7 +61,7 @@ type deleteMessageArgs struct {
 
 func (s *Server) registerDeleteMessage() {
 	tool := mcp.NewTool("delete_message",
-		mcp.WithDescription("Revoke (delete-for-everyone) a message; recipients see a `message was deleted` notice and the local cache row is marked deleted (with the time) and keeps its text and media. Permanent for recipients — there is no undo. You can only delete your own messages unless you are a group admin. Use edit_message instead when you only want to correct text. Returns the plain-text string `Message deleted` on success."),
+		mcp.WithDescription("Delete a message for everyone; on success, the local cache purges its content, media metadata, transcript, poll data, and downloaded cache file while retaining an ID/time tombstone so history sync cannot restore it. This local purge cannot erase user-created output_path copies or backups, nor audio already sent to an external transcription service. Deletion is permanent for recipients, and only your own messages or group messages you can delete as an admin are allowed; use edit_message to correct text instead. Returns the plain-text string `Message deleted` on success."),
 		mcp.WithString("chat_jid", mcp.Required(), mcp.Description(jidDesc)),
 		mcp.WithString("message_id", mcp.Required(), mcp.Description("WhatsApp message ID of the message to revoke (use `message_id` from list_messages)")),
 		mcp.WithString("sender_jid", mcp.Description("JID of the original sender; required when deleting someone else's message as a group admin, leave empty when deleting your own ("+jidDesc+")")),

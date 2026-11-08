@@ -4,9 +4,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -39,7 +42,7 @@ func transcribeFixture(t *testing.T, mediaType string, audio ...[]byte) (*Client
 		t.Fatal(err)
 	}
 	if err := s.StoreMessage(context.Background(), store.Message{
-		ID: trMsg, ChatJID: trJID, Sender: trJID, Timestamp: time.Now().UTC(),
+		ID: trMsg, ChatJID: trJID, Sender: "447700000123", Timestamp: time.Now().UTC(),
 		MediaType: mediaType, Filename: "voice.ogg", URL: "https://example.invalid/m", DirectPath: "/m",
 	}, []byte{1}, digest[:], []byte{2}, uint64(len(payload))); err != nil {
 		t.Fatal(err)
@@ -77,6 +80,83 @@ func TestTranscribeAudio_TranscribesOnceAndCaches(t *testing.T) {
 	}
 	if *calls != 1 {
 		t.Fatalf("the service was called %d times, want 1", *calls)
+	}
+}
+
+func TestRevokedAudioCannotBeDownloadedOrTranscribedAgain(t *testing.T) {
+	c, calls := transcribeFixture(t, "audio")
+	ctx := context.Background()
+	if _, _, err := c.TranscribeAudio(ctx, trMsg, trJID, "es"); err != nil {
+		t.Fatalf("initial transcription: %v", err)
+	}
+	cachePath := filepath.Join(c.store.Dir(), strings.ReplaceAll(trJID, ":", "_"), hex.EncodeToString([]byte(trMsg)), "voice.ogg")
+	if _, err := os.Stat(cachePath); err != nil {
+		t.Fatalf("cached audio missing before revoke: %v", err)
+	}
+
+	applied, err := c.revoke(ctx, trJID, trMsg, store.Author{Senders: []string{"447700000123"}}, time.Now())
+	if err != nil || !applied {
+		t.Fatalf("revoke = %v, %v", applied, err)
+	}
+	if _, err := os.Stat(cachePath); !os.IsNotExist(err) {
+		t.Fatalf("revoked audio cache still exists: err=%v", err)
+	}
+	if got := c.Download(ctx, trMsg, trJID, ""); got.Success {
+		t.Fatalf("Download returned revoked media: %+v", got)
+	}
+	if tr, cached, err := c.TranscribeAudio(ctx, trMsg, trJID, ""); err == nil || tr != nil || cached {
+		t.Fatalf("TranscribeAudio returned revoked content: transcript=%+v cached=%v err=%v", tr, cached, err)
+	}
+	if got, err := c.store.GetTranscript(ctx, trMsg, trJID); err != nil || got != nil {
+		t.Fatalf("stored transcript after revoke = %+v, %v", got, err)
+	}
+	if *calls != 1 {
+		t.Fatalf("transcription service called %d times, want only the initial call", *calls)
+	}
+}
+
+func TestRevokePurgesResultFromInFlightTranscription(t *testing.T) {
+	c, _ := transcribeFixture(t, "audio")
+	started := make(chan struct{})
+	release := make(chan struct{})
+	c.transcribeFn = func(context.Context, transcribe.Config, string, string) (transcribe.Result, error) {
+		close(started)
+		<-release
+		return transcribe.Result{Text: "late result", Language: "en", Duration: 1}, nil
+	}
+
+	transcribeDone := make(chan error, 1)
+	go func() {
+		_, _, err := c.TranscribeAudio(context.Background(), trMsg, trJID, "")
+		transcribeDone <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("transcription did not start")
+	}
+
+	revokeStarted, revokeDone := make(chan struct{}), make(chan error, 1)
+	go func() {
+		close(revokeStarted)
+		_, err := c.revoke(context.Background(), trJID, trMsg, store.Author{Senders: []string{"447700000123"}}, time.Now())
+		revokeDone <- err
+	}()
+	<-revokeStarted
+	select {
+	case err := <-revokeDone:
+		t.Fatalf("revoke completed before the in-flight transcription: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	if err := <-transcribeDone; err != nil {
+		t.Fatalf("in-flight transcription: %v", err)
+	}
+	if err := <-revokeDone; err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if got, err := c.store.GetTranscript(context.Background(), trMsg, trJID); err != nil || got != nil {
+		t.Fatalf("in-flight result survived revoke: %+v, %v", got, err)
 	}
 }
 
