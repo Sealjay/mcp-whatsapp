@@ -116,6 +116,10 @@ func Open(dir string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate schema: %w", err)
 	}
+	if _, err := db.Exec(labelsSchema); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("apply labels schema: %w", err)
+	}
 	if _, err := db.Exec(transcriptsSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("apply transcripts schema: %w", err)

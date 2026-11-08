@@ -28,7 +28,7 @@ func TestNewWAClient_MasksJIDsInWhatsmeowLogs(t *testing.T) {
 
 		var buf bytes.Buffer
 		logger := &stderrLogger{out: &buf, mod: "Client", min: logLevelToInt["INFO"]}
-		wa := newWAClient(container.NewDevice(), logger, &security.Redactor{Debug: debug})
+		wa := newWAClient(container.NewDevice(), logger, &security.Redactor{Debug: debug}, false)
 
 		source := logTestGroupJID + " (" + logTestDMUser + ":12@s.whatsapp.net, 123456789012345@lid)"
 		wa.Log.Warnf("Error unmarshaling plaintext message from %s: %v", source, errors.New("proto: cannot parse"))

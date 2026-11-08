@@ -109,7 +109,7 @@ func TestSniffResourceMIME_ImagePassThrough(t *testing.T) {
 // into NewServer, and both nil client and nil pairing cache must be tolerated
 // so smoke tests and this test can keep running without a real bridge.
 func TestRegisterResources_NewServerDoesNotPanic(t *testing.T) {
-	s := NewServer(nil, nil)
+	s := NewServer(nil, nil, false)
 	if s == nil {
 		t.Fatal("NewServer returned nil")
 	}
