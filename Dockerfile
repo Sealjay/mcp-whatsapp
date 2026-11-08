@@ -35,5 +35,7 @@ RUN mkdir -p /home/app/store
 EXPOSE 8765
 VOLUME ["/home/app/store"]
 
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 CMD ["whatsapp-mcp", "healthcheck"]
+
 ENTRYPOINT ["whatsapp-mcp", "-store", "/home/app/store"]
 CMD ["serve"]

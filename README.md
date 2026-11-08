@@ -55,6 +55,14 @@ Scan the QR with WhatsApp (*Settings → Linked Devices → Link a Device*). The
 - **No QR scan:** use the phone-number form on `/pair` (or `login -phone +<international number>`), then type the code into *Link a Device → Link with phone number instead*.
 - The `/pair/*` endpoints are CSRF-protected and rate-limited (15 GET/min, 1 reset/min, 3 code requests/min).
 
+#### Full history at pairing
+
+WhatsApp sends history to a linked device only while it pairs, and by default the phone sends a recent window of about three months. To ask for a full history sync instead, pass `-full-history` (env `WHATSAPP_MCP_FULL_HISTORY=1`) to whichever command does the pairing (`login`, or `serve` when you pair through `/pair`). A flag wins over the variable.
+
+- **New pairings only.** The request travels in the pairing handshake, so an already-linked device gets nothing more; unlink it and pair again.
+- **The phone decides** how much it sends, and a full sync can run for a long while after pairing: keep the phone online and `serve` running.
+- **Storage.** `messages.db` can grow substantially (media is still fetched only on demand).
+
 ### Connect your MCP client
 
 `serve` listens on `127.0.0.1:8765` (or `$WHATSAPP_MCP_ADDR`) and serves MCP at `/mcp`. It is stateless (no `Mcp-Session-Id`) and speaks MCP 2026-07-28 as well as older revisions.
@@ -92,6 +100,7 @@ Paths outside the root, including symlinks that resolve outside it, are rejected
 - `WHATSAPP_MCP_TRANSCRIBE_URL`: enables `transcribe_audio`. Base URL of a speech-to-text service that implements the OpenAI-compatible `POST /v1/audio/transcriptions` (a local whisper.cpp or faster-whisper server, LocalAI, or a hosted API). Unset = feature off. A non-loopback host is refused unless `WHATSAPP_MCP_TRANSCRIBE_ALLOW_REMOTE=1`, so audio never leaves the machine by accident. HTTP redirects are refused; configure the final transcription endpoint directly.
   Optional: `WHATSAPP_MCP_TRANSCRIBE_MODEL`, `WHATSAPP_MCP_TRANSCRIBE_LANGUAGE` (ISO 639-1; empty = autodetect), `WHATSAPP_MCP_TRANSCRIBE_TOKEN` (bearer token for the service), `WHATSAPP_MCP_TRANSCRIBE_MAX_SECONDS` (default 600). Ogg/Opus duration is checked before upload; malformed streams are rejected. Other formats rely on the service's duration limit. Transcripts are third-party content and are cached in `messages.db`. The first transcript is reused; changing the model or language affects only messages without a cached transcript.
 - `WHATSAPP_MCP_DEBUG=1` or `-debug`: verbose logs (see [Debug logging](#debug-logging)).
+- `-full-history` (env `WHATSAPP_MCP_FULL_HISTORY`): ask for a full history sync when pairing through `/pair` (see [Full history at pairing](#full-history-at-pairing)).
 
 ### Edits and deletions
 
@@ -106,6 +115,10 @@ For an archive or summarisation client, start with `./bin/whatsapp-mcp serve -re
 ## Running the daemon
 
 Events reach SQLite **only while `serve` runs**. After downtime, whatsmeow backfills via `HistorySync` within WhatsApp's own retention window; anything older is lost, and `request_sync` backfills one chat on demand. A `flock(2)` on `store/.lock` allows one `serve` (or `login`) per store.
+
+For monitoring, `GET /healthz` returns `200 {"ok":true}` while the HTTP server is alive. `GET /readyz` returns `200 {"ready":true}` only while paired and connected, or `503 {"ready":false}` otherwise. Both are unauthenticated, even with `-allow-remote`, and expose no account identifiers; restrict network access to the listener as needed. `get_status` also reports `connection_state` and `connection_state_since`, including logged-out, replaced, outdated, temporary-ban and connection-failure events. A keepalive timeout is reported until restored or disconnected; it does not itself mean the socket has closed.
+
+Run `whatsapp-mcp healthcheck` to probe readiness without curl. It uses `WHATSAPP_MCP_ADDR` or `127.0.0.1:8765`; `healthcheck -addr 127.0.0.1:PORT` overrides either. Only loopback and wildcard bind addresses are accepted, and wildcard addresses are probed via loopback. Exit status is 0 for ready, 1 for unavailable or unready, and 2 for invalid arguments. It never opens the store or sends a bearer token.
 
 | Option | How |
 |---|---|
@@ -127,10 +140,12 @@ docker run -d --name whatsapp-mcp -v whatsapp-mcp-store:/home/app/store \
 
 Clients then send `Authorization: Bearer $TOKEN`. The container binds loopback by default, so `-allow-remote` plus a token is what makes `-p` work. To re-pair after WhatsApp rotates the session (about every 20 days), stop the container, rerun the `login` container and start it again.
 
+The image includes a readiness `HEALTHCHECK`. Set `WHATSAPP_MCP_ADDR` to the same wildcard or loopback address used by `serve` when changing the port; a `serve -addr` flag is not visible to the separate health-check process. For a daemon bound to a specific non-loopback interface, disable the image health check and monitor the listener externally.
+
 ## Architecture
 
 ```
-cmd/whatsapp-mcp/       login / serve / smoke subcommands
+cmd/whatsapp-mcp/       login / serve / smoke / healthcheck subcommands
 internal/client/        whatsmeow client wrapper (send, download, events, history, features)
 internal/daemon/        HTTP server, pairing state machine, /pair endpoints
 internal/mcp/           mark3labs/mcp-go v1 server + tool registrations

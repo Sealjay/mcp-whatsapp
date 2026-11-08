@@ -21,7 +21,10 @@ func newProductionDriver(c *client.Client) *productionDriver {
 
 func (p *productionDriver) IsLoggedIn() bool { return p.c.IsLoggedIn() }
 
+func (p *productionDriver) IsConnected() bool { return p.c.IsConnected() }
+
 func (p *productionDriver) StartPairing(ctx context.Context, onQR func(string), onSuccess func()) error {
+	p.c.StartEventHandler()
 	qrCh, err := p.c.QRChannel(ctx)
 	if err != nil {
 		return err
@@ -42,8 +45,8 @@ func (p *productionDriver) StartPairing(ctx context.Context, onQR func(string), 
 }
 
 func (p *productionDriver) Connect(ctx context.Context, onLoggedOut func()) error {
-	p.c.AddLoggedOutHandler(func(_ *events.LoggedOut) { onLoggedOut() })
 	p.c.StartEventHandler()
+	p.c.AddLoggedOutHandler(func(_ *events.LoggedOut) { onLoggedOut() })
 	if p.c.IsConnected() {
 		// The pairing flow already connected this client; just install
 		// the post-pair handlers and return.
