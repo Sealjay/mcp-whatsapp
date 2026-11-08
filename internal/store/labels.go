@@ -169,13 +169,16 @@ func (s *Store) ListChatsByLabel(ctx context.Context, labelID string, limit, pag
 		return nil, err
 	}
 
+	if page > len(all)/limit {
+		return []LabeledChat{}, nil
+	}
 	start := page * limit
 	if start >= len(all) {
 		return []LabeledChat{}, nil
 	}
-	end := start + limit
-	if end > len(all) {
-		end = len(all)
+	end := len(all)
+	if remaining := len(all) - start; limit < remaining {
+		end = start + limit
 	}
 	return all[start:end], nil
 }

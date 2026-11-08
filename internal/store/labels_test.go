@@ -96,6 +96,47 @@ func TestLabels_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestLabelsPaginationOverflowFailsClosed(t *testing.T) {
+	s := openLabelsStore(t)
+	ctx := context.Background()
+	const labelID = "overflow"
+	const chatJID = "447700000001@s.whatsapp.net"
+	if err := s.UpsertLabel(ctx, labelID, "Overflow", 0, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetChatLabel(ctx, labelID, chatJID, true); err != nil {
+		t.Fatal(err)
+	}
+
+	largeLimit := int(^uint(0)>>2) + 1
+	maxInt := int(^uint(0) >> 1)
+	tests := []struct {
+		name  string
+		limit int
+		page  int
+		want  int
+	}{
+		{name: "overflowing offset", limit: largeLimit, page: 3, want: 0},
+		{name: "large limit first page", limit: largeLimit, page: 0, want: 1},
+		{name: "large limit second page", limit: largeLimit, page: 1, want: 0},
+		{name: "huge page with normal limit", limit: 1, page: maxInt, want: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := s.ListChatsByLabel(ctx, labelID, tt.limit, tt.page, false)
+			if err != nil {
+				t.Fatalf("ListChatsByLabel: %v", err)
+			}
+			if len(got) != tt.want {
+				t.Fatalf("ListChatsByLabel returned %d chats, want %d: %+v", len(got), tt.want, got)
+			}
+			if tt.want == 1 && got[0].JID != chatJID {
+				t.Fatalf("first page chat JID = %q, want %q", got[0].JID, chatJID)
+			}
+		})
+	}
+}
+
 func TestLabels_DeletedAndAmbiguous(t *testing.T) {
 	s := openLabelsStore(t)
 	ctx := context.Background()
