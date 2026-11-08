@@ -102,7 +102,14 @@ Paths outside the root, including symlinks that resolve outside it, are rejected
 - `WHATSAPP_MCP_DEBUG=1` or `-debug`: verbose logs (see [Debug logging](#debug-logging)).
 - `-full-history` (env `WHATSAPP_MCP_FULL_HISTORY`): ask for a full history sync when pairing through `/pair` (see [Full history at pairing](#full-history-at-pairing)).
 
-For remote clients, put an HTTPS reverse proxy in front of the daemon, keep its upstream bound to loopback, and configure the client to use `https://whatsapp.example.com/mcp` with the `WHATSAPP_MCP_TOKEN` bearer token.
+For remote clients, put an HTTPS reverse proxy in front of the daemon and start its loopback upstream with token authentication:
+
+```bash
+WHATSAPP_MCP_TOKEN="$TOKEN" ./bin/whatsapp-mcp serve \
+  -addr 127.0.0.1:8765 -allow-remote
+```
+
+Set `TOKEN` to your secret bearer token. `-allow-remote` activates token authentication even on loopback; without it, the daemon ignores `WHATSAPP_MCP_TOKEN`. The proxy must forward the `Authorization` header. Configure the client to use `https://whatsapp.example.com/mcp` with that bearer token.
 
 For an archive or summarisation client, start with `./bin/whatsapp-mcp serve -read-only`. Downloads, history requests and metadata queries remain available and can write the local cache. Transcription is excluded because it uploads private audio to another service. Labels are off by default; when enabled, all four label tools are available in read-only mode. Read-only mode exposes 15 tools by default or 19 with labels enabled, out of 43 default tools or 47 with labels. Pairing and reset remain operator actions through `/pair`, and read-only mode does not restrict which cached data a client can read. `-read-only=false` overrides an enabled environment setting; invalid environment values stop startup rather than silently enabling mutation tools.
 
