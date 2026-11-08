@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/hex"
@@ -395,5 +396,41 @@ func TestRecordOwnEditAndRevoke(t *testing.T) {
 	c.recordOwnRevoke(ctx, groupJID, c.wa.BuildRevoke(groupJID, bobJID, "g-1").GetProtocolMessage().GetKey())
 	if r := mustCached(t, s, groupJID, "g-1"); !r.revoked {
 		t.Errorf("g-1 after an admin DeleteMessage = %+v", r)
+	}
+}
+
+func TestHandleMessage_RemovingMediaCaptionUpdatesCache(t *testing.T) {
+	c, s := newEditTestClient(t)
+	liveMsg(c, aliceJID, aliceJID, false, "caption-original", liveTS, &waProto.Message{
+		ImageMessage: &waProto.ImageMessage{Caption: proto.String("old caption")},
+	})
+	change := editOf(senderKey(aliceJID, "caption-original"), "")
+	change.EditedMessage.Message.ProtocolMessage.EditedMessage = &waProto.Message{
+		ImageMessage: &waProto.ImageMessage{Caption: proto.String("")},
+	}
+	liveMsg(c, aliceJID, aliceJID, false, "caption-edit", liveTS.Add(time.Minute), change)
+	if r := mustCached(t, s, aliceJID, "caption-original"); r.content != "" || !r.edited || r.mediaType != "image" {
+		t.Fatalf("after removing caption: %+v; want empty content, edited=true and mediaType=image", r)
+	}
+}
+
+func TestHandleMessage_EditDecryptionErrorRedactsSender(t *testing.T) {
+	c, _ := newEditTestClient(t)
+	var buf bytes.Buffer
+	c.log = &stderrLogger{out: &buf, mod: "Client", min: logLevelToInt["WARN"]}
+	c.wa.Store.MsgSecrets = fakeSecrets{secret: []byte("0123456789abcdef0123456789abcdef"), sender: aliceJID}
+	liveMsg(c, aliceJID, aliceJID, false, "failed-edit", liveTS.Add(time.Minute), &waProto.Message{
+		SecretEncryptedMessage: &waE2E.SecretEncryptedMessage{
+			TargetMessageKey: senderKey(aliceJID, "original"),
+			EncPayload:       []byte("invalid encrypted payload"),
+			EncIV:            []byte("123456789012"),
+			SecretEncType:    waE2E.SecretEncryptedMessage_MESSAGE_EDIT.Enum(),
+		},
+	})
+	if !strings.Contains(buf.String(), "Failed to decrypt edit") {
+		t.Fatalf("expected decryption warning, got %q", buf.String())
+	}
+	if strings.Contains(buf.String(), aliceJID.User) {
+		t.Fatalf("edit decryption warning exposes synthetic sender JID: %s", buf.String())
 	}
 }
