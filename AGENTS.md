@@ -23,6 +23,8 @@ Data lives under `./store/` (override with `-store DIR`): `messages.db`, `whatsa
 - `serve` starts the HTTP daemon on `127.0.0.1:<port>`, tracks events, serves MCP at `/mcp`, and hosts the pairing UI at `/pair`. It holds `store/.lock` while running and is mutually exclusive with another `serve` instance using the same store directory.
 - `smoke` boot-tests without connecting to WhatsApp.
 
+`serve -read-only` (env `WHATSAPP_MCP_READ_ONLY=1`) excludes WhatsApp mutation tools at registration; direct calls to removed tools are rejected. Downloads and history requests remain available, and `/pair` is still an operator lifecycle surface. When adding a tool, classify it explicitly in `internal/mcp/tools.go`; tests require every registered tool to have a reviewed classification.
+
 ## Testing
 
 ```bash

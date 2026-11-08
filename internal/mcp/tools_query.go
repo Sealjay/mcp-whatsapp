@@ -260,7 +260,7 @@ func (s *Server) registerIsOnWhatsApp() {
 
 func (s *Server) registerGetStatus() {
 	tool := mcp.NewTool("get_status",
-		mcp.WithDescription("Report whether the embedded WhatsApp bridge is connected and which account it is paired with. Read-only; no side effects. Call this first when other tools fail with auth or connection errors. Returns a JSON object `{connected, paired, own_jid?, own_phone?, hint?}` — `hint` includes the URL of the local pairing UI when not yet paired."),
+		mcp.WithDescription("Report whether the embedded WhatsApp bridge is connected, which account it is paired with, and whether read-only tool restriction is active. Read-only; no side effects; call this first when other tools fail with auth or connection errors. Returns a JSON object `{connected, paired, read_only, own_jid?, own_phone?, hint?}`; `hint` includes the URL of the local pairing UI when not yet paired."),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
@@ -269,6 +269,7 @@ func (s *Server) registerGetStatus() {
 	s.mcp.AddTool(tool, func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		status := map[string]any{
 			"connected": s.client.IsConnected(),
+			"read_only": s.readOnly,
 		}
 		if wa := s.client.WA(); wa != nil && wa.Store != nil && wa.Store.ID != nil {
 			status["own_jid"] = wa.Store.ID.String()
