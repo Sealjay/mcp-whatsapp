@@ -69,13 +69,18 @@ func TestHTTP_ReadOnlyMode(t *testing.T) {
 			h.initializeMCP()
 			result := h.callTool("get_status", map[string]any{})
 			var status struct {
-				ReadOnly bool `json:"read_only"`
+				ReadOnly             bool   `json:"read_only"`
+				ConnectionState      string `json:"connection_state"`
+				ConnectionStateSince string `json:"connection_state_since"`
 			}
 			if err := json.Unmarshal([]byte(result.Text), &status); err != nil {
 				t.Fatal(err)
 			}
 			if result.IsError || status.ReadOnly != tc.want {
 				t.Fatalf("read-only mode: got %s, want %v", result.Text, tc.want)
+			}
+			if status.ConnectionState == "" || status.ConnectionStateSince == "" {
+				t.Fatalf("connection state missing from get_status: %s", result.Text)
 			}
 			if result := h.callTool("list_chats", map[string]any{}); result.IsError {
 				t.Fatalf("read-only chat query failed: %s", result.Text)

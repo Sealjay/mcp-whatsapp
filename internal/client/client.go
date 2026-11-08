@@ -39,6 +39,9 @@ type Config struct {
 	// explicitly-configured limiter to override the defaults, or leave the
 	// field nil on a Client literal (as unit tests do) to disable limiting.
 	RateLimiter *ratelimit.Limiter
+	// FullHistory asks the phone for a full history sync when this device
+	// links (see RequestFullHistory). False keeps whatsmeow's defaults.
+	FullHistory bool
 }
 
 // Client wraps a whatsmeow.Client together with the message cache and logger.
@@ -53,6 +56,8 @@ type Client struct {
 	allowedMediaRoot string
 	redactor         *security.Redactor
 	limiter          *ratelimit.Limiter
+	statusMu         sync.RWMutex
+	status           ConnectionStatus
 
 	// mediaRetries tracks media retry receipts awaiting the phone's answer
 	// (see mediaretry.go); mediaRetryTimeout overrides
@@ -106,6 +111,12 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		limiter = ratelimit.New(ratelimit.DefaultConfig())
 	}
 
+	// Pairing properties are read when the handshake is built, so they
+	// must be in place before the first Connect.
+	if cfg.FullHistory {
+		RequestFullHistory()
+	}
+
 	// Best-effort: fetch the latest WhatsApp version so the server doesn't
 	// reject us as outdated. Failure here is non-fatal.
 	if latest, err := whatsmeow.GetLatestVersion(ctx, nil); err != nil {
@@ -147,6 +158,13 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 			return nil, fmt.Errorf("get device: %w", err)
 		}
 	}
+	if cfg.FullHistory {
+		if device.ID != nil {
+			logger.Warnf("Full history sync requested, but this device is already linked: it only applies to a new pairing")
+		} else {
+			logger.Infof("Will ask the phone for a full history sync when pairing")
+		}
+	}
 
 	wa := newWAClient(device, logger, redactor)
 	if wa == nil {
@@ -164,6 +182,7 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		allowedMediaRoot: cfg.AllowedMediaRoot,
 		redactor:         redactor,
 		limiter:          limiter,
+		status:           ConnectionStatus{State: "disconnected", Since: time.Now().UTC()},
 		transcribeCfg:    transcribe.ConfigFromEnv(),
 	}, nil
 }
@@ -201,7 +220,11 @@ func (c *Client) QRChannel(ctx context.Context) (<-chan whatsmeow.QRChannelItem,
 // the local session. After this call, IsLoggedIn returns false and the next
 // Connect will start a fresh pairing flow.
 func (c *Client) Logout(ctx context.Context) error {
-	return c.wa.Logout(ctx)
+	if err := c.wa.Logout(ctx); err != nil {
+		return err
+	}
+	c.trackConnectionEvent(&events.LoggedOut{})
+	return nil
 }
 
 // ConnectOpts controls the behaviour of Connect.
@@ -323,6 +346,7 @@ func (c *Client) Disconnect() {
 	if c.wa != nil {
 		c.wa.Disconnect()
 	}
+	c.trackConnectionEvent(&events.Disconnected{})
 }
 
 // IsConnected reports whether the underlying whatsmeow client currently

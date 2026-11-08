@@ -24,6 +24,7 @@ func (c *Client) StartEventHandler() {
 		return
 	}
 	c.handlerID = c.wa.AddEventHandler(func(evt interface{}) {
+		c.trackConnectionEvent(evt)
 		switch v := evt.(type) {
 		case *events.Message:
 			c.handleMessage(v)
@@ -35,6 +36,11 @@ func (c *Client) StartEventHandler() {
 			c.log.Infof("Connected to WhatsApp")
 		case *events.LoggedOut:
 			c.log.Warnf("Device logged out, please scan QR code to log in again")
+		case *events.Disconnected, *events.StreamReplaced, *events.ClientOutdated,
+			*events.TemporaryBan, *events.KeepAliveTimeout, *events.ConnectFailure:
+			c.log.Warnf("WhatsApp connection event: %T", v)
+		case *events.KeepAliveRestored:
+			c.log.Infof("WhatsApp keepalive restored")
 		case *events.OfflineSyncPreview:
 			c.log.Infof("Offline sync starting - %d messages, %d receipts pending", v.Messages, v.Receipts)
 		case *events.OfflineSyncCompleted:

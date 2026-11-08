@@ -38,8 +38,14 @@ func runServe(storeDir string, redactor *security.Redactor, args []string) int {
 	fs.SetOutput(os.Stderr)
 	fs.StringVar(&addr, "addr", "", "HTTP bind address (default: 127.0.0.1:8765, env WHATSAPP_MCP_ADDR)")
 	fs.BoolVar(&allowRemote, "allow-remote", false, "allow binding to a non-loopback address")
+	fullHistoryFlag := registerFullHistory(fs)
 	fs.BoolVar(&readOnly, "read-only", readOnly, "exclude tools that send or mutate WhatsApp (env WHATSAPP_MCP_READ_ONLY)")
 	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	fullHistory, fullHistoryErr := resolveFullHistory(fs, *fullHistoryFlag, os.Getenv)
+	if fullHistoryErr != nil {
+		fmt.Fprintf(os.Stderr, "serve: %v\n", fullHistoryErr)
 		return 2
 	}
 
@@ -101,6 +107,7 @@ func runServe(storeDir string, redactor *security.Redactor, args []string) int {
 		Logger:           client.NewStderrLogger("Client", "INFO", false),
 		AllowedMediaRoot: allowedMediaRoot,
 		Redactor:         redactor,
+		FullHistory:      fullHistory,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "init client: %v\n", err)
