@@ -9,9 +9,9 @@ import (
 	"time"
 )
 
-// listMessageColumns is the 8-column projection shared by ListMessages and
+// listMessageColumns is the 10-column projection shared by ListMessages and
 // queryContextWindow.
-const listMessageColumns = "messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type"
+const listMessageColumns = "messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type, messages.edited_at IS NOT NULL, messages.revoked_at"
 
 // ListMessagesParams holds the filters accepted by ListMessages. Zero values
 // mean "unset" except for Limit, which defaults to 20 when <= 0.
@@ -258,7 +258,8 @@ func (s *Store) SearchContacts(ctx context.Context, query string) ([]Contact, er
 // windows from the same chat.
 func (s *Store) GetMessageContext(ctx context.Context, messageID string, before, after int) (*MessageContext, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.chat_jid, messages.media_type
+		SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.chat_jid, messages.media_type,
+		       messages.edited_at IS NOT NULL, messages.revoked_at
 		FROM messages
 		JOIN chats ON messages.chat_jid = chats.jid
 		WHERE messages.id = ?`, messageID)
@@ -273,8 +274,10 @@ func (s *Store) GetMessageContext(ctx context.Context, messageID string, before,
 		id        string
 		msgChat   string
 		mediaType sql.NullString
+		edited    bool
+		revokedAt sql.NullTime
 	)
-	if err := row.Scan(&ts, &sender, &chatName, &content, &isFromMe, &chatJID, &id, &msgChat, &mediaType); err != nil {
+	if err := row.Scan(&ts, &sender, &chatName, &content, &isFromMe, &chatJID, &id, &msgChat, &mediaType, &edited, &revokedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("message with ID %s not found", messageID)
 		}
@@ -290,7 +293,9 @@ func (s *Store) GetMessageContext(ctx context.Context, messageID string, before,
 		IsFromMe:  isFromMe,
 		MediaType: mediaType.String,
 		ChatName:  chatName.String,
+		Edited:    edited,
 	}
+	setRevoked(&target, revokedAt)
 	target.IsGroup = strings.HasSuffix(target.ChatJID, "@g.us")
 	target.SenderPhone = s.resolveSenderPhone(target.Sender)
 
@@ -384,7 +389,7 @@ func (s *Store) queryContextWindow(ctx context.Context, chatJID string, anchor t
 	return out, rows.Err()
 }
 
-// scanListMessageRow scans the 8-column projection used by list_messages and
+// scanListMessageRow scans the 10-column projection used by list_messages and
 // the context window queries.
 func (s *Store) scanListMessageRow(row interface {
 	Scan(dest ...any) error
@@ -398,8 +403,10 @@ func (s *Store) scanListMessageRow(row interface {
 		chatJID   string
 		id        string
 		mediaType sql.NullString
+		edited    bool
+		revokedAt sql.NullTime
 	)
-	if err := row.Scan(&ts, &sender, &chatName, &content, &isFromMe, &chatJID, &id, &mediaType); err != nil {
+	if err := row.Scan(&ts, &sender, &chatName, &content, &isFromMe, &chatJID, &id, &mediaType, &edited, &revokedAt); err != nil {
 		return Message{}, err
 	}
 	m := Message{
@@ -411,7 +418,9 @@ func (s *Store) scanListMessageRow(row interface {
 		IsFromMe:  isFromMe,
 		MediaType: mediaType.String,
 		ChatName:  chatName.String,
+		Edited:    edited,
 	}
+	setRevoked(&m, revokedAt)
 	m.IsGroup = strings.HasSuffix(m.ChatJID, "@g.us")
 	m.SenderPhone = s.resolveSenderPhone(m.Sender)
 	return m, nil
@@ -432,9 +441,10 @@ func (s *Store) resolveSenderPhone(sender string) string {
 	return sender
 }
 
-// chatSelectSQL returns the shared 6-column chat projection (jid, name,
-// last_message_time, plus the latest message's content/sender/is_from_me
-// when includeLastMessage) used by both ListChats and GetChat. alias
+// chatSelectSQL returns the shared 8-column chat projection (jid, name,
+// last_message_time, plus the latest message's content/sender/is_from_me and
+// edit/revoke markers when includeLastMessage) used by both ListChats and
+// GetChat. alias
 // qualifies the chat column references; pass "chats" for an unaliased FROM
 // clause (ListChats) or a short alias like "c" when the caller appends its
 // own WHERE clause on that alias (GetChat).
@@ -450,6 +460,8 @@ func chatSelectSQL(alias string, includeLastMessage bool) string {
 		%s.last_message_time,
 		NULL,
 		NULL,
+		NULL,
+		0,
 		NULL
 	FROM %s`, alias, alias, alias, from)
 	}
@@ -459,7 +471,9 @@ func chatSelectSQL(alias string, includeLastMessage bool) string {
 		%s.last_message_time,
 		latest_msg.content,
 		latest_msg.sender,
-		latest_msg.is_from_me
+		latest_msg.is_from_me,
+		latest_msg.edited_at IS NOT NULL,
+		latest_msg.revoked_at
 	FROM %s
 		LEFT JOIN messages AS latest_msg ON %s.jid = latest_msg.chat_jid
 		AND latest_msg.rowid = (
@@ -469,7 +483,7 @@ func chatSelectSQL(alias string, includeLastMessage bool) string {
 		)`, alias, alias, alias, from, alias, alias)
 }
 
-// scanChatRow scans the 6-column projection used by ListChats and GetChat.
+// scanChatRow scans the 8-column projection used by ListChats and GetChat.
 func scanChatRow(row interface {
 	Scan(dest ...any) error
 }) (Chat, error) {
@@ -480,20 +494,35 @@ func scanChatRow(row interface {
 		lastMessage  sql.NullString
 		lastSender   sql.NullString
 		lastIsFromMe sql.NullBool
+		lastEdited   bool
+		lastRevoked  sql.NullTime
 	)
-	if err := row.Scan(&jid, &name, &lastTime, &lastMessage, &lastSender, &lastIsFromMe); err != nil {
+	if err := row.Scan(&jid, &name, &lastTime, &lastMessage, &lastSender, &lastIsFromMe, &lastEdited, &lastRevoked); err != nil {
 		return Chat{}, err
 	}
 	c := Chat{
 		JID:          jid,
 		Name:         name.String,
-		LastMessage:  lastMessage.String,
 		LastSender:   lastSender.String,
 		LastIsFromMe: lastIsFromMe.Bool,
 	}
+	var revokedAt *time.Time
+	if lastRevoked.Valid {
+		at := lastRevoked.Time.UTC()
+		revokedAt = &at
+	}
+	c.LastMessage = formatMessageContent(lastMessage.String, lastEdited, lastRevoked.Valid, revokedAt)
 	if lastTime.Valid {
 		c.LastMessageTime = lastTime.Time
 	}
 	c.IsGroup = strings.HasSuffix(c.JID, "@g.us")
 	return c, nil
+}
+
+// setRevoked records a deletion for everyone read from messages.revoked_at.
+func setRevoked(m *Message, revokedAt sql.NullTime) {
+	if revokedAt.Valid {
+		at := revokedAt.Time.UTC()
+		m.Revoked, m.RevokedAt = true, &at
+	}
 }

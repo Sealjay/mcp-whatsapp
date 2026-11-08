@@ -19,17 +19,19 @@ import (
 
 const (
 	historyOwnPhone = "447700000009"
+	historyOwnLID   = "55443322"
 	historyTS       = uint64(1767268800) // 2026-01-01 12:00:00 UTC
 )
 
 // newHistoryTestClient returns a Client whose whatsmeow client is real but
-// never connected: its device carries only our own JID, which is all
-// handleHistorySync reads from it. Chats must be pre-seeded with names so
-// GetChatName never reaches the (absent) contact store or the network.
+// never connected: its device carries only our own phone JID and LID, which
+// is all handleHistorySync and ParseWebMessage read from it. Chats must be
+// pre-seeded with names so GetChatName never reaches the (absent) contact
+// store or the network.
 func newHistoryTestClient(t *testing.T, s *store.Store) *Client {
 	t.Helper()
 	own := types.NewADJID(historyOwnPhone, 0, 12)
-	device := &wmstore.Device{ID: &own}
+	device := &wmstore.Device{ID: &own, LID: types.NewJID(historyOwnLID, types.HiddenUserServer)}
 	c := newClientWithStore(t, s)
 	c.wa = whatsmeow.NewClient(device, NewStderrLogger("test", "ERROR", false))
 	return c
@@ -234,42 +236,100 @@ func TestHandleHistorySync_GroupParticipantResync(t *testing.T) {
 	}
 }
 
-func TestHandleHistorySync_SkipsEditsAndRevokes(t *testing.T) {
+func TestHandleHistorySync_AppliesEditsAndRevokes(t *testing.T) {
 	s := newTestStoreWithLIDMap(t, nil)
 	c := newHistoryTestClient(t, s)
 
-	const group = "123456789@g.us"
+	const (
+		group = "123456789@g.us"
+		bob   = "447700000002@s.whatsapp.net"
+		carol = "447700000003@s.whatsapp.net"
+	)
 	if err := s.StoreChat(group, "Project Team", time.Now()); err != nil {
 		t.Fatalf("seed chat: %v", err)
 	}
 
-	edit := &waProto.Message{EditedMessage: &waProto.FutureProofMessage{Message: &waProto.Message{
-		ProtocolMessage: &waProto.ProtocolMessage{
-			Type:          waProto.ProtocolMessage_MESSAGE_EDIT.Enum(),
-			Key:           historyKey(group, "orig-1", false, "447700000002@s.whatsapp.net"),
-			EditedMessage: &waProto.Message{Conversation: proto.String("edited text")},
-		},
-	}}}
-	revoke := &waProto.Message{ProtocolMessage: &waProto.ProtocolMessage{
-		Type: waProto.ProtocolMessage_REVOKE.Enum(),
-		Key:  historyKey(group, "orig-1", false, "447700000002@s.whatsapp.net"),
-	}}
+	edit := func(key *waProto.MessageKey, body string) *waProto.Message {
+		return &waProto.Message{EditedMessage: &waProto.FutureProofMessage{Message: &waProto.Message{
+			ProtocolMessage: &waProto.ProtocolMessage{
+				Type:          waProto.ProtocolMessage_MESSAGE_EDIT.Enum(),
+				Key:           key,
+				EditedMessage: &waProto.Message{Conversation: proto.String(body)},
+			},
+		}}}
+	}
+	revoke := func(key *waProto.MessageKey) *waProto.Message {
+		return &waProto.Message{ProtocolMessage: &waProto.ProtocolMessage{Type: waProto.ProtocolMessage_REVOKE.Enum(), Key: key}}
+	}
+	at := func(m *waProto.HistorySyncMsg, offset uint64) *waProto.HistorySyncMsg {
+		m.Message.MessageTimestamp = proto.Uint64(historyTS + offset)
+		return m
+	}
 
+	// History arrives newest first, so the edits and the revoke precede the
+	// messages they change. Bob's own edit names his message as from-me (as
+	// sent) or by participant; both apply. Carol's forgeries do not.
 	runHistorySync(c, group,
-		historyMsg(historyKey(group, "orig-1", false, "447700000002@s.whatsapp.net"), &waProto.Message{Conversation: proto.String("original text")}),
-		historyMsg(historyKey(group, "edit-1", false, "447700000002@s.whatsapp.net"), edit),
-		historyMsg(historyKey(group, "revoke-1", false, "447700000002@s.whatsapp.net"), revoke),
+		at(historyMsg(historyKey(group, "setting-1", false, bob), &waProto.Message{ProtocolMessage: &waProto.ProtocolMessage{
+			Type: waProto.ProtocolMessage_EPHEMERAL_SETTING.Enum(), EphemeralExpiration: proto.Uint32(86400),
+		}}), 50),
+		at(historyMsg(historyKey(group, "forge-1", false, carol), edit(historyKey(group, "orig-1", true, ""), "carol was here")), 40),
+		at(historyMsg(historyKey(group, "forge-2", false, carol), revoke(historyKey(group, "orig-3", true, ""))), 40),
+		at(historyMsg(historyKey(group, "revoke-1", false, bob), revoke(historyKey(group, "orig-2", false, bob))), 30),
+		at(historyMsg(historyKey(group, "edit-2", false, bob), edit(historyKey(group, "orig-1", false, bob), "edited twice")), 20),
+		at(historyMsg(historyKey(group, "edit-1", false, bob), edit(historyKey(group, "orig-1", true, ""), "edited once")), 10),
+		historyMsg(historyKey(group, "orig-3", false, bob), &waProto.Message{Conversation: proto.String("third")}),
+		historyMsg(historyKey(group, "orig-2", false, bob), &waProto.Message{Conversation: proto.String("to be deleted")}),
+		historyMsg(historyKey(group, "orig-1", false, bob), &waProto.Message{Conversation: proto.String("original text")}),
 	)
 
-	// The edit must not overwrite the original row nor be stored under its
-	// own ID.
-	if r := mustStored(t, s, "orig-1"); r.content != "original text" {
-		t.Errorf("orig-1 content = %q, want the original text", r.content)
+	if r := mustStored(t, s, "orig-1"); r.content != "edited twice" {
+		t.Errorf("orig-1 content = %q, want the latest edit", r.content)
 	}
-	for _, id := range []string{"edit-1", "revoke-1"} {
+	if r := mustStored(t, s, "orig-2"); r.content != "to be deleted" || !storedRevoked(t, s, "orig-2") {
+		t.Errorf("orig-2 = %+v, want it marked deleted with its text kept", r)
+	}
+	if r := mustStored(t, s, "orig-3"); r.content != "third" || storedRevoked(t, s, "orig-3") {
+		t.Errorf("orig-3 = %+v, Carol must not revoke Bob's message", r)
+	}
+	for _, id := range []string{"edit-1", "edit-2", "revoke-1", "forge-1", "forge-2", "setting-1"} {
 		if r, ok := queryStored(t, s, id); ok {
-			t.Errorf("%s should be skipped, stored as %+v", id, r)
+			t.Errorf("%s should not be stored as a message, stored as %+v", id, r)
 		}
+	}
+}
+
+func TestHandleHistorySync_RevokeRemainsMarkedAfterRedelivery(t *testing.T) {
+	s := newTestStoreWithLIDMap(t, nil)
+	c := newHistoryTestClient(t, s)
+
+	const (
+		group = "123456789@g.us"
+		bob   = "447700000002@s.whatsapp.net"
+		id    = "redelivered-after-revoke"
+		body  = "archived message text"
+	)
+	if err := s.StoreChat(group, "Project Team", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	original := historyMsg(historyKey(group, id, false, bob), &waProto.Message{Conversation: proto.String(body)})
+	runHistorySync(c, group, original)
+
+	revoke := &waProto.Message{ProtocolMessage: &waProto.ProtocolMessage{
+		Type: waProto.ProtocolMessage_REVOKE.Enum(),
+		Key:  historyKey(group, id, false, bob),
+	}}
+	runHistorySync(c, group, historyMsg(historyKey(group, "revoke-event", false, bob), revoke))
+	runHistorySync(c, group, original)
+
+	r := mustStored(t, s, id)
+	if r.content != body || !storedRevoked(t, s, id) {
+		t.Fatalf("redelivered message = %+v, want original content retained and revoke marker preserved", r)
+	}
+	msgContext, err := s.GetMessageContext(context.Background(), id, 0, 0)
+	if err != nil || msgContext.Message.Content != body || !msgContext.Message.Revoked || msgContext.Message.RevokedAt == nil {
+		t.Fatalf("redelivered message context = %+v, %v; want retained content and revoked metadata", msgContext, err)
 	}
 }
 
@@ -375,4 +435,14 @@ func TestCombinedHistoryCaptionsContactCardsAndRedaction(t *testing.T) {
 			t.Fatalf("private content in non-debug logs: %s", logs.String())
 		}
 	}
+}
+
+// storedRevoked reports whether the cached row is marked deleted for everyone.
+func storedRevoked(t *testing.T, s *store.Store, id string) bool {
+	t.Helper()
+	var revoked bool
+	if err := s.DB().QueryRow("SELECT revoked_at IS NOT NULL FROM messages WHERE id = ?", id).Scan(&revoked); err != nil {
+		t.Fatalf("read %s: %v", id, err)
+	}
+	return revoked
 }

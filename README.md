@@ -113,6 +113,14 @@ Set `TOKEN` to your secret bearer token. `-allow-remote` activates token authent
 
 For an archive or summarisation client, start with `./bin/whatsapp-mcp serve -read-only`. Downloads, history requests and metadata queries remain available and can write the local cache. Transcription is excluded because it uploads private audio to another service. Labels are off by default; when enabled, all four label tools are available in read-only mode. Read-only mode exposes 15 tools by default or 19 with labels enabled, out of 43 default tools or 47 with labels. Pairing and reset remain operator actions through `/pair`, and read-only mode does not restrict which cached data a client can read. `-read-only=false` overrides an enabled environment setting; invalid environment values stop startup rather than silently enabling mutation tools.
 
+### Edits and deletions
+
+The cache follows edits and deletions for everyone, whether they arrive live, in history sync, or are made through `edit_message` / `delete_message`:
+
+- **Edits** replace the cached text (or media caption) and keep the message's ID and timestamp. `list_messages` marks the row `[edited]` and searches match the new text.
+- **Deletions for everyone** mark the row deleted and record when: `list_messages` shows `[deleted <time> UTC]` before the text, and `get_message_context` adds `revoked: true` and `revoked_at`. The cache never removes the message: its text, media fields, poll data and any downloaded copy are kept, and it still matches searches.
+- Only the original sender's edits and deletions are applied; a deletion of someone else's message is applied only in a group, from an admin. Edits and deletions of messages that are not cached are ignored.
+
 ## Running the daemon
 
 Events reach SQLite **only while `serve` runs**. After downtime, whatsmeow backfills via `HistorySync` within WhatsApp's own retention window; anything older is lost, and `request_sync` backfills one chat on demand. A `flock(2)` on `store/.lock` allows one `serve` (or `login`) per store.

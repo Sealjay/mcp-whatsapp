@@ -91,6 +91,45 @@ func TestStorePollMetadata_NoOpWhenNoMessageRow(t *testing.T) {
 	}
 }
 
+func TestRevokedPollKeepsArchiveWithoutAcceptingHistoryUpdates(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	const chat, id, sender, voter = "123456789@g.us", "poll-revoked", "447700000001", "447700000002@s.whatsapp.net"
+	ts := time.Date(2026, 2, 1, 9, 0, 0, 0, time.UTC)
+
+	if err := s.StoreMessage(ctx, Message{
+		ID: id, ChatJID: chat, Sender: sender, Content: "[poll] lunch?", Timestamp: ts,
+	}, nil, nil, nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.StorePollMetadata(ctx, id, chat, []string{"sushi", "pizza"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.StorePollVote(ctx, id, chat, voter, []string{"sushi"}, ts); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.ApplyRevoke(ctx, chat, id, Author{Senders: []string{sender}}, ts.Add(time.Minute)); err != nil || !ok {
+		t.Fatalf("ApplyRevoke = %v, %v; want applied", ok, err)
+	}
+
+	if err := s.StorePollMetadata(ctx, id, chat, []string{"history update"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.StorePollVote(ctx, id, chat, voter, []string{"pizza"}, ts.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	opts, results, err := s.GetPollResults(ctx, id, chat)
+	if err != nil {
+		t.Fatalf("GetPollResults: %v", err)
+	}
+	if len(opts) != 2 || opts[0] != "sushi" || opts[1] != "pizza" {
+		t.Fatalf("archived poll options = %v; want [sushi pizza]", opts)
+	}
+	if len(results) != 2 || results[0] != (PollResult{Option: "sushi", Votes: 1}) || results[1] != (PollResult{Option: "pizza", Votes: 0}) {
+		t.Fatalf("archived poll results = %+v; want original vote unchanged", results)
+	}
+}
+
 func TestStorePollVote_Replacement(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()

@@ -14,10 +14,9 @@ type PollResult struct {
 	Votes  int    `json:"votes"`
 }
 
-// StorePollMetadata attaches option names to an existing poll message row so
-// incoming vote SHA-256 hashes can be reversed. If the message row does not
-// exist it is a silent no-op — StoreMessage owns the "no empty content + no
-// media = no row" invariant, and we refuse to punch through it here.
+// StorePollMetadata attaches option names to an active poll message row so
+// incoming vote SHA-256 hashes can be reversed. Missing or revoked messages
+// are a silent no-op.
 func (s *Store) StorePollMetadata(ctx context.Context, messageID, chatJID string, options []string) error {
 	if messageID == "" || chatJID == "" {
 		return fmt.Errorf("store poll metadata: message_id and chat_jid required")
@@ -27,7 +26,7 @@ func (s *Store) StorePollMetadata(ctx context.Context, messageID, chatJID string
 		return fmt.Errorf("marshal poll options: %w", err)
 	}
 	if _, err := s.db.ExecContext(ctx,
-		"UPDATE messages SET poll_options_json = ? WHERE id = ? AND chat_jid = ?",
+		"UPDATE messages SET poll_options_json = ? WHERE id = ? AND chat_jid = ? AND revoked_at IS NULL",
 		string(payload), messageID, chatJID,
 	); err != nil {
 		return fmt.Errorf("update poll_options_json: %w", err)
@@ -85,12 +84,15 @@ func (s *Store) StorePollVote(ctx context.Context, pollMessageID, pollChatJID, v
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO poll_votes
 		 (poll_message_id, poll_chat_jid, voter_jid, selected_options_json, timestamp)
-		 VALUES (?, ?, ?, ?, ?)
+		 SELECT ?, ?, ?, ?, ?
+		 WHERE NOT EXISTS (
+		     SELECT 1 FROM messages WHERE id = ? AND chat_jid = ? AND revoked_at IS NOT NULL
+		 )
 		 ON CONFLICT (poll_message_id, poll_chat_jid, voter_jid) DO UPDATE SET
 		     selected_options_json = excluded.selected_options_json,
 		     timestamp = excluded.timestamp
 		 WHERE excluded.timestamp >= poll_votes.timestamp`,
-		pollMessageID, pollChatJID, voterJID, string(payload), timestamp,
+		pollMessageID, pollChatJID, voterJID, string(payload), timestamp, pollMessageID, pollChatJID,
 	)
 	if err != nil {
 		return fmt.Errorf("insert poll vote: %w", err)
