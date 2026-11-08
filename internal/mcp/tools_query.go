@@ -69,7 +69,7 @@ func (s *Server) registerListMessages() {
 		mcp.WithString("before", mcp.Description("ISO-8601 UTC upper bound on message timestamp (inclusive)")),
 		mcp.WithString("sender_phone_number", mcp.Description("filter to messages sent by this phone or JID ("+jidDesc+")")),
 		mcp.WithString("chat_jid", mcp.Description("filter to messages in this chat ("+jidDesc+")")),
-		mcp.WithString("query", mcp.Description("case-insensitive substring to match within message body")),
+		mcp.WithString("query", mcp.Description("case-insensitive substring to match within message body (text, or the caption of an image, video or document)")),
 		mcp.WithNumber("limit", mcp.DefaultNumber(20), mcp.Description("max messages to return (default 20, capped at 100 server-side)")),
 		mcp.WithNumber("page", mcp.DefaultNumber(0), mcp.Description("zero-based page index for paging through results (default 0)")),
 		mcp.WithBoolean("include_context", mcp.DefaultBool(true), mcp.Description("if true, attach a few surrounding messages to each match (defaults to true)")),
@@ -260,7 +260,7 @@ func (s *Server) registerIsOnWhatsApp() {
 
 func (s *Server) registerGetStatus() {
 	tool := mcp.NewTool("get_status",
-		mcp.WithDescription("Report whether the embedded WhatsApp bridge is connected and which account it is paired with. Read-only; no side effects. Call this first when other tools fail with auth or connection errors. Returns a JSON object `{connected, paired, own_jid?, own_phone?, hint?}` — `hint` includes the URL of the local pairing UI when not yet paired."),
+		mcp.WithDescription("Report whether the embedded WhatsApp bridge is connected, which account it is paired with, and whether read-only tool restriction is active. Read-only; no side effects; call this first when other tools fail with auth or connection errors. Returns a JSON object `{connected, paired, read_only, own_jid?, own_phone?, hint?}`; `hint` includes the URL of the local pairing UI when not yet paired."),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
@@ -269,6 +269,7 @@ func (s *Server) registerGetStatus() {
 	s.mcp.AddTool(tool, func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		status := map[string]any{
 			"connected": s.client.IsConnected(),
+			"read_only": s.readOnly,
 		}
 		if wa := s.client.WA(); wa != nil && wa.Store != nil && wa.Store.ID != nil {
 			status["own_jid"] = wa.Store.ID.String()

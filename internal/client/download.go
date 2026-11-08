@@ -137,7 +137,7 @@ func (c *Client) download(ctx context.Context, messageID, chatJID, outputPath st
 		if err := validateCachedMedia(localPath, fileLength, fileSHA256); err == nil {
 			return finalizeDownload(localPath, absPath, resolvedOutput, mediaType, filename)
 		} else {
-			c.log.Warnf("Ignoring invalid cached media for message %s: %v", c.redactor.MsgID(messageID), err)
+			c.log.Warnf("Ignoring invalid cached media for message %s: %s", c.redactor.MsgID(messageID), c.redactor.Err(err))
 		}
 	} else if !errors.Is(statErr, os.ErrNotExist) {
 		return DownloadResult{Success: false, Message: fmt.Sprintf("failed to inspect media cache: %v", statErr)}
