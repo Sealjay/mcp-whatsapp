@@ -26,6 +26,7 @@ func TestConnectionStatusEventsAndRecovery(t *testing.T) {
 		{&events.Disconnected{}, "logged_out"},
 		{&events.Connected{}, "connected"},
 	}
+
 	for _, tc := range cases {
 		c.trackConnectionEvent(tc.event)
 		status := c.ConnectionStatus()
@@ -37,5 +38,14 @@ func TestConnectionStatusEventsAndRecovery(t *testing.T) {
 	c.trackConnectionEvent(&events.Connected{})
 	if after := c.ConnectionStatus(); after.Since != before.Since {
 		t.Fatal("duplicate event changed state timestamp")
+	}
+}
+
+func TestDisconnectUpdatesConnectionStatus(t *testing.T) {
+	c := &Client{}
+	c.trackConnectionEvent(&events.Connected{})
+	c.Disconnect()
+	if got := c.ConnectionStatus().State; got != "disconnected" {
+		t.Fatalf("local disconnect left state %q", got)
 	}
 }
