@@ -1,5 +1,7 @@
 # Design: 8 follow-ups from the review
 
+> Historical planning record (2026-04-18). This document records decisions and proposed work from that date. Implementation status, tool counts, and file references may have changed; see [README](../../../README.md) and [AGENTS.md](../../../AGENTS.md) for current behaviour.
+
 Date: 2026-04-18
 Status: Approved (YOLO, breaking changes OK)
 
