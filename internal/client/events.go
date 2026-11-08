@@ -31,11 +31,17 @@ func (c *Client) StartEventHandler() {
 			c.handleHistorySync(v)
 		case *events.Connected:
 			c.log.Infof("Connected to WhatsApp")
-			go c.maybeInitialLabelSync()
+			if c.labelsEnabled {
+				go c.maybeInitialLabelSync()
+			}
 		case *events.LabelEdit:
-			c.handleLabelEdit(v)
+			if c.labelsEnabled {
+				c.handleLabelEdit(v)
+			}
 		case *events.LabelAssociationChat:
-			c.handleLabelAssociationChat(v)
+			if c.labelsEnabled {
+				c.handleLabelAssociationChat(v)
+			}
 		case *events.LoggedOut:
 			c.log.Warnf("Device logged out, please scan QR code to log in again")
 		case *events.OfflineSyncPreview:

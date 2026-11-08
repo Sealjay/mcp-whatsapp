@@ -40,6 +40,7 @@ Serve-specific flags (after 'serve'):
   -addr host:port   HTTP bind address (default: 127.0.0.1:8765, env WHATSAPP_MCP_ADDR)
   -allow-remote     Allow binding to a non-loopback address (dangerous)
   -read-only        Exclude WhatsApp mutation tools (env WHATSAPP_MCP_READ_ONLY)
+  -enable-labels    Enable WhatsApp Business label sync and tools (env WHATSAPP_MCP_LABELS)
 `
 
 func main() {

@@ -50,7 +50,7 @@ make upgrade-check
 
 ## Feature implementation map
 
-The MCP tool surface has 42 tools registered from `internal/mcp/tools.go`, `tools_groups.go`, `tools_media.go`, and `tools_privacy.go`.
+The MCP tool surface has 42 tools by default. Four WhatsApp Business label tools are registered only when `serve -enable-labels` or `WHATSAPP_MCP_LABELS=1` is set.
 
 1. **LID resolution** — `internal/store/lid.go` normalises `@lid` JIDs to real phone numbers via `whatsmeow_lid_map`.
 2. **Sent-message storage** — `internal/client/send.go` persists outgoing messages after `SendMessage` returns.
@@ -61,6 +61,7 @@ The MCP tool surface has 42 tools registered from `internal/mcp/tools.go`, `tool
 7. **Blocklist** — `internal/client/features_blocklist.go` wraps `GetBlocklist` and `UpdateBlocklist`. Every call fetches the full list; it does not cache a `dhash`. `get_blocklist` retains its `DHash`/`JIDs`/`Contacts` JSON shape; phone numbers come from `BlocklistItem.PN` or fall back to the LID map.
 8. **Polls, contact cards, and view-once** — poll and contact-card sends live in `internal/client/features_media.go`; polls, votes, and contact cards use the rate-limited `Client.sendMessage`. vCard 3.0 synthesis is in `internal/client/vcard.go`; `ViewOnce` is plumbed through `SendMediaOptions` in `internal/client/send.go`. `SendPoll` uses `wa.BuildPollCreation` to attach the required `MessageSecret`. Vote ingest and tally are in `internal/client/events.go::handlePollVote` and `internal/store/poll.go`.
 9. **Presence, privacy, and status message** — `internal/client/features_privacy.go` implements own availability, privacy settings with strict enum validation, and the "About" status message.
+10. **WhatsApp Business labels** — `internal/client/labels.go` persists label edits and chat associations; full-sync events are enabled once during client construction when the opt-in flag is set. The four read-only tools live in `internal/mcp/tools_labels.go`.
 
 ## MCP tool descriptions and Glama
 

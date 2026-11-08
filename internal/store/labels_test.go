@@ -16,6 +16,17 @@ func openLabelsStore(t *testing.T) *Store {
 	return s
 }
 
+func TestLabels_EmptyFirstUse(t *testing.T) {
+	s := openLabelsStore(t)
+	labels, err := s.ListLabels(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if labels == nil || len(labels) != 0 {
+		t.Fatalf("first-use labels = %#v, want an empty array", labels)
+	}
+}
+
 func TestLabels_RoundTrip(t *testing.T) {
 	s := openLabelsStore(t)
 	ctx := context.Background()

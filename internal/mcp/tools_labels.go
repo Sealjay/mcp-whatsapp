@@ -103,7 +103,7 @@ func (s *Server) registerGetChatLabels() {
 func (s *Server) registerResyncLabels() {
 	tool := mcp.NewTool("resync_labels",
 		mcp.WithDescription("Force a full re-fetch of the account's app state from WhatsApp so labels and label assignments are re-captured into the local cache. Does not change anything on the account and is idempotent, but can take several seconds and needs a live connection. Use it when list_labels is empty or looks stale. Returns the plain-text string `Labels resynced`."),
-		mcp.WithReadOnlyHintAnnotation(false),
+		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
 		mcp.WithOpenWorldHintAnnotation(true),

@@ -39,16 +39,14 @@ func (c *Client) handleLabelAssociationChat(v *events.LabelAssociationChat) {
 }
 
 // ResyncLabels forces a full app-state fetch so labels that were synced before
-// this feature existed are re-delivered and captured. Events are only emitted
-// for a full sync when EmitAppStateEventsOnFullSync is set, so it is enabled
-// just for the duration of the fetch.
+// this feature existed are re-delivered and captured.
 func (c *Client) ResyncLabels(ctx context.Context) error {
+	if !c.labelsEnabled {
+		return errors.New("label support is disabled")
+	}
 	if !c.wa.IsConnected() {
 		return errors.New("not connected to WhatsApp")
 	}
-	prev := c.wa.EmitAppStateEventsOnFullSync
-	c.wa.EmitAppStateEventsOnFullSync = true
-	defer func() { c.wa.EmitAppStateEventsOnFullSync = prev }()
 
 	var errs []string
 	for _, name := range []appstate.WAPatchName{appstate.WAPatchRegular, appstate.WAPatchRegularHigh, appstate.WAPatchRegularLow} {
