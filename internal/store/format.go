@@ -32,11 +32,6 @@ func (s *Store) FormatMessage(ctx context.Context, m Message, showChatInfo bool)
 	if m.MediaType != "" {
 		contentPrefix = "[" + m.MediaType + " - Message ID: " + m.ID + " - Chat JID: " + m.ChatJID + "] "
 	}
-	if m.Revoked && m.Sender == "" {
-		b.WriteString(formatMessageContent(m.Content, m.Edited, m.Revoked, m.RevokedAt))
-		b.WriteString("\n")
-		return b.String()
-	}
 
 	var senderName string
 	if m.IsFromMe {

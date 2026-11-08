@@ -2,7 +2,6 @@ package client
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"time"
 
@@ -80,8 +79,8 @@ func (c *Client) messageChangeOf(ctx context.Context, m *waProto.Message, evt *e
 
 // applyChange applies an edit or revoke to the cached original in chatJID
 // (the normalised form of chat). It changes only a message the changer may
-// change (see changeAuthor); unknown edits are ignored, while an unknown
-// revoke creates a tombstone to prevent later history sync from restoring it.
+// change (see changeAuthor); edits and revokes of messages that are not
+// cached are ignored, as the original's timestamp is unknown.
 func (c *Client) applyChange(ctx context.Context, chatJID string, chat types.JID, who changer, ch messageChange) {
 	kind := "edit"
 	if ch.revoke {
@@ -132,21 +131,8 @@ func (c *Client) changeAuthor(ctx context.Context, chat types.JID, who changer, 
 		own.Senders = c.senderUsers(who.jids...)
 	}
 	participant := ch.target.GetParticipant()
-	if !ch.revoke {
+	if !ch.revoke || ch.target.GetFromMe() || participant == "" {
 		return own, true
-	}
-	if ch.target.GetFromMe() {
-		original := store.Author{FromMe: true}
-		if who.fromMe {
-			return original, true
-		}
-		return store.Author{}, false
-	}
-	if participant == "" {
-		if chat.Server != types.GroupServer && !who.fromMe {
-			return own, true
-		}
-		return store.Author{}, false
 	}
 	original := c.authorOf(participant)
 	if sameAuthor(original, own) {
@@ -230,30 +216,10 @@ func (c *Client) isGroupAdmin(ctx context.Context, group types.JID, ids ...types
 	return p != nil && (p.IsAdmin || p.IsSuperAdmin)
 }
 
-// revoke removes a deleted message's cached payload and derived data while
-// preserving a tombstone against later history redelivery.
+// revoke marks a cached message deleted for everyone. The row, its text and
+// its media are kept; only the deletion and its time are recorded.
 func (c *Client) revoke(ctx context.Context, chatJID, id string, author store.Author, at time.Time) (bool, error) {
-	// Match TranscribeAudio's lock order. No transcription may finish and
-	// restore a transcript after this revoke has committed.
-	c.transcribeMu.Lock()
-	defer c.transcribeMu.Unlock()
-	c.mediaMu.Lock()
-	defer c.mediaMu.Unlock()
-
-	applied, err := c.store.ApplyRevoke(ctx, chatJID, id, author, at)
-	if err != nil {
-		return false, err
-	}
-	revoked, err := c.store.IsRevoked(ctx, chatJID, id)
-	if err != nil {
-		return applied, err
-	}
-	if revoked {
-		if err := c.store.RemoveCachedMedia(chatJID, id); err != nil {
-			return applied, fmt.Errorf("remove revoked media cache: %w", err)
-		}
-	}
-	return applied, nil
+	return c.store.ApplyRevoke(ctx, chatJID, id, author, at)
 }
 
 // editedText returns the text of an edited message: its body or, for media,

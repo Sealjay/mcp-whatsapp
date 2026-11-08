@@ -110,7 +110,7 @@ func Open(dir string) (*Store, error) {
 	msgPath := filepath.Join(dir, "messages.db")
 	waPath := filepath.Join(dir, "whatsapp.db")
 
-	db, err := sql.Open("sqlite3", "file:"+msgPath+"?_foreign_keys=on&_journal_mode=WAL&_busy_timeout=5000&_secure_delete=on")
+	db, err := sql.Open("sqlite3", "file:"+msgPath+"?_foreign_keys=on&_journal_mode=WAL&_busy_timeout=5000")
 	if err != nil {
 		return nil, fmt.Errorf("open messages db: %w", err)
 	}
@@ -146,12 +146,7 @@ func Open(dir string) (*Store, error) {
 		return nil, fmt.Errorf("chmod whatsapp.db: %w", err)
 	}
 
-	s := &Store{db: db, whatsmeowDB: waDB, dir: dir}
-	if err := s.purgeLegacyRevokedData(context.Background()); err != nil {
-		_ = s.Close()
-		return nil, fmt.Errorf("purge revoked cache data: %w", err)
-	}
-	return s, nil
+	return &Store{db: db, whatsmeowDB: waDB, dir: dir}, nil
 }
 
 // DB returns the underlying message database handle (tests only).
@@ -230,7 +225,7 @@ func (s *Store) StoreMediaInfo(id, chatJID, url, directPath string, mediaKey, fi
 func (s *Store) GetMediaInfo(id, chatJID string) (mediaType, filename, url, directPath string, mediaKey, fileSHA256, fileEncSHA256 []byte, fileLength uint64, err error) {
 	var dp sql.NullString
 	err = s.db.QueryRow(
-		"SELECT media_type, filename, url, direct_path, media_key, file_sha256, file_enc_sha256, file_length FROM messages WHERE id = ? AND chat_jid = ? AND revoked_at IS NULL",
+		"SELECT media_type, filename, url, direct_path, media_key, file_sha256, file_enc_sha256, file_length FROM messages WHERE id = ? AND chat_jid = ?",
 		id, chatJID,
 	).Scan(&mediaType, &filename, &url, &dp, &mediaKey, &fileSHA256, &fileEncSHA256, &fileLength)
 	directPath = dp.String

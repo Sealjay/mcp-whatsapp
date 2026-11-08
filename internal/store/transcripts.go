@@ -37,11 +37,8 @@ type Transcript struct {
 func (s *Store) GetTranscript(ctx context.Context, messageID, chatJID string) (*Transcript, error) {
 	var t Transcript
 	err := s.db.QueryRowContext(ctx, `
-		SELECT transcripts.message_id, transcripts.chat_jid, transcripts.text,
-		       transcripts.language, transcripts.model, transcripts.duration_s, transcripts.created_at
-		FROM transcripts
-		JOIN messages ON messages.id = transcripts.message_id AND messages.chat_jid = transcripts.chat_jid
-		WHERE transcripts.message_id = ? AND transcripts.chat_jid = ? AND messages.revoked_at IS NULL`, messageID, chatJID).
+		SELECT message_id, chat_jid, text, language, model, duration_s, created_at
+		FROM transcripts WHERE message_id = ? AND chat_jid = ?`, messageID, chatJID).
 		Scan(&t.MessageID, &t.ChatJID, &t.Text, &t.Language, &t.Model, &t.Duration, &t.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -57,25 +54,15 @@ func (s *Store) PutTranscript(ctx context.Context, t Transcript) error {
 	if t.CreatedAt.IsZero() {
 		t.CreatedAt = time.Now().UTC()
 	}
-	res, err := s.db.ExecContext(ctx, `
+	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO transcripts (message_id, chat_jid, text, language, model, duration_s, created_at)
-		SELECT ?, ?, ?, ?, ?, ?, ?
-		WHERE EXISTS (
-			SELECT 1 FROM messages
-			WHERE id = ? AND chat_jid = ? AND revoked_at IS NULL
-		)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(message_id, chat_jid) DO UPDATE SET
 			text = excluded.text, language = excluded.language, model = excluded.model,
 			duration_s = excluded.duration_s, created_at = excluded.created_at`,
-		t.MessageID, t.ChatJID, t.Text, t.Language, t.Model, t.Duration, t.CreatedAt,
-		t.MessageID, t.ChatJID)
+		t.MessageID, t.ChatJID, t.Text, t.Language, t.Model, t.Duration, t.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("put transcript: %w", err)
-	}
-	if n, err := res.RowsAffected(); err != nil {
-		return fmt.Errorf("put transcript: count affected rows: %w", err)
-	} else if n == 0 {
-		return fmt.Errorf("put transcript: message is missing or revoked")
 	}
 	return nil
 }

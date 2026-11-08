@@ -245,8 +245,8 @@ func TestHandleHistorySync_AppliesEditsAndRevokes(t *testing.T) {
 	if r := mustStored(t, s, "orig-1"); r.content != "edited twice" {
 		t.Errorf("orig-1 content = %q, want the latest edit", r.content)
 	}
-	if r := mustStored(t, s, "orig-2"); r.content != "" || !storedRevoked(t, s, "orig-2") {
-		t.Errorf("orig-2 = %+v, want a content-free deletion tombstone", r)
+	if r := mustStored(t, s, "orig-2"); r.content != "to be deleted" || !storedRevoked(t, s, "orig-2") {
+		t.Errorf("orig-2 = %+v, want it marked deleted with its text kept", r)
 	}
 	if r := mustStored(t, s, "orig-3"); r.content != "third" || storedRevoked(t, s, "orig-3") {
 		t.Errorf("orig-3 = %+v, Carol must not revoke Bob's message", r)
@@ -255,33 +255,6 @@ func TestHandleHistorySync_AppliesEditsAndRevokes(t *testing.T) {
 		if r, ok := queryStored(t, s, id); ok {
 			t.Errorf("%s should not be stored as a message, stored as %+v", id, r)
 		}
-	}
-}
-
-func TestHandleHistorySync_RevokeTombstoneBlocksLaterRedelivery(t *testing.T) {
-	s := newTestStoreWithLIDMap(t, nil)
-	c := newHistoryTestClient(t, s)
-
-	const (
-		group = "123456789@g.us"
-		bob   = "447700000002@s.whatsapp.net"
-		id    = "revoke-before-history"
-	)
-	if err := s.StoreChat(group, "Project Team", time.Now()); err != nil {
-		t.Fatal(err)
-	}
-	revoke := &waProto.Message{ProtocolMessage: &waProto.ProtocolMessage{
-		Type: waProto.ProtocolMessage_REVOKE.Enum(),
-		Key:  historyKey(group, id, false, bob),
-	}}
-	runHistorySync(c, group, historyMsg(historyKey(group, "revoke-event", false, bob), revoke))
-
-	runHistorySync(c, group, historyMsg(historyKey(group, id, false, bob), &waProto.Message{
-		Conversation: proto.String("late history must not restore this"),
-	}))
-	r := mustStored(t, s, id)
-	if r.content != "" || !storedRevoked(t, s, id) {
-		t.Fatalf("late history redelivery = %+v; want an empty revoke tombstone", r)
 	}
 }
 

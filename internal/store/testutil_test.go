@@ -46,10 +46,6 @@ func openTestStore(t *testing.T) *Store {
 		db.Close()
 		t.Fatalf("apply seed: %v", err)
 	}
-	if _, err := db.Exec(transcriptsSchema); err != nil {
-		db.Close()
-		t.Fatalf("apply transcript schema: %v", err)
-	}
 
 	// A second handle to the same shared-cache DB, playing the role of
 	// whatsmeowDB. LID lookups hit the same underlying tables.
