@@ -100,7 +100,7 @@ After the release changes have merged to `main`, cut a release from a clean, up-
 1. Determine the bump from commits since the latest tag: breaking changes require major; a new feature or tool requires minor; otherwise use patch. An explicit `major`, `minor`, or `patch` selection overrides automatic classification.
 2. Run `make lint` and `make test`; stop if either fails.
 3. Create and push the matching `vMAJOR.MINOR.PATCH` tag.
-4. Create the GitHub release with generated notes, for example `gh release create vX.Y.Z --generate-notes`.
+4. Create the GitHub release with generated notes, for example `github-account-route gh release create vX.Y.Z --generate-notes`.
 5. Report the version, release URL, and a one-line summary.
 
 Do not push feature work directly to `main`; the pull request flow above lands the release changes before tagging.
