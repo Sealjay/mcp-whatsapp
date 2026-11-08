@@ -3,8 +3,12 @@ package client
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,7 +22,7 @@ const trJID, trMsg = "447700000123@s.whatsapp.net", "AUDIO-1"
 
 // transcribeFixture builds a client whose store holds one downloadable audio
 // message and whose speech-to-text call is stubbed.
-func transcribeFixture(t *testing.T, mediaType string) (*Client, *int) {
+func transcribeFixture(t *testing.T, mediaType string, audio ...[]byte) (*Client, *int) {
 	t.Helper()
 	t.Chdir(t.TempDir())
 	s, err := store.Open("./store")
@@ -27,6 +31,9 @@ func transcribeFixture(t *testing.T, mediaType string) (*Client, *int) {
 	}
 	t.Cleanup(func() { s.Close() })
 	payload := []byte("fake-audio-bytes")
+	if len(audio) > 0 {
+		payload = audio[0]
+	}
 	digest := sha256.Sum256(payload)
 	if err := s.StoreChat(trJID, "Test", time.Now().UTC()); err != nil {
 		t.Fatal(err)
@@ -99,5 +106,92 @@ func TestTranscribeAudio_ServiceErrorIsNotCached(t *testing.T) {
 	}
 	if got, _ := c.store.GetTranscript(context.Background(), trMsg, trJID); got != nil {
 		t.Fatalf("a failed transcription must not be cached: %+v", got)
+	}
+}
+
+func transcriptionOpus(samples uint64) []byte {
+	data := make([]byte, 47+29)
+	copy(data, "OggS")
+	data[5], data[26], data[27] = 2, 1, 19
+	copy(data[28:], "OpusHead")
+	data[36], data[37] = 1, 1
+	binary.LittleEndian.PutUint16(data[38:40], 312)
+	binary.LittleEndian.PutUint32(data[40:44], 48000)
+	page := data[47:]
+	copy(page, "OggS")
+	page[5], page[26], page[27] = 4, 1, 1
+	binary.LittleEndian.PutUint64(page[6:14], samples+312)
+	binary.LittleEndian.PutUint32(page[18:22], 1)
+	return data
+}
+
+func TestTranscribeAudio_DurationLimit(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		samples uint64
+		limit   int
+		wantErr bool
+	}{
+		{"below default", 599 * 48000, 0, false},
+		{"at default", 600 * 48000, 0, false},
+		{"above default", 601 * 48000, 0, true},
+		{"fraction above default", 600*48000 + 1, 0, true},
+		{"custom limit", 3 * 48000, 2, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, calls := transcribeFixture(t, "audio", transcriptionOpus(tc.samples))
+			c.transcribeCfg.MaxSeconds = tc.limit
+			_, _, err := c.TranscribeAudio(context.Background(), trMsg, trJID, "")
+			if tc.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "transcription limit") || *calls != 0 {
+					t.Fatalf("err=%v backend calls=%d; expected limit rejection before upload", err, *calls)
+				}
+			} else if err != nil || *calls != 1 {
+				t.Fatalf("err=%v backend calls=%d; expected one transcription", err, *calls)
+			}
+		})
+	}
+}
+
+func TestTranscribeAudio_MalformedOggNotUploaded(t *testing.T) {
+	c, calls := transcribeFixture(t, "audio", []byte("OggS"))
+	if _, _, err := c.TranscribeAudio(context.Background(), trMsg, trJID, ""); err == nil || *calls != 0 {
+		t.Fatalf("err=%v backend calls=%d; malformed Ogg must not reach the service", err, *calls)
+	}
+}
+
+func TestTranscribeAudio_UnfinishedOpusNotUploaded(t *testing.T) {
+	audio := transcriptionOpus(48000)[:75]
+	audio[74] = 255
+	audio = append(audio, make([]byte, 255)...)
+	c, calls := transcribeFixture(t, "audio", audio)
+	if _, _, err := c.TranscribeAudio(context.Background(), trMsg, trJID, ""); err == nil || *calls != 0 {
+		t.Fatalf("err=%v backend calls=%d; unfinished Opus must not reach the service", err, *calls)
+	}
+}
+
+func TestTranscribeAudio_MissingTextIsNotCached(t *testing.T) {
+	for _, body := range []string{"null", "{}", `{"text":null}`} {
+		t.Run(body, func(t *testing.T) {
+			var requests atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				requests.Add(1)
+				_, _ = w.Write([]byte(body))
+			}))
+			defer srv.Close()
+			c, _ := transcribeFixture(t, "audio")
+			c.transcribeCfg.URL, c.transcribeFn = srv.URL, nil
+			for range 2 {
+				if _, _, err := c.TranscribeAudio(context.Background(), trMsg, trJID, ""); err == nil {
+					t.Fatal("missing transcript text must be an error")
+				}
+			}
+			if got, err := c.store.GetTranscript(context.Background(), trMsg, trJID); err != nil || got != nil {
+				t.Fatalf("invalid response was cached: %+v err=%v", got, err)
+			}
+			if requests.Load() != 2 {
+				t.Fatalf("failed response must be retried, backend calls=%d", requests.Load())
+			}
+		})
 	}
 }

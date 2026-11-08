@@ -5,7 +5,7 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/Sealjay/mcp-whatsapp)](https://goreportcard.com/report/github.com/Sealjay/mcp-whatsapp)
 [![Go 1.26+](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 [![MCP](https://img.shields.io/badge/MCP-protocol-6366f1)](https://modelcontextprotocol.io/)
-[![42 tools](https://img.shields.io/badge/tools-43-blue)]()
+[![43 tools](https://img.shields.io/badge/tools-43-blue)]()
 [![whatsmeow](https://img.shields.io/badge/whatsmeow-multidevice-25D366?logo=whatsapp&logoColor=white)](https://github.com/tulir/whatsmeow)
 [![Sealjay/mcp-whatsapp MCP server](https://glama.ai/mcp/servers/Sealjay/mcp-whatsapp/badges/score.svg?)](https://glama.ai/mcp/servers/Sealjay/mcp-whatsapp)
 [![GitHub issues](https://img.shields.io/github/issues/Sealjay/mcp-whatsapp)](https://github.com/Sealjay/mcp-whatsapp/issues)
@@ -87,10 +87,13 @@ Paths outside the root, including symlinks that resolve outside it, are rejected
 
 - `-addr host:port` (env `WHATSAPP_MCP_ADDR`, default `127.0.0.1:8765`).
 - `-allow-remote`: bind a non-loopback address. Requires `WHATSAPP_MCP_TOKEN`, a bearer token for `/mcp` and `/pair/*`; `serve` exits without it.
+- `-read-only` (env `WHATSAPP_MCP_READ_ONLY=1`): expose only the 15 tools that cannot send messages, mark messages read, publish presence, or change the WhatsApp account. Removed tools are rejected even when called directly. `get_status` reports `read_only`, and MCP instructions report the mode.
 - `WHATSAPP_MCP_MEDIA_ROOT`: the file allowlist root above.
 - `WHATSAPP_MCP_TRANSCRIBE_URL`: enables `transcribe_audio`. Base URL of a speech-to-text service that implements the OpenAI-compatible `POST /v1/audio/transcriptions` (a local whisper.cpp or faster-whisper server, LocalAI, or a hosted API). Unset = feature off. A non-loopback host is refused unless `WHATSAPP_MCP_TRANSCRIBE_ALLOW_REMOTE=1`, so audio never leaves the machine by accident. HTTP redirects are refused; configure the final transcription endpoint directly.
-  Optional: `WHATSAPP_MCP_TRANSCRIBE_MODEL`, `WHATSAPP_MCP_TRANSCRIBE_LANGUAGE` (ISO 639-1; empty = autodetect), `WHATSAPP_MCP_TRANSCRIBE_TOKEN` (bearer token for the service), `WHATSAPP_MCP_TRANSCRIBE_MAX_SECONDS` (default 600). Transcripts are third-party content and are cached in `messages.db`.
+  Optional: `WHATSAPP_MCP_TRANSCRIBE_MODEL`, `WHATSAPP_MCP_TRANSCRIBE_LANGUAGE` (ISO 639-1; empty = autodetect), `WHATSAPP_MCP_TRANSCRIBE_TOKEN` (bearer token for the service), `WHATSAPP_MCP_TRANSCRIBE_MAX_SECONDS` (default 600). Ogg/Opus duration is checked before upload; malformed streams are rejected. Other formats rely on the service's duration limit. Transcripts are third-party content and are cached in `messages.db`. The first transcript is reused; changing the model or language affects only messages without a cached transcript.
 - `WHATSAPP_MCP_DEBUG=1` or `-debug`: verbose logs (see [Debug logging](#debug-logging)).
+
+For an archive or summarisation client, start with `./bin/whatsapp-mcp serve -read-only`. Downloads, history requests and metadata queries still work and can write the local cache; this mode is not offline-only. Transcription is excluded because it uploads private audio to another service. Pairing and reset remain operator actions through `/pair`, and the mode does not restrict which cached data a client can read. The default still exposes all 43 tools. `-read-only=false` overrides an enabled environment setting; invalid environment values stop startup rather than silently enabling mutation tools.
 
 ## Running the daemon
 
@@ -145,6 +148,7 @@ Data lives under `./store/` (`-store DIR`): `messages.db` (message cache), `what
 | `get_message_context` | Before/after window around a specific message |
 | `download_media` | Download persisted media to a local path |
 | `request_sync` | Ask WhatsApp to backfill history for a chat |
+| `transcribe_audio` | Download an audio message, upload it to the configured speech-to-text service, and cache the transcript (opt-in; excluded from read-only mode) |
 
 ### Send
 
@@ -156,8 +160,7 @@ Data lives under `./store/` (`-store DIR`): `messages.db` (message cache), `what
 | `send_poll` | Send a poll with a question and 2+ options; `selectable_count` controls how many options a voter may pick. Generates the 32-byte `MessageSecret` required for votes to decrypt |
 | `send_poll_vote` | Cast a vote on a previously-seen poll; `options` must match option names exactly |
 | `get_poll_results` | Return the tally for a poll we have cached (includes 0-vote options) |
-| `transcribe_audio` | Transcribe a received voice note with an OpenAI-compatible speech-to-text service (opt-in, see below); the result is cached in `messages.db` |
-| `send_contact_card` | Send a contact card; synthesises a vCard 3.0 from `name` + `phone`, or pass a raw `vcard` to skip synthesis |
+| `send_contact_card` | Send a contact card; synthesises a vCard 3.0 from `name` + `phone`, or pass a raw `vcard` to skip synthesis. Incoming contact cards are stored as text (`[Contact] Name: +phone`) |
 
 ### Message actions
 
@@ -262,7 +265,7 @@ This bumps `go.mau.fi/whatsmeow@main`, re-tidies, builds, and tests. If green, c
 
 ### Debug logging
 
-By default, stderr logs redact JIDs to `…<last-4>`, summarise bodies as `[<length>B: text|url|command]` and collapse media URLs to `<scheme>://<host>/…`. To see content while debugging, run `./bin/whatsapp-mcp -debug serve` or set `WHATSAPP_MCP_DEBUG=1`. Even then, phone-number-shaped digits show only their last 5 (`+15551234567` → `****34567`). That is obfuscation, not anonymisation: someone who knows your contacts can still correlate them.
+By default, stderr logs redact JIDs to `…<last-4>`, summarise bodies, chat and contact names and filenames as `[<length>B: text|url|command]` and collapse media URLs to `<scheme>://<host>/…`. Logged errors keep their text, with phone-number digits masked and file paths (cache paths name the chat) dropped. Lines logged by whatsmeow itself keep their text with phone-number digits masked, so the JIDs and LIDs in them show only their last 5 digits (`****00123@s.whatsapp.net`), with or without `-debug`. To see content while debugging, run `./bin/whatsapp-mcp -debug serve` or set `WHATSAPP_MCP_DEBUG=1`. Even then, phone-number-shaped digits show only their last 5 (`+12025550123` → `****50123`). That is obfuscation, not anonymisation: someone who knows your contacts can still correlate them.
 
 For Claude Desktop integration issues, see the [MCP documentation](https://modelcontextprotocol.io/quickstart/server#claude-for-desktop-integration-issues).
 

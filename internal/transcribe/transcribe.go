@@ -182,14 +182,17 @@ func Transcribe(ctx context.Context, cfg Config, path, language string) (Result,
 		return Result{}, fmt.Errorf("transcription: service returned %s: %s", resp.Status, snippet(raw))
 	}
 	var out struct {
-		Text     string  `json:"text"`
+		Text     *string `json:"text"`
 		Language string  `json:"language"`
 		Duration float64 `json:"duration"`
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return Result{}, fmt.Errorf("transcription: unexpected response: %w", err)
 	}
-	return Result{Text: strings.TrimSpace(out.Text), Language: out.Language, Duration: out.Duration}, nil
+	if out.Text == nil {
+		return Result{}, errors.New("transcription: unexpected response: missing text")
+	}
+	return Result{Text: strings.TrimSpace(*out.Text), Language: out.Language, Duration: out.Duration}, nil
 }
 
 // MaxSecondsOrDefault returns the configured limit.

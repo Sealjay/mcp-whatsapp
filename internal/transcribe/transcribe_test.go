@@ -79,6 +79,29 @@ func TestTranscribe_ServiceErrorAndBadJSON(t *testing.T) {
 	}
 }
 
+func TestTranscribe_ResponseRequiresText(t *testing.T) {
+	for _, tc := range []struct {
+		body    string
+		wantErr bool
+	}{
+		{"null", true},
+		{"{}", true},
+		{`{"text":null}`, true},
+		{`{"text":""}`, false},
+	} {
+		t.Run(tc.body, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+			_, err := Transcribe(context.Background(), Config{URL: srv.URL}, writeAudio(t, "AUDIO"), "")
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("response %s: err=%v, wantErr=%v", tc.body, err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestTranscribe_Timeout(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(300 * time.Millisecond)

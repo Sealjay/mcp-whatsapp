@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -90,11 +91,14 @@ func (c *Client) checkAudioDuration(path string) error {
 	if err != nil {
 		return fmt.Errorf("read audio: %w", err)
 	}
+	if !bytes.HasPrefix(data, []byte("OggS")) {
+		return nil // Other formats use the service's duration limit.
+	}
 	secs, _, err := media.AnalyzeOggOpus(data)
 	if err != nil {
-		return nil // not Ogg/Opus: let the service decide
+		return fmt.Errorf("analyze Ogg audio: %w", err)
 	}
-	if limit := c.transcribeCfg.MaxSecondsOrDefault(); int(secs) > limit {
+	if limit := c.transcribeCfg.MaxSecondsOrDefault(); uint64(secs) > uint64(limit) {
 		return fmt.Errorf("audio is %ds long; the transcription limit is %ds (WHATSAPP_MCP_TRANSCRIBE_MAX_SECONDS)", secs, limit)
 	}
 	return nil
