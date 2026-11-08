@@ -43,6 +43,7 @@ Serve-specific flags (after 'serve'):
 Pairing flag (after 'login' or 'serve'; only affects a new pairing):
   -full-history     Ask the phone for a full history sync (env WHATSAPP_MCP_FULL_HISTORY)
   -read-only        Exclude WhatsApp mutation tools (env WHATSAPP_MCP_READ_ONLY)
+  -enable-labels    Enable WhatsApp Business label sync and tools (env WHATSAPP_MCP_LABELS)
 `
 
 func main() {

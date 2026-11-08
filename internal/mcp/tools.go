@@ -9,6 +9,7 @@ var readOnlyToolAccess = map[string]bool{
 	"edit_message":              false,
 	"get_blocklist":             true,
 	"get_chat":                  true,
+	"get_chat_labels":           true,
 	"get_group_info":            true,
 	"get_group_invite_link":     false,
 	"get_message_context":       true,
@@ -19,12 +20,15 @@ var readOnlyToolAccess = map[string]bool{
 	"join_group_with_link":      false,
 	"leave_group":               false,
 	"list_chats":                true,
+	"list_chats_by_label":       true,
+	"list_labels":               true,
 	"list_groups":               true,
 	"list_messages":             true,
 	"mark_chat_read":            false,
 	"mark_read":                 false,
 	"pairing_status":            true,
 	"request_sync":              true,
+	"resync_labels":             true,
 	"search_contacts":           true,
 	"send_audio_message":        false,
 	"send_contact_card":         false,
@@ -71,6 +75,9 @@ func (s *Server) registerTools() {
 	// Phase 2 — polls + contact cards.
 	s.registerMediaTools()
 
+	if s.labelsEnabled {
+		s.registerLabelTools()
+	}
 	// Speech-to-text for voice notes (opt-in; needs WHATSAPP_MCP_TRANSCRIBE_URL).
 	s.registerTranscribeTools()
 }
