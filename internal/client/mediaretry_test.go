@@ -111,6 +111,9 @@ func newRetryFixtureWithHashes(t *testing.T, msgID string, payload, mediaKey, fi
 		f.mu.Unlock()
 		if answer != nil {
 			if evt := answer(info); evt != nil {
+				evt.ChatID = info.Chat
+				evt.SenderID = info.Sender
+				evt.FromMe = info.IsFromMe
 				go f.c.handleMediaRetry(evt)
 			}
 		}
@@ -176,7 +179,10 @@ func phoneAnswer(t *testing.T, msgID string, mediaKey []byte, notif *waMmsRetry.
 	if err != nil {
 		t.Fatalf("encrypt notification: %v", err)
 	}
-	return &events.MediaRetry{Ciphertext: ciphertext, IV: iv, MessageID: types.MessageID(msgID)}
+	return &events.MediaRetry{
+		Ciphertext: ciphertext, IV: iv, MessageID: types.MessageID(msgID),
+		ChatID: types.NewJID("120363000000000001", types.GroupServer),
+	}
 }
 
 func successAnswer(t *testing.T, msgID, directPath string) *events.MediaRetry {
@@ -592,6 +598,74 @@ func TestMediaRetryMessageInfo(t *testing.T) {
 func TestHandleMediaRetry_IgnoresUnknownMessage(t *testing.T) {
 	c := newClientWithStore(t, nil)
 	c.handleMediaRetry(&events.MediaRetry{MessageID: "NOBODY-WAITS"})
+}
+
+func TestHandleMediaRetry_DistinguishesChatsWithSameMessageID(t *testing.T) {
+	c := newClientWithStore(t, nil)
+	const id = "SAME-MESSAGE-ID"
+	firstChat := types.NewJID("447700000001", types.DefaultUserServer)
+	secondChat := types.NewJID("447700000002", types.DefaultUserServer)
+	first, _ := c.joinMediaRetry(firstChat.String(), id, retryMediaKey)
+	second, _ := c.joinMediaRetry(secondChat.String(), id, retryMediaKey)
+
+	evt := &events.MediaRetry{MessageID: id, ChatID: firstChat, Error: &events.MediaRetryError{Code: 2}}
+	c.handleMediaRetry(evt)
+	select {
+	case got := <-first.answer:
+		if got != evt {
+			t.Fatal("wrong answer delivered to the matching chat")
+		}
+	default:
+		t.Fatal("matching chat did not receive its answer")
+	}
+	select {
+	case <-second.answer:
+		t.Fatal("phone answer for another chat reached this download")
+	default:
+	}
+}
+
+func TestHandleMediaRetry_MatchesChatLIDAliases(t *testing.T) {
+	s := newTestStoreWithLIDMap(t, map[string]string{"99887766": "447700000002"})
+	c := newClientWithStore(t, s)
+	pn := types.NewJID("447700000002", types.DefaultUserServer)
+	lid := types.NewADJID("99887766", 1, 12)
+	lid.Server = types.HiddenUserServer
+	for _, pair := range [][2]types.JID{{pn, lid}, {lid, pn}} {
+		call, _ := c.joinMediaRetry(pair[0].String(), "LID-MSG", retryMediaKey)
+		evt := &events.MediaRetry{MessageID: "LID-MSG", ChatID: pair[1]}
+		c.handleMediaRetry(evt)
+		select {
+		case got := <-call.answer:
+			if got != evt {
+				t.Fatal("wrong answer for the aliased chat")
+			}
+		default:
+			t.Fatalf("no answer delivered for cache chat %s and event chat %s", pair[0], pair[1])
+		}
+	}
+}
+
+func TestDownload_MediaRetryErrorLogRedactsJIDs(t *testing.T) {
+	f := newRetryFixture(t, "M-RETRY-LOG")
+	var log bytes.Buffer
+	f.c.log = &stderrLogger{out: &log, mod: "Client", min: logLevelToInt["WARN"]}
+	f.c.sendMediaRetry = func(context.Context, *types.MessageInfo, []byte) error {
+		return fmt.Errorf("receipt from %s@s.whatsapp.net in %s failed", retrySender, retryGroupJID)
+	}
+	got := f.c.DownloadWithMediaRetry(context.Background(), f.msgID, retryGroupJID, "")
+	if got.Success {
+		t.Fatal("download succeeded despite the failed recovery receipt")
+	}
+	f.waitIdle(t)
+	if !strings.Contains(log.String(), "Media re-upload") {
+		t.Fatalf("missing recovery error log: %s", log.String())
+	}
+	for _, identifier := range []string{retrySender, retryGroupJID} {
+		if strings.Contains(log.String(), identifier) {
+			t.Fatalf("recovery error log exposes %q: %s", identifier, log.String())
+		}
+	}
 }
 
 // fakeLIDStore is a device LID map holding only the given phone → LID pairs.

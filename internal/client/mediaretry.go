@@ -29,6 +29,7 @@ var (
 // of the same message join the same call instead of sending another receipt.
 type mediaRetryCall struct {
 	messageID string
+	chatJID   string
 	mediaKey  []byte
 	answer    chan *events.MediaRetry // buffered; fed by handleMediaRetry
 	done      chan struct{}           // closed once directPath/err are set
@@ -103,6 +104,7 @@ func (c *Client) joinMediaRetry(chatJID, messageID string, mediaKey []byte) (cal
 	}
 	call = &mediaRetryCall{
 		messageID: messageID,
+		chatJID:   chatJID,
 		mediaKey:  mediaKey,
 		answer:    make(chan *events.MediaRetry, 1),
 		done:      make(chan struct{}),
@@ -255,12 +257,13 @@ func (c *Client) mediaRetrySender(ctx context.Context, chat, sender types.JID) t
 // handleMediaRetry hands the phone's answer to the waiting retry. Answers
 // nobody waits for (for example after a timeout) are dropped.
 func (c *Client) handleMediaRetry(evt *events.MediaRetry) {
+	chatJID := c.mediaRetryChatJID(evt.ChatID.String())
 	r := &c.mediaRetries
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delivered := false
 	for _, call := range r.calls {
-		if call.messageID != evt.MessageID {
+		if call.messageID != evt.MessageID || c.mediaRetryChatJID(call.chatJID) != chatJID {
 			continue
 		}
 		select {
@@ -272,6 +275,18 @@ func (c *Client) handleMediaRetry(evt *events.MediaRetry) {
 	if !delivered {
 		c.log.Debugf("Ignoring media retry answer for message %s: no download is waiting", c.redactor.MsgID(evt.MessageID))
 	}
+}
+
+func (c *Client) mediaRetryChatJID(chatJID string) string {
+	jid, err := types.ParseJID(chatJID)
+	if err != nil {
+		return chatJID
+	}
+	chatJID = jid.ToNonAD().String()
+	if c.store != nil {
+		return c.store.ResolveLIDToJID(chatJID)
+	}
+	return chatJID
 }
 
 // decodeMediaRetry decrypts the phone's answer with the message's media key
