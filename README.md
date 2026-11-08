@@ -55,6 +55,14 @@ Scan the QR with WhatsApp (*Settings → Linked Devices → Link a Device*). The
 - **No QR scan:** use the phone-number form on `/pair` (or `login -phone +<international number>`), then type the code into *Link a Device → Link with phone number instead*.
 - The `/pair/*` endpoints are CSRF-protected and rate-limited (15 GET/min, 1 reset/min, 3 code requests/min).
 
+#### Full history at pairing
+
+WhatsApp sends history to a linked device only while it pairs, and by default the phone sends a recent window of about three months. To ask for a full history sync instead, pass `-full-history` (env `WHATSAPP_MCP_FULL_HISTORY=1`) to whichever command does the pairing (`login`, or `serve` when you pair through `/pair`). A flag wins over the variable.
+
+- **New pairings only.** The request travels in the pairing handshake, so an already-linked device gets nothing more; unlink it and pair again.
+- **The phone decides** how much it sends, and a full sync can run for a long while after pairing: keep the phone online and `serve` running.
+- **Storage.** `messages.db` can grow substantially (media is still fetched only on demand).
+
 ### Connect your MCP client
 
 `serve` listens on `127.0.0.1:8765` (or `$WHATSAPP_MCP_ADDR`) and serves MCP at `/mcp`. It is stateless (no `Mcp-Session-Id`) and speaks MCP 2026-07-28 as well as older revisions.
@@ -92,6 +100,7 @@ Paths outside the root, including symlinks that resolve outside it, are rejected
 - `WHATSAPP_MCP_TRANSCRIBE_URL`: enables `transcribe_audio`. Base URL of a speech-to-text service that implements the OpenAI-compatible `POST /v1/audio/transcriptions` (a local whisper.cpp or faster-whisper server, LocalAI, or a hosted API). Unset = feature off. A non-loopback host is refused unless `WHATSAPP_MCP_TRANSCRIBE_ALLOW_REMOTE=1`, so audio never leaves the machine by accident. HTTP redirects are refused; configure the final transcription endpoint directly.
   Optional: `WHATSAPP_MCP_TRANSCRIBE_MODEL`, `WHATSAPP_MCP_TRANSCRIBE_LANGUAGE` (ISO 639-1; empty = autodetect), `WHATSAPP_MCP_TRANSCRIBE_TOKEN` (bearer token for the service), `WHATSAPP_MCP_TRANSCRIBE_MAX_SECONDS` (default 600). Ogg/Opus duration is checked before upload; malformed streams are rejected. Other formats rely on the service's duration limit. Transcripts are third-party content and are cached in `messages.db`. The first transcript is reused; changing the model or language affects only messages without a cached transcript.
 - `WHATSAPP_MCP_DEBUG=1` or `-debug`: verbose logs (see [Debug logging](#debug-logging)).
+- `-full-history` (env `WHATSAPP_MCP_FULL_HISTORY`): ask for a full history sync when pairing through `/pair` (see [Full history at pairing](#full-history-at-pairing)).
 
 For an archive or summarisation client, start with `./bin/whatsapp-mcp serve -read-only`. Downloads, history requests and metadata queries still work and can write the local cache; this mode is not offline-only. Transcription is excluded because it uploads private audio to another service. Pairing and reset remain operator actions through `/pair`, and the mode does not restrict which cached data a client can read. The default still exposes all 43 tools. `-read-only=false` overrides an enabled environment setting; invalid environment values stop startup rather than silently enabling mutation tools.
 

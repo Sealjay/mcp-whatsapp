@@ -39,6 +39,8 @@ Global flags (before the command):
 Serve-specific flags (after 'serve'):
   -addr host:port   HTTP bind address (default: 127.0.0.1:8765, env WHATSAPP_MCP_ADDR)
   -allow-remote     Allow binding to a non-loopback address (dangerous)
+Pairing flag (after 'login' or 'serve'; only affects a new pairing):
+  -full-history     Ask the phone for a full history sync (env WHATSAPP_MCP_FULL_HISTORY)
   -read-only        Exclude WhatsApp mutation tools (env WHATSAPP_MCP_READ_ONLY)
 `
 
