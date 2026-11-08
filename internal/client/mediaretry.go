@@ -127,11 +127,11 @@ func (c *Client) runMediaRetry(ctx context.Context, call *mediaRetryCall, chatJI
 	directPath, err := c.awaitMediaRetry(ctx, call, chatJID)
 	if err == nil {
 		if perr := c.store.UpdateMediaDirectPath(call.messageID, chatJID, directPath); perr != nil {
-			c.log.Warnf("Failed to store re-uploaded media path for message %s: %v", c.redactor.MsgID(call.messageID), perr)
+			c.log.Warnf("Failed to store re-uploaded media path for message %s: %v", c.redactor.MsgID(call.messageID), c.redactor.Err(perr))
 		}
 		c.log.Infof("Phone re-uploaded media for message %s", c.redactor.MsgID(call.messageID))
 	} else {
-		c.log.Warnf("Media re-upload for message %s failed: %v", c.redactor.MsgID(call.messageID), err)
+		c.log.Warnf("Media re-upload for message %s failed: %v", c.redactor.MsgID(call.messageID), c.redactor.Err(err))
 	}
 
 	r := &c.mediaRetries
@@ -241,7 +241,7 @@ func (c *Client) mediaRetrySender(ctx context.Context, chat, sender types.JID) t
 	}
 	group, err := groupInfo(ctx, chat)
 	if err != nil {
-		c.log.Debugf("Media retry: group info for %s unavailable, naming the cached sender: %v", c.redactor.JID(chat.String()), err)
+		c.log.Debugf("Media retry: group info for %s unavailable, naming the cached sender: %v", c.redactor.JID(chat.String()), c.redactor.Err(err))
 		return sender
 	}
 	if group.AddressingMode != types.AddressingModeLID {

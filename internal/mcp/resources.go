@@ -35,7 +35,7 @@ func (s *Server) registerResources() {
 	template := mcp.NewResourceTemplate(
 		mediaURITemplate,
 		"WhatsApp media",
-		mcp.WithTemplateDescription("Read the decrypted bytes of a WhatsApp media message (image, video, audio, document) as a base64-encoded blob. Fetches from WhatsApp's CDN on first read (asking the account's own phone to re-upload media whose link has expired, as download_media does); subsequent reads hit the local cache. Pair with list_messages to discover media message IDs, or call download_media first if you want the JSON summary alongside."),
+		mcp.WithTemplateDescription("Read the decrypted bytes of a WhatsApp media message (image, video, audio, document) as a base64-encoded blob. Fetches from WhatsApp's CDN on first read (asking the account's own phone to re-upload media whose link has expired, including in read-only mode; no sender or chat is notified, as with download_media); subsequent reads hit the local cache. Pair with list_messages to discover media message IDs, or call download_media first if you want the JSON summary alongside."),
 	)
 	s.mcp.AddResourceTemplate(template, s.handleMediaResource)
 }

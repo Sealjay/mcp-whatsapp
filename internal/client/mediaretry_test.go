@@ -230,6 +230,28 @@ func TestDownload_MediaRetryRecoversExpiredLink(t *testing.T) {
 	}
 }
 
+func TestDownload_MediaRetryErrorLogRedactsJIDs(t *testing.T) {
+	f := newRetryFixture(t, "M-RETRY-LOG")
+	var log bytes.Buffer
+	f.c.log = &stderrLogger{out: &log, mod: "Client", min: logLevelToInt["WARN"]}
+	f.c.sendMediaRetry = func(context.Context, *types.MessageInfo, []byte) error {
+		return fmt.Errorf("receipt from %s@s.whatsapp.net in %s failed", retrySender, retryGroupJID)
+	}
+	got := f.c.DownloadWithMediaRetry(context.Background(), f.msgID, retryGroupJID, "")
+	if got.Success {
+		t.Fatal("download succeeded despite the failed recovery receipt")
+	}
+	f.waitIdle(t)
+	if !strings.Contains(log.String(), "Media re-upload") {
+		t.Fatalf("missing recovery error log: %s", log.String())
+	}
+	for _, identifier := range []string{retrySender, retryGroupJID} {
+		if strings.Contains(log.String(), identifier) {
+			t.Fatalf("recovery error log exposes %q: %s", identifier, log.String())
+		}
+	}
+}
+
 // Each way the phone can turn the request down ends the download with a clear
 // error and leaves the stored path alone.
 func TestDownload_MediaRetryPhoneFailures(t *testing.T) {
