@@ -1,16 +1,19 @@
-# Windows build notes
+# Windows build
 
-`go-sqlite3` requires **CGO to be enabled** at compile time. By default, CGO is disabled on Windows, so you need to enable it and have a C compiler on `PATH`.
+`go-sqlite3` needs CGO and a C compiler. Install [MSYS2](https://www.msys2.org/), then in its UCRT64 terminal install GCC:
 
-1. **Install a C compiler.** [MSYS2](https://www.msys2.org/) is the easiest path — after installing, add the `ucrt64\bin` folder to your `PATH`. A step-by-step guide is available [here](https://code.visualstudio.com/docs/cpp/config-mingw).
+```sh
+pacman -S --needed mingw-w64-ucrt-x86_64-gcc
+```
 
-2. **Enable CGO and build.**
+Add the MSYS2 `ucrt64\bin` directory (usually `C:\msys64\ucrt64\bin`) to `PATH`. The [MinGW setup guide](https://code.visualstudio.com/docs/cpp/config-mingw) has more detail.
 
-   ```bash
-   go env -w CGO_ENABLED=1
-   make build
-   ```
+In PowerShell, enable CGO and build the executable directly with Go:
 
-Without this setup, the build fails with:
+```powershell
+go env -w CGO_ENABLED=1
+New-Item -ItemType Directory -Force bin
+go build -o .\bin\whatsapp-mcp.exe .\cmd\whatsapp-mcp
+```
 
-> `Binary was compiled with 'CGO_ENABLED=0', go-sqlite3 requires cgo to work.`
+The direct Go command avoids requiring GNU Make and Bash on Windows. If CGO is disabled or GCC is missing from `PATH`, the build reports that `go-sqlite3` requires cgo.
