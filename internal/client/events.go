@@ -424,7 +424,10 @@ func (c *Client) resolveChatNameFallback(ctx context.Context, jid types.JID, sen
 	return jid.User
 }
 
-// extractTextContent returns the plain-text body of a Message, if any.
+// extractTextContent returns the plain-text body of a Message, if any. For
+// image, video and document messages that is the caption, so it is listed
+// after the media marker and matched by list_messages queries, the same as
+// the caption of media sent with send_file. Audio and stickers carry none.
 func extractTextContent(msg *waProto.Message) string {
 	if msg == nil {
 		return ""
@@ -434,6 +437,15 @@ func extractTextContent(msg *waProto.Message) string {
 	}
 	if ext := msg.GetExtendedTextMessage(); ext != nil {
 		return ext.GetText()
+	}
+	if img := msg.GetImageMessage(); img != nil {
+		return img.GetCaption()
+	}
+	if vid := msg.GetVideoMessage(); vid != nil {
+		return vid.GetCaption()
+	}
+	if doc := msg.GetDocumentMessage(); doc != nil {
+		return doc.GetCaption()
 	}
 	return ""
 }
