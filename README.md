@@ -2,10 +2,9 @@
 
 [![License: MIT](https://img.shields.io/github/license/Sealjay/mcp-whatsapp)](LICENSE)
 [![CI](https://github.com/Sealjay/mcp-whatsapp/actions/workflows/ci.yml/badge.svg)](https://github.com/Sealjay/mcp-whatsapp/actions/workflows/ci.yml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/Sealjay/mcp-whatsapp)](https://goreportcard.com/report/github.com/Sealjay/mcp-whatsapp)
 [![Go 1.26+](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 [![MCP](https://img.shields.io/badge/MCP-protocol-6366f1)](https://modelcontextprotocol.io/)
-[![43 tools](https://img.shields.io/badge/tools-43-blue)]()
+[![43 tools](https://img.shields.io/badge/tools-43-blue)](#tools)
 [![whatsmeow](https://img.shields.io/badge/whatsmeow-multidevice-25D366?logo=whatsapp&logoColor=white)](https://github.com/tulir/whatsmeow)
 [![Sealjay/mcp-whatsapp MCP server](https://glama.ai/mcp/servers/Sealjay/mcp-whatsapp/badges/score.svg?)](https://glama.ai/mcp/servers/Sealjay/mcp-whatsapp)
 [![GitHub issues](https://img.shields.io/github/issues/Sealjay/mcp-whatsapp)](https://github.com/Sealjay/mcp-whatsapp/issues)
@@ -20,7 +19,7 @@ This started as a fork of [lharries/whatsapp-mcp](https://github.com/lharries/wh
 - **Sent-message storage** — outgoing messages are persisted locally so conversation history stays complete.
 - **Disappearing-message timers** — outgoing messages inherit the group chat's ephemeral timer automatically.
 - **Targeted history sync** — on-demand per-chat backfill via the `request_sync` tool.
-- **Extended tool surface** — 43 tools by default (see below), plus four opt-in WhatsApp Business label tools; reactions, replies, edits, revoke, mark-read, typing, full group admin, blocklist, polls, contact cards, transcription, view-once, presence, privacy settings, and the profile "About" text.
+- **Extended tool surface** — 43 tools by default; enabling the four opt-in WhatsApp Business label tools makes 47. The default set includes reactions, replies, edits, revoke, mark-read, typing, group admin, blocklist, polls, contact cards, transcription, view-once, presence, privacy settings, and the profile "About" text.
 - **Single-instance enforcement** — a `flock(2)` on `store/.lock` prevents two `serve` processes racing on the same SQLite files.
 
 ## Setup
@@ -95,16 +94,25 @@ Paths outside the root, including symlinks that resolve outside it, are rejected
 ### Serve flags and environment
 
 - `-addr host:port` (env `WHATSAPP_MCP_ADDR`, default `127.0.0.1:8765`).
-- `-allow-remote`: bind a non-loopback address. Requires `WHATSAPP_MCP_TOKEN`, a bearer token for `/mcp` and `/pair/*`; `serve` exits without it.
-- `-read-only` (env `WHATSAPP_MCP_READ_ONLY=1`): expose only the 15 tools that cannot send messages, mark messages read, publish presence, or change the WhatsApp account. Removed tools are rejected even when called directly. `get_status` reports `read_only`, and MCP instructions report the mode.
+- `-allow-remote`: bind a non-loopback address. Requires `WHATSAPP_MCP_TOKEN`, a bearer token for `/mcp` and `/pair/*`; `serve` exits without it. The flag enables the bind but does not configure TLS. When exposing the daemon beyond loopback, use an HTTPS reverse proxy and keep the daemon's upstream on loopback HTTP.
+- `-read-only` (env `WHATSAPP_MCP_READ_ONLY=1`): expose 15 tools by default, or 19 when labels are enabled. Default tools cannot send messages, mark messages read, publish presence, or change the WhatsApp account; the four label tools are read-only. Removed tools are rejected even when called directly. `get_status` reports `read_only`, and MCP instructions report the mode.
 - `-enable-labels` (env `WHATSAPP_MCP_LABELS=1`, default off): enable WhatsApp Business label event capture, one-time initial sync, and four read-only label tools. The flag is set before connecting; it is not changed during a live sync.
 - `WHATSAPP_MCP_MEDIA_ROOT`: the file allowlist root above.
-- `WHATSAPP_MCP_TRANSCRIBE_URL`: enables `transcribe_audio`. Base URL of a speech-to-text service that implements the OpenAI-compatible `POST /v1/audio/transcriptions` (a local whisper.cpp or faster-whisper server, LocalAI, or a hosted API). Unset = feature off. A non-loopback host is refused unless `WHATSAPP_MCP_TRANSCRIBE_ALLOW_REMOTE=1`, so audio never leaves the machine by accident. HTTP redirects are refused; configure the final transcription endpoint directly.
+- `WHATSAPP_MCP_TRANSCRIBE_URL`: enables `transcribe_audio`. Base URL of a speech-to-text service that implements the OpenAI-compatible `POST /v1/audio/transcriptions` (a local whisper.cpp or faster-whisper server, LocalAI, or a hosted API). Unset = feature off. Loopback HTTP endpoints are allowed; non-loopback endpoints require HTTPS and explicit opt-in with `WHATSAPP_MCP_TRANSCRIBE_ALLOW_REMOTE=1`. That opt-in sends audio to another service, so use a trusted endpoint. HTTP redirects are refused; configure the final transcription endpoint directly.
   Optional: `WHATSAPP_MCP_TRANSCRIBE_MODEL`, `WHATSAPP_MCP_TRANSCRIBE_LANGUAGE` (ISO 639-1; empty = autodetect), `WHATSAPP_MCP_TRANSCRIBE_TOKEN` (bearer token for the service), `WHATSAPP_MCP_TRANSCRIBE_MAX_SECONDS` (default 600). Ogg/Opus duration is checked before upload; malformed streams are rejected. Other formats rely on the service's duration limit. Transcripts are third-party content and are cached in `messages.db`. The first transcript is reused; changing the model or language affects only messages without a cached transcript.
 - `WHATSAPP_MCP_DEBUG=1` or `-debug`: verbose logs (see [Debug logging](#debug-logging)).
 - `-full-history` (env `WHATSAPP_MCP_FULL_HISTORY`): ask for a full history sync when pairing through `/pair` (see [Full history at pairing](#full-history-at-pairing)).
 
-For an archive or summarisation client, start with `./bin/whatsapp-mcp serve -read-only`. Downloads, history requests and metadata queries still work and can write the local cache; this mode is not offline-only. Transcription is excluded because it uploads private audio to another service. Labels are excluded unless explicitly enabled; with labels enabled, all four label tools are still available in read-only mode. Pairing and reset remain operator actions through `/pair`, and the mode does not restrict which cached data a client can read. The default exposes 43 tools. `-read-only=false` overrides an enabled environment setting; invalid environment values stop startup rather than silently enabling mutation tools.
+For remote clients, put an HTTPS reverse proxy in front of the daemon and start its loopback upstream with token authentication:
+
+```bash
+WHATSAPP_MCP_TOKEN="$TOKEN" ./bin/whatsapp-mcp serve \
+  -addr 127.0.0.1:8765 -allow-remote
+```
+
+Set `TOKEN` to your secret bearer token. `-allow-remote` activates token authentication even on loopback; without it, the daemon ignores `WHATSAPP_MCP_TOKEN`. The proxy must forward the `Authorization` header. Configure the client to use `https://whatsapp.example.com/mcp` with that bearer token.
+
+For an archive or summarisation client, start with `./bin/whatsapp-mcp serve -read-only`. Downloads, history requests and metadata queries remain available and can write the local cache. Transcription is excluded because it uploads private audio to another service. Labels are off by default; when enabled, all four label tools are available in read-only mode. Read-only mode exposes 15 tools by default or 19 with labels enabled, out of 43 default tools or 47 with labels. Pairing and reset remain operator actions through `/pair`, and read-only mode does not restrict which cached data a client can read. `-read-only=false` overrides an enabled environment setting; invalid environment values stop startup rather than silently enabling mutation tools.
 
 ## Running the daemon
 
@@ -121,7 +129,7 @@ Run `whatsapp-mcp healthcheck` to probe readiness without curl. It uses `WHATSAP
 | Claude Code hook | Put `docs/hooks/setup.sh` in `.claude/hooks/` and call it from `settings.json` (idempotent) |
 | Manual | `./bin/whatsapp-mcp serve` |
 
-**Docker.** The image (`debian:bookworm-slim` plus ffmpeg, a few hundred MB) runs `-store /home/app/store`; persist that volume. Pair with a one-off `login` container first, because `login` and a running `serve` cannot share the store lock:
+**Docker (local access).** The image (`debian:bookworm-slim` plus ffmpeg, a few hundred MB) runs `-store /home/app/store`; persist that volume. This example publishes the host port on loopback only; do not expose it directly on a public interface. For remote clients, use an HTTPS reverse proxy and keep the daemon on loopback HTTP. Pair with a one-off `login` container first, because `login` and a running `serve` cannot share the store lock:
 
 ```bash
 docker build -t whatsapp-mcp --build-arg VERSION=$(git describe --tags --always) .
@@ -132,7 +140,7 @@ docker run -d --name whatsapp-mcp -v whatsapp-mcp-store:/home/app/store \
   whatsapp-mcp serve -addr 0.0.0.0:8765 -allow-remote
 ```
 
-Clients then send `Authorization: Bearer $TOKEN`. The container binds loopback by default, so `-allow-remote` plus a token is what makes `-p` work. To re-pair after WhatsApp rotates the session (about every 20 days), stop the container, rerun the `login` container and start it again.
+Clients on the host send `Authorization: Bearer $TOKEN`. The daemon listens on the container interface so Docker can forward the port; the host-side mapping restricts access to loopback. Do not use this plain-HTTP setup for remote access. To re-pair after WhatsApp rotates the session (about every 20 days), stop the container, rerun the `login` container and start it again.
 
 The image includes a readiness `HEALTHCHECK`. Set `WHATSAPP_MCP_ADDR` to the same wildcard or loopback address used by `serve` when changing the port; a `serve -addr` flag is not visible to the separate health-check process. For a daemon bound to a specific non-loopback interface, disable the image health check and monitor the listener externally.
 
@@ -152,7 +160,7 @@ Data lives under `./store/` (`-store DIR`): `messages.db` (message cache), `what
 
 ## Tools
 
-43 tools by default, grouped by purpose. `-enable-labels` adds four WhatsApp Business tools (47 total).
+43 tools by default, grouped by purpose. `-enable-labels` adds four WhatsApp Business tools (47 total); read-only mode exposes 15 by default and 19 with labels enabled.
 
 ### Read / query
 
@@ -262,12 +270,14 @@ Intentionally not exposed yet:
 ## Development
 
 ```bash
+make lint          # go vet and verify gofmt
 make test          # unit tests
 make test-race     # with -race
-make vet           # go vet
-make e2e           # build + JSON-RPC smoke over HTTP (requires -tags=e2e)
+make e2e           # build and run JSON-RPC end-to-end tests over HTTP
 make smoke         # boot-test the server without connecting to WhatsApp
 ```
+
+Unit tests use local fixtures and do not require a WhatsApp account. `make e2e` builds with the `e2e` test tag.
 
 ### Upgrading whatsmeow
 
