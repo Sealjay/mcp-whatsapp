@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-FROM golang:1.26-bookworm AS build
+FROM golang:1.26.10-bookworm@sha256:632dff7351799a5a9954a48dc06670ade72ee44e8c351cdc0e5a57af2fea21af AS build
 ARG VERSION=dev
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -10,13 +10,13 @@ ENV CGO_ENABLED=1
 RUN go build -trimpath -ldflags "-s -w -X main.Version=${VERSION}" \
     -o /out/whatsapp-mcp ./cmd/whatsapp-mcp
 
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8
 
 # ffmpeg: only needed by send_audio_message for non-Opus input (see
 # internal/media/audio.go); the tool degrades to a clear error without it,
 # so it's not optional in this image but the binary itself would still run.
 # ca-certificates: TLS to WhatsApp's servers.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y --no-install-recommends && apt-get install -y --no-install-recommends \
         ca-certificates \
         ffmpeg \
     && rm -rf /var/lib/apt/lists/*

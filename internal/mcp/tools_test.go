@@ -1,7 +1,13 @@
 package mcp
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -153,5 +159,97 @@ func TestToolsByDomain(t *testing.T) {
 				t.Errorf("domain %s: expected tool %q not registered", file, name)
 			}
 		}
+	}
+}
+
+var expectedReadOnlyTools = map[string]bool{
+	"download_media":       true,
+	"get_blocklist":        true,
+	"get_chat":             true,
+	"get_group_info":       true,
+	"get_message_context":  true,
+	"get_poll_results":     true,
+	"get_privacy_settings": true,
+	"get_status":           true,
+	"is_on_whatsapp":       true,
+	"list_chats":           true,
+	"list_groups":          true,
+	"list_messages":        true,
+	"pairing_status":       true,
+	"request_sync":         true,
+	"search_contacts":      true,
+}
+
+func TestReadOnlyServer_RejectsMutationTools(t *testing.T) {
+	s := NewReadOnlyServer(nil, nil)
+	got := s.MCP().ListTools()
+	if len(got) != len(expectedReadOnlyTools) {
+		t.Fatalf("read-only tools = %d, want %d", len(got), len(expectedReadOnlyTools))
+	}
+	for name := range expectedReadOnlyTools {
+		if got[name] == nil {
+			t.Errorf("read-only tool %q missing", name)
+		}
+	}
+
+	mux := http.NewServeMux()
+	s.AttachHTTP(mux)
+	httpServer := httptest.NewServer(mux)
+	defer httpServer.Close()
+	for _, name := range expectedToolNames {
+		if expectedReadOnlyTools[name] {
+			continue
+		}
+		t.Run(name, func(t *testing.T) {
+			body := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":%q,"arguments":{}}}`, name)
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, httpServer.URL+"/mcp", strings.NewReader(body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Accept", "application/json")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			var envelope struct {
+				Error *struct {
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+				t.Fatal(err)
+			}
+			if envelope.Error == nil || !strings.Contains(envelope.Error.Message, "not found") {
+				t.Fatalf("mutation tool %q was not rejected: %+v", name, envelope)
+			}
+		})
+	}
+}
+
+func TestEveryToolHasReadOnlyClassification(t *testing.T) {
+	tools := NewServer(nil, nil).MCP().ListTools()
+	for name := range tools {
+		if _, ok := readOnlyToolAccess[name]; !ok {
+			t.Errorf("tool %q has no reviewed access classification", name)
+		}
+	}
+	for name := range readOnlyToolAccess {
+		if tools[name] == nil {
+			t.Errorf("access classification names unregistered tool %q", name)
+		}
+	}
+}
+
+func TestReadOnlyServer_InstructionsReportMode(t *testing.T) {
+	s := NewReadOnlyServer(nil, nil)
+	response := s.MCP().HandleMessage(context.Background(), json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}`))
+	raw, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "read-only") {
+		t.Fatalf("initialize does not report the mode: %s", raw)
 	}
 }

@@ -45,7 +45,7 @@ func (c *Client) StartEventHandler() {
 		case *events.Receipt:
 			c.log.Debugf("Receipt for %d messages: %s", len(v.MessageIDs), v.Type)
 		case *events.UndecryptableMessage:
-			c.log.Warnf("Undecryptable message from %s", v.Info.Sender)
+			c.log.Warnf("Undecryptable message from %s", c.redactor.JID(v.Info.Sender.String()))
 		default:
 			c.log.Debugf("Unhandled event type: %T", v)
 		}
@@ -169,31 +169,13 @@ func (c *Client) handleMessage(msg *events.Message) {
 		return
 	}
 
-	// Poll creation — store a "[poll] <question>" row for readability and
-	// cache the option names so we can decode vote SHA-256 hashes later.
-	var pollOptions []string
-	if msg.Message != nil {
-		if pc := msg.Message.GetPollCreationMessage(); pc != nil {
-			pollOptions = extractPollOptionNames(pc)
-			if nm.msg.Content == "" {
-				nm.msg.Content = "[poll] " + pc.GetName()
-			}
-		}
-	}
+	pollOptions := applyPollCreation(&nm, msg.Message)
 
 	if nm.msg.Content == "" && nm.msg.MediaType == "" {
 		return
 	}
 
-	err := c.store.StoreMessage(context.Background(), nm.msg, nm.mediaKey, nm.fileSHA256, nm.fileEncSHA256, nm.fileLength)
-
-	if err == nil && len(pollOptions) > 0 {
-		if perr := c.store.StorePollMetadata(context.Background(), msg.Info.ID, nm.chatJID, pollOptions); perr != nil {
-			c.log.Warnf("Failed to store poll metadata for %s: %v", msg.Info.ID, perr)
-		}
-	}
-
-	if err != nil {
+	if err := c.storeNormalized(context.Background(), nm, pollOptions); err != nil {
 		c.log.Warnf("Failed to store message: %v", err)
 		return
 	}
@@ -204,7 +186,7 @@ func (c *Client) handleMessage(msg *events.Message) {
 	}
 	ts := msg.Info.Timestamp.Format("2006-01-02 15:04:05")
 	if nm.msg.MediaType != "" {
-		c.log.Infof("[%s] %s %s: [%s: %s] %s", ts, direction, c.redactor.JID(nm.msg.Sender), nm.msg.MediaType, nm.msg.Filename, c.redactor.Body(nm.msg.Content))
+		c.log.Infof("[%s] %s %s: [%s: %s] %s", ts, direction, c.redactor.JID(nm.msg.Sender), nm.msg.MediaType, c.redactor.Body(nm.msg.Filename), c.redactor.Body(nm.msg.Content))
 	} else if nm.msg.Content != "" {
 		c.log.Infof("[%s] %s %s: %s", ts, direction, c.redactor.JID(nm.msg.Sender), c.redactor.Body(nm.msg.Content))
 	}
@@ -235,7 +217,7 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 
 		jid, err := types.ParseJID(rawChatJID)
 		if err != nil {
-			c.log.Warnf("Failed to parse JID %s: %v", rawChatJID, err)
+			c.log.Warnf("Failed to parse JID %s: %v", c.redactor.JID(rawChatJID), err)
 			continue
 		}
 
@@ -280,6 +262,14 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 			}
 			timestamp := time.Unix(int64(msgTS), 0)
 
+			// History messages keep the wrappers live events arrive without
+			// (ephemeral, view-once, document with caption, device-sent, ...).
+			// Edits and other protocol messages are not stored.
+			evt := (&events.Message{RawMessage: msg.Message.GetMessage()}).UnwrapRaw()
+			if evt.IsEdit || evt.Message.GetProtocolMessage() != nil {
+				continue
+			}
+
 			// Determine sender and isFromMe from the message key.
 			var rawSenderJID, senderUser string
 			isFromMe := false
@@ -287,8 +277,14 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 				if msg.Message.Key.FromMe != nil {
 					isFromMe = *msg.Message.Key.FromMe
 				}
-				if !isFromMe && msg.Message.Key.Participant != nil && *msg.Message.Key.Participant != "" {
-					rawSenderJID = *msg.Message.Key.Participant
+				// Some history payloads carry a group sender only in the
+				// top-level participant field.
+				participant := msg.Message.Key.GetParticipant()
+				if participant == "" {
+					participant = msg.Message.GetParticipant()
+				}
+				if !isFromMe && participant != "" {
+					rawSenderJID = participant
 					senderUser = strings.Split(rawSenderJID, "@")[0]
 				} else if isFromMe {
 					rawSenderJID = ownID + "@s.whatsapp.net"
@@ -310,8 +306,9 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 			nm := c.normalizeIncomingMessage(
 				rawChatJID, rawSenderJID, senderUser,
 				isGroup, isFromMe, ownID,
-				msgID, timestamp, msg.Message.Message,
+				msgID, timestamp, evt.Message,
 			)
+			pollOptions := applyPollCreation(&nm, evt.Message)
 
 			c.log.Infof("Message content: %s, Media Type: %s", c.redactor.Body(nm.msg.Content), nm.msg.MediaType)
 			if nm.msg.Content == "" && nm.msg.MediaType == "" {
@@ -322,14 +319,14 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 			// conversation header — avoids re-resolving per message.
 			nm.msg.ChatJID = chatJID
 
-			if err := c.store.StoreMessage(ctx, nm.msg, nm.mediaKey, nm.fileSHA256, nm.fileEncSHA256, nm.fileLength); err != nil {
+			if err := c.storeNormalized(ctx, nm, pollOptions); err != nil {
 				c.log.Warnf("Failed to store history message: %v", err)
 				continue
 			}
 			syncedCount++
 			if nm.msg.MediaType != "" {
 				c.log.Infof("Stored message: [%s] %s -> %s: [%s: %s] %s",
-					timestamp.Format("2006-01-02 15:04:05"), c.redactor.JID(nm.msg.Sender), c.redactor.JID(chatJID), nm.msg.MediaType, nm.msg.Filename, c.redactor.Body(nm.msg.Content))
+					timestamp.Format("2006-01-02 15:04:05"), c.redactor.JID(nm.msg.Sender), c.redactor.JID(chatJID), nm.msg.MediaType, c.redactor.Body(nm.msg.Filename), c.redactor.Body(nm.msg.Content))
 			} else {
 				c.log.Infof("Stored message: [%s] %s -> %s: %s",
 					timestamp.Format("2006-01-02 15:04:05"), c.redactor.JID(nm.msg.Sender), c.redactor.JID(chatJID), c.redactor.Body(nm.msg.Content))
@@ -340,21 +337,52 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 	c.log.Infof("History sync complete. Stored %d messages.", syncedCount)
 }
 
+// applyPollCreation handles a poll-creation message: it gives the row a
+// readable "[poll] <question>" body when it has none and returns the option
+// names, which must be cached so vote SHA-256 hashes can be decoded later.
+// Returns nil for any other message.
+func applyPollCreation(nm *normalizedMessage, m *waProto.Message) []string {
+	pc := m.GetPollCreationMessage()
+	if pc == nil {
+		return nil
+	}
+	if nm.msg.Content == "" {
+		nm.msg.Content = "[poll] " + pc.GetName()
+	}
+	return extractPollOptionNames(pc)
+}
+
+// storeNormalized persists a normalised message and, for poll creations,
+// the option names returned by applyPollCreation.
+func (c *Client) storeNormalized(ctx context.Context, nm normalizedMessage, pollOptions []string) error {
+	if err := c.store.StoreMessage(ctx, nm.msg, nm.mediaKey, nm.fileSHA256, nm.fileEncSHA256, nm.fileLength); err != nil {
+		return err
+	}
+	if len(pollOptions) > 0 {
+		if err := c.store.StorePollMetadata(ctx, nm.msg.ID, nm.msg.ChatJID, pollOptions); err != nil {
+			c.log.Warnf("Failed to store poll metadata for %s: %v", nm.msg.ID, err)
+		}
+	}
+	return nil
+}
+
 // GetChatName determines the appropriate name for a chat. It checks the
 // existing database entry first, then falls back to conversation metadata
 // (for history sync), contact store lookups, and finally the JID.
 // The conversation parameter is the typed whatsmeow Conversation from a
 // history-sync payload; pass nil for live messages.
+//
+// The cache hit and the lookup start log at Debug: they run for every message.
 func (c *Client) GetChatName(jid types.JID, chatJID string, conversation *waHistorySync.Conversation, sender string) string {
 	if existing := c.store.FindChatName(chatJID); existing != "" {
-		c.log.Infof("Using existing chat name for %s: %s", chatJID, existing)
+		c.log.Debugf("Using existing chat name for %s: %s", c.redactor.JID(chatJID), c.redactor.Body(existing))
 		return existing
 	}
 
 	var name string
 
 	if jid.Server == "g.us" {
-		c.log.Infof("Getting name for group: %s", chatJID)
+		c.log.Debugf("Getting name for group: %s", c.redactor.JID(chatJID))
 
 		if conversation != nil {
 			if dn := conversation.GetDisplayName(); dn != "" {
@@ -368,13 +396,13 @@ func (c *Client) GetChatName(jid types.JID, chatJID string, conversation *waHist
 			name = c.resolveChatNameFallback(context.Background(), jid, sender)
 		}
 
-		c.log.Infof("Using group name: %s", name)
+		c.log.Infof("Using group name for %s: %s", c.redactor.JID(chatJID), c.redactor.Body(name))
 	} else {
-		c.log.Infof("Getting name for contact: %s", chatJID)
+		c.log.Debugf("Getting name for contact: %s", c.redactor.JID(chatJID))
 
 		name = c.resolveChatNameFallback(context.Background(), jid, sender)
 
-		c.log.Infof("Using contact name: %s", name)
+		c.log.Infof("Using contact name for %s: %s", c.redactor.JID(chatJID), c.redactor.Body(name))
 	}
 
 	return name
@@ -401,7 +429,7 @@ func (c *Client) resolveChatNameFallback(ctx context.Context, jid types.JID, sen
 	return jid.User
 }
 
-// extractTextContent returns the plain-text body of a Message, if any.
+// extractTextContent returns plain text, media captions, or rendered contact cards.
 func extractTextContent(msg *waProto.Message) string {
 	if msg == nil {
 		return ""
@@ -412,7 +440,16 @@ func extractTextContent(msg *waProto.Message) string {
 	if ext := msg.GetExtendedTextMessage(); ext != nil {
 		return ext.GetText()
 	}
-	return ""
+	if img := msg.GetImageMessage(); img != nil {
+		return img.GetCaption()
+	}
+	if vid := msg.GetVideoMessage(); vid != nil {
+		return vid.GetCaption()
+	}
+	if doc := msg.GetDocumentMessage(); doc != nil {
+		return doc.GetCaption()
+	}
+	return contactCardText(msg)
 }
 
 // extractMediaInfo pulls out the storable media fields from a Message.
@@ -485,7 +522,7 @@ func (c *Client) handlePollVote(msg *events.Message, chatJID, voterJID string) {
 
 	vote, err := c.wa.DecryptPollVote(ctx, msg)
 	if err != nil {
-		c.log.Warnf("Failed to decrypt poll vote from %s in %s: %v", voterJID, chatJID, err)
+		c.log.Warnf("Failed to decrypt poll vote from %s in %s: %s", c.redactor.JID(voterJID), c.redactor.JID(chatJID), c.redactor.Err(err))
 		return
 	}
 
@@ -493,7 +530,7 @@ func (c *Client) handlePollVote(msg *events.Message, chatJID, voterJID string) {
 	key := pu.GetPollCreationMessageKey()
 	pollID := key.GetID()
 	if pollID == "" {
-		c.log.Warnf("Poll vote missing poll creation message id (chat=%s)", chatJID)
+		c.log.Warnf("Poll vote missing poll creation message id (chat=%s)", c.redactor.JID(chatJID))
 		return
 	}
 
@@ -503,7 +540,7 @@ func (c *Client) handlePollVote(msg *events.Message, chatJID, voterJID string) {
 	if err != nil {
 		// No cached metadata — we've probably never seen the poll creation
 		// message. Log without listing option text and bail.
-		c.log.Warnf("Poll vote for unknown poll %s in %s: %v", pollID, chatJID, err)
+		c.log.Warnf("Poll vote for unknown poll %s in %s: %v", c.redactor.MsgID(pollID), c.redactor.JID(chatJID), err)
 		return
 	}
 
@@ -527,9 +564,9 @@ func (c *Client) handlePollVote(msg *events.Message, chatJID, voterJID string) {
 	}
 
 	if err := c.store.StorePollVote(ctx, pollID, chatJID, voterJID, selected, ts); err != nil {
-		c.log.Warnf("Failed to store poll vote for poll %s in %s: %v", pollID, chatJID, err)
+		c.log.Warnf("Failed to store poll vote for poll %s in %s: %v", c.redactor.MsgID(pollID), c.redactor.JID(chatJID), err)
 		return
 	}
 
-	c.log.Debugf("Recorded poll vote from %s on poll %s with %d selections", voterJID, pollID, len(selected))
+	c.log.Debugf("Recorded poll vote from %s on poll %s with %d selections", c.redactor.JID(voterJID), c.redactor.MsgID(pollID), len(selected))
 }

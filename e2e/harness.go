@@ -26,7 +26,7 @@ type harness struct {
 	addr string
 }
 
-func newHarness(t *testing.T) *harness {
+func newHarness(t *testing.T, serveArgs ...string) *harness {
 	t.Helper()
 	repo := repoRoot(t)
 	bin := filepath.Join(repo, "bin", "whatsapp-mcp")
@@ -44,7 +44,8 @@ func newHarness(t *testing.T) *harness {
 		}
 	}
 
-	cmd := exec.Command(bin, "-store", storeDir, "serve", "-addr", addr)
+	args := append([]string{"-store", storeDir, "serve", "-addr", addr}, serveArgs...)
+	cmd := exec.Command(bin, args...)
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
