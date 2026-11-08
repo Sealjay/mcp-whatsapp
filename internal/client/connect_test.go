@@ -48,3 +48,22 @@ func TestConnect_AllowUnpairedSkipsGuard(t *testing.T) {
 	}
 	// Any other error (context cancelled, dial failure) is fine.
 }
+
+func TestNewPairingSessionSharesDeviceStoreButIsolatesClient(t *testing.T) {
+	c := newUnpairedClient()
+	c.labelsEnabled = true
+
+	session := c.NewPairingSession()
+	if session == c {
+		t.Fatal("pairing session reused the primary client wrapper")
+	}
+	if session.wa == c.wa {
+		t.Fatal("pairing session reused the primary whatsmeow client")
+	}
+	if session.wa.Store != c.wa.Store {
+		t.Fatal("pairing session did not share the paired device store")
+	}
+	if !session.labelsEnabled || !session.wa.EmitAppStateEventsOnFullSync {
+		t.Fatal("pairing session did not preserve the labels configuration")
+	}
+}

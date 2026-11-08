@@ -35,3 +35,35 @@ func TestPairCache_Lifecycle(t *testing.T) {
 		t.Fatalf("Reset must clear QR, got %q", c.QR())
 	}
 }
+
+func TestPairCache_Expired(t *testing.T) {
+	c := NewPairCache()
+	c.SetQR("abc123")
+	c.SetExpired()
+	if !c.Expired() {
+		t.Fatal("SetExpired must set the expired flag")
+	}
+	if c.QR() != "" {
+		t.Fatalf("SetExpired must drop the stale QR, got %q", c.QR())
+	}
+	if c.Paired() {
+		t.Fatal("SetExpired must keep paired=false")
+	}
+
+	c.SetQR("def456")
+	if c.Expired() {
+		t.Fatal("a new QR must clear the expired flag")
+	}
+
+	c.SetExpired()
+	c.Reset()
+	if c.Expired() {
+		t.Fatal("Reset must clear the expired flag")
+	}
+
+	c.SetPaired()
+	c.SetExpired()
+	if c.Expired() || !c.Paired() {
+		t.Fatal("SetExpired must be a no-op once paired")
+	}
+}

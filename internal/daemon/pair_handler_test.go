@@ -52,6 +52,26 @@ func TestHandlePairPage_Unpaired(t *testing.T) {
 	}
 }
 
+func TestHandlePairPage_Expired(t *testing.T) {
+	h, _ := newTestHandlers(false, "abc", nil)
+	h.cache.SetExpired()
+	w := httptest.NewRecorder()
+	h.handlePairPage(w, httptest.NewRequest(http.MethodGet, "/pair", nil))
+	body := w.Body.String()
+	if !strings.Contains(body, "pairing session expired") {
+		t.Fatalf("expired body should say the session expired, got %q", body)
+	}
+	if strings.Contains(body, `http-equiv="refresh"`) {
+		t.Fatal("expired body must not auto-refresh")
+	}
+	if strings.Contains(body, `<img src="/pair/qr.png"`) {
+		t.Fatal("expired body must not show a stale QR")
+	}
+	if !strings.Contains(body, `action="/pair/code"`) {
+		t.Fatal("expired body should keep the pairing-code form")
+	}
+}
+
 func TestHandlePairPage_Paired(t *testing.T) {
 	h, _ := newTestHandlers(true, "", nil)
 	w := httptest.NewRecorder()

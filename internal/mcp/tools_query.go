@@ -297,7 +297,7 @@ func (s *Server) registerGetStatus() {
 // keeping the awaiting_qr / error envelopes free of any whatsmeow dependency.
 func (s *Server) registerPairingStatus() {
 	tool := mcp.NewTool("pairing_status",
-		mcp.WithDescription("Report the WhatsApp device-pairing state as a structured `setup_state` envelope for programmatic supervisors that surface the linking QR to their own clients (e.g. a polling daemon). Read-only; no side effects. Returns a JSON object `{type:\"setup_state\", state, …}` where `state` is `ready` (paired and connected; adds own_jid/own_phone), `awaiting_qr` (unpaired; adds qr_payload when a pairing code is cached), or `error` (pairing cache unavailable)."),
+		mcp.WithDescription("Report the WhatsApp device-pairing state as a structured `setup_state` envelope for programmatic supervisors that surface the linking QR to their own clients (e.g. a polling daemon). Read-only; no side effects. Returns a JSON object `{type:\"setup_state\", state, …}` where `state` is `ready` (paired and connected; adds own_jid/own_phone), `awaiting_qr` (unpaired; adds qr_payload when a pairing code is cached, or expired=true when the last pairing session expired and a new one starts once /pair is opened or a pairing code is requested), or `error` (pairing cache unavailable)."),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
@@ -329,6 +329,10 @@ func (s *Server) registerPairingStatus() {
 			resp["state"] = "awaiting_qr"
 			resp["qr_payload"] = s.cache.QR()
 			resp["detail"] = "Scan with WhatsApp → Linked devices"
+		case s.cache.Expired():
+			resp["state"] = "awaiting_qr"
+			resp["expired"] = true
+			resp["detail"] = "Pairing session expired; open /pair or request a pairing code to start a new one"
 		default:
 			resp["state"] = "awaiting_qr"
 			resp["detail"] = "Generating pairing code…"
