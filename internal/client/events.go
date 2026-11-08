@@ -40,7 +40,7 @@ func (c *Client) StartEventHandler() {
 		case *events.Receipt:
 			c.log.Debugf("Receipt for %d messages: %s", len(v.MessageIDs), v.Type)
 		case *events.UndecryptableMessage:
-			c.log.Warnf("Undecryptable message from %s", v.Info.Sender)
+			c.log.Warnf("Undecryptable message from %s", c.redactor.JID(v.Info.Sender.String()))
 		default:
 			c.log.Debugf("Unhandled event type: %T", v)
 		}
@@ -199,7 +199,7 @@ func (c *Client) handleMessage(msg *events.Message) {
 	}
 	ts := msg.Info.Timestamp.Format("2006-01-02 15:04:05")
 	if nm.msg.MediaType != "" {
-		c.log.Infof("[%s] %s %s: [%s: %s] %s", ts, direction, c.redactor.JID(nm.msg.Sender), nm.msg.MediaType, nm.msg.Filename, c.redactor.Body(nm.msg.Content))
+		c.log.Infof("[%s] %s %s: [%s: %s] %s", ts, direction, c.redactor.JID(nm.msg.Sender), nm.msg.MediaType, c.redactor.Body(nm.msg.Filename), c.redactor.Body(nm.msg.Content))
 	} else if nm.msg.Content != "" {
 		c.log.Infof("[%s] %s %s: %s", ts, direction, c.redactor.JID(nm.msg.Sender), c.redactor.Body(nm.msg.Content))
 	}
@@ -230,7 +230,7 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 
 		jid, err := types.ParseJID(rawChatJID)
 		if err != nil {
-			c.log.Warnf("Failed to parse JID %s: %v", rawChatJID, err)
+			c.log.Warnf("Failed to parse JID %s: %v", c.redactor.JID(rawChatJID), err)
 			continue
 		}
 
@@ -324,7 +324,7 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 			syncedCount++
 			if nm.msg.MediaType != "" {
 				c.log.Infof("Stored message: [%s] %s -> %s: [%s: %s] %s",
-					timestamp.Format("2006-01-02 15:04:05"), c.redactor.JID(nm.msg.Sender), c.redactor.JID(chatJID), nm.msg.MediaType, nm.msg.Filename, c.redactor.Body(nm.msg.Content))
+					timestamp.Format("2006-01-02 15:04:05"), c.redactor.JID(nm.msg.Sender), c.redactor.JID(chatJID), nm.msg.MediaType, c.redactor.Body(nm.msg.Filename), c.redactor.Body(nm.msg.Content))
 			} else {
 				c.log.Infof("Stored message: [%s] %s -> %s: %s",
 					timestamp.Format("2006-01-02 15:04:05"), c.redactor.JID(nm.msg.Sender), c.redactor.JID(chatJID), c.redactor.Body(nm.msg.Content))
@@ -340,16 +340,18 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 // (for history sync), contact store lookups, and finally the JID.
 // The conversation parameter is the typed whatsmeow Conversation from a
 // history-sync payload; pass nil for live messages.
+//
+// The cache hit and the lookup start log at Debug: they run for every message.
 func (c *Client) GetChatName(jid types.JID, chatJID string, conversation *waHistorySync.Conversation, sender string) string {
 	if existing := c.store.FindChatName(chatJID); existing != "" {
-		c.log.Infof("Using existing chat name for %s: %s", chatJID, existing)
+		c.log.Debugf("Using existing chat name for %s: %s", c.redactor.JID(chatJID), c.redactor.Body(existing))
 		return existing
 	}
 
 	var name string
 
 	if jid.Server == "g.us" {
-		c.log.Infof("Getting name for group: %s", chatJID)
+		c.log.Debugf("Getting name for group: %s", c.redactor.JID(chatJID))
 
 		if conversation != nil {
 			if dn := conversation.GetDisplayName(); dn != "" {
@@ -363,13 +365,13 @@ func (c *Client) GetChatName(jid types.JID, chatJID string, conversation *waHist
 			name = c.resolveChatNameFallback(context.Background(), jid, sender)
 		}
 
-		c.log.Infof("Using group name: %s", name)
+		c.log.Infof("Using group name for %s: %s", c.redactor.JID(chatJID), c.redactor.Body(name))
 	} else {
-		c.log.Infof("Getting name for contact: %s", chatJID)
+		c.log.Debugf("Getting name for contact: %s", c.redactor.JID(chatJID))
 
 		name = c.resolveChatNameFallback(context.Background(), jid, sender)
 
-		c.log.Infof("Using contact name: %s", name)
+		c.log.Infof("Using contact name for %s: %s", c.redactor.JID(chatJID), c.redactor.Body(name))
 	}
 
 	return name
@@ -480,7 +482,7 @@ func (c *Client) handlePollVote(msg *events.Message, chatJID, voterJID string) {
 
 	vote, err := c.wa.DecryptPollVote(ctx, msg)
 	if err != nil {
-		c.log.Warnf("Failed to decrypt poll vote from %s in %s: %v", voterJID, chatJID, err)
+		c.log.Warnf("Failed to decrypt poll vote from %s in %s: %s", c.redactor.JID(voterJID), c.redactor.JID(chatJID), c.redactor.Err(err))
 		return
 	}
 
@@ -488,7 +490,7 @@ func (c *Client) handlePollVote(msg *events.Message, chatJID, voterJID string) {
 	key := pu.GetPollCreationMessageKey()
 	pollID := key.GetID()
 	if pollID == "" {
-		c.log.Warnf("Poll vote missing poll creation message id (chat=%s)", chatJID)
+		c.log.Warnf("Poll vote missing poll creation message id (chat=%s)", c.redactor.JID(chatJID))
 		return
 	}
 
@@ -498,7 +500,7 @@ func (c *Client) handlePollVote(msg *events.Message, chatJID, voterJID string) {
 	if err != nil {
 		// No cached metadata — we've probably never seen the poll creation
 		// message. Log without listing option text and bail.
-		c.log.Warnf("Poll vote for unknown poll %s in %s: %v", pollID, chatJID, err)
+		c.log.Warnf("Poll vote for unknown poll %s in %s: %v", c.redactor.MsgID(pollID), c.redactor.JID(chatJID), err)
 		return
 	}
 
@@ -522,9 +524,9 @@ func (c *Client) handlePollVote(msg *events.Message, chatJID, voterJID string) {
 	}
 
 	if err := c.store.StorePollVote(ctx, pollID, chatJID, voterJID, selected, ts); err != nil {
-		c.log.Warnf("Failed to store poll vote for poll %s in %s: %v", pollID, chatJID, err)
+		c.log.Warnf("Failed to store poll vote for poll %s in %s: %v", c.redactor.MsgID(pollID), c.redactor.JID(chatJID), err)
 		return
 	}
 
-	c.log.Debugf("Recorded poll vote from %s on poll %s with %d selections", voterJID, pollID, len(selected))
+	c.log.Debugf("Recorded poll vote from %s on poll %s with %d selections", c.redactor.JID(voterJID), c.redactor.MsgID(pollID), len(selected))
 }

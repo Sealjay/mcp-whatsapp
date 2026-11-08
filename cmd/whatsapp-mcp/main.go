@@ -33,7 +33,7 @@ Commands:
 
 Global flags (before the command):
   -store DIR   Directory holding messages.db and whatsapp.db (default: ./store)
-  -debug       Show full JIDs and message bodies in logs (default: redacted)
+  -debug       Show full JIDs, names and message bodies in logs (default: redacted)
   -version     Print version and exit
 
 Serve-specific flags (after 'serve'):
@@ -65,7 +65,7 @@ func main() {
 	fs := flag.NewFlagSet("whatsapp-mcp", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	fs.StringVar(&storeDir, "store", "./store", "directory holding messages.db and whatsapp.db")
-	fs.BoolVar(&debug, "debug", false, "show full JIDs and message bodies in logs (default: redacted)")
+	fs.BoolVar(&debug, "debug", false, "show full JIDs, names and message bodies in logs (default: redacted)")
 	fs.Usage = func() { fmt.Fprint(os.Stderr, usage) }
 
 	if err := fs.Parse(os.Args[1:]); err != nil {

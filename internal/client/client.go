@@ -50,6 +50,12 @@ type Client struct {
 	limiter          *ratelimit.Limiter
 }
 
+// newWAClient creates the whatsmeow client for device. whatsmeow logs through
+// a redactingLogger, so the JIDs in its own log lines are masked like ours.
+func newWAClient(device *wmstore.Device, logger waLog.Logger, redactor *security.Redactor) *whatsmeow.Client {
+	return whatsmeow.NewClient(device, redactingLogger{inner: logger, redactor: redactor})
+}
+
 // New constructs a Client. It sets the latest WhatsApp version best-effort,
 // opens the whatsmeow sqlstore, and loads the first device. The returned
 // Client is NOT connected; call Login or Connect.
@@ -98,7 +104,7 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 
 	dbLog := NewStderrLogger("Database", "INFO", true)
 	waPath := filepath.Join(cfg.StoreDir, "whatsapp.db")
-	container, err := sqlstore.New(ctx, "sqlite3", "file:"+waPath+"?_foreign_keys=on", dbLog)
+	container, err := sqlstore.New(ctx, "sqlite3", "file:"+waPath+"?_foreign_keys=on", redactingLogger{inner: dbLog, redactor: redactor})
 	if err != nil {
 		return nil, fmt.Errorf("open whatsmeow sqlstore: %w", err)
 	}
@@ -118,7 +124,7 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		}
 	}
 
-	wa := whatsmeow.NewClient(device, logger)
+	wa := newWAClient(device, logger, redactor)
 	if wa == nil {
 		return nil, errors.New("failed to create whatsmeow client")
 	}
