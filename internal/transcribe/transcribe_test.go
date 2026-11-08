@@ -184,12 +184,25 @@ func TestEndpoint_LoopbackRule(t *testing.T) {
 		if _, err := (Config{URL: u}).endpoint(); err == nil || !strings.Contains(err.Error(), "ALLOW_REMOTE") {
 			t.Errorf("%s must be refused without ALLOW_REMOTE, got %v", u, err)
 		}
-		if _, err := (Config{URL: u, AllowRemote: true}).endpoint(); err != nil {
+		_, err := (Config{URL: u, AllowRemote: true}).endpoint()
+		if strings.HasPrefix(u, "http://") {
+			if err == nil || !strings.Contains(err.Error(), "HTTPS") {
+				t.Errorf("%s must require HTTPS even with AllowRemote: %v", u, err)
+			}
+		} else if err != nil {
 			t.Errorf("%s must be accepted with AllowRemote: %v", u, err)
 		}
 	}
 	if _, err := (Config{URL: "ftp://127.0.0.1"}).endpoint(); err == nil {
 		t.Error("non-http scheme must be rejected")
+	}
+}
+
+func TestTranscribe_RejectsRemoteHTTPBeforeReadingAudio(t *testing.T) {
+	cfg := Config{URL: "http://whisper.internal", AllowRemote: true, Token: "test-token"}
+	_, err := Transcribe(context.Background(), cfg, filepath.Join(t.TempDir(), "absent.ogg"), "")
+	if err == nil || !strings.Contains(err.Error(), "HTTPS") {
+		t.Fatalf("want TLS policy rejection before reading audio, got %v", err)
 	}
 }
 
