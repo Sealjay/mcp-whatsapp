@@ -33,6 +33,7 @@ func TestRunServe_RejectsInvalidReadOnlyEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	defer output.Close()
 	originalStderr := os.Stderr
 	os.Stderr = output
@@ -45,5 +46,26 @@ func TestRunServe_RejectsInvalidReadOnlyEnvironment(t *testing.T) {
 	}
 	if code != 2 || !strings.Contains(string(raw), "WHATSAPP_MCP_READ_ONLY") {
 		t.Fatalf("invalid read-only config: code %d, stderr %s", code, raw)
+	}
+}
+
+func TestRunServe_RejectsInvalidLabelsEnvironment(t *testing.T) {
+	t.Setenv("WHATSAPP_MCP_LABELS", "invalid")
+	output, err := os.CreateTemp(t.TempDir(), "stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer output.Close()
+	originalStderr := os.Stderr
+	os.Stderr = output
+	defer func() { os.Stderr = originalStderr }()
+
+	code := runServe(t.TempDir(), &security.Redactor{}, []string{"-addr", "0.0.0.0:1"})
+	raw, err := os.ReadFile(output.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != 2 || !strings.Contains(string(raw), "WHATSAPP_MCP_LABELS") {
+		t.Fatalf("invalid labels config: code %d, stderr %s", code, raw)
 	}
 }

@@ -22,9 +22,10 @@ import (
 
 func runServe(storeDir string, redactor *security.Redactor, args []string) int {
 	var (
-		addr        string
-		allowRemote bool
-		readOnly    bool
+		addr          string
+		allowRemote   bool
+		readOnly      bool
+		labelsEnabled bool
 	)
 	if value := os.Getenv("WHATSAPP_MCP_READ_ONLY"); value != "" {
 		var err error
@@ -34,12 +35,21 @@ func runServe(storeDir string, redactor *security.Redactor, args []string) int {
 			return 2
 		}
 	}
+	if value := os.Getenv("WHATSAPP_MCP_LABELS"); value != "" {
+		var err error
+		labelsEnabled, err = strconv.ParseBool(value)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "WHATSAPP_MCP_LABELS must be a boolean (for example, 1 or 0)")
+			return 2
+		}
+	}
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	fs.StringVar(&addr, "addr", "", "HTTP bind address (default: 127.0.0.1:8765, env WHATSAPP_MCP_ADDR)")
 	fs.BoolVar(&allowRemote, "allow-remote", false, "allow binding to a non-loopback address")
 	fullHistoryFlag := registerFullHistory(fs)
 	fs.BoolVar(&readOnly, "read-only", readOnly, "exclude tools that send or mutate WhatsApp (env WHATSAPP_MCP_READ_ONLY)")
+	fs.BoolVar(&labelsEnabled, "enable-labels", labelsEnabled, "enable WhatsApp Business label sync and tools (env WHATSAPP_MCP_LABELS)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -107,6 +117,7 @@ func runServe(storeDir string, redactor *security.Redactor, args []string) int {
 		Logger:           client.NewStderrLogger("Client", "INFO", false),
 		AllowedMediaRoot: allowedMediaRoot,
 		Redactor:         redactor,
+		LabelsEnabled:    labelsEnabled,
 		FullHistory:      fullHistory,
 	})
 	if err != nil {
@@ -131,10 +142,13 @@ func runServe(storeDir string, redactor *security.Redactor, args []string) int {
 
 	var mcpServer *mcpsrv.Server
 	if readOnly {
-		mcpServer = mcpsrv.NewReadOnlyServer(c, d.Cache())
+		mcpServer = mcpsrv.NewReadOnlyServer(c, d.Cache(), labelsEnabled)
 		fmt.Fprintln(os.Stderr, "read-only mode: WhatsApp mutation tools are disabled; /pair remains available to the operator")
 	} else {
-		mcpServer = mcpsrv.NewServer(c, d.Cache())
+		mcpServer = mcpsrv.NewServer(c, d.Cache(), labelsEnabled)
+	}
+	if labelsEnabled {
+		fmt.Fprintln(os.Stderr, "WhatsApp Business label sync and tools are enabled")
 	}
 	d.SetMCPMount(mcpServer.AttachHTTP)
 

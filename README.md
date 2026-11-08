@@ -20,7 +20,7 @@ This started as a fork of [lharries/whatsapp-mcp](https://github.com/lharries/wh
 - **Sent-message storage** — outgoing messages are persisted locally so conversation history stays complete.
 - **Disappearing-message timers** — outgoing messages inherit the group chat's ephemeral timer automatically.
 - **Targeted history sync** — on-demand per-chat backfill via the `request_sync` tool.
-- **Extended tool surface** — 43 tools (see below): reactions, replies, edits, revoke, mark-read, typing, is-on-whatsapp, full group admin, blocklist, polls (create + vote + tally), contact cards, view-once flag, presence, privacy settings, and the profile "About" text.
+- **Extended tool surface** — 43 tools by default (see below), plus four opt-in WhatsApp Business label tools; reactions, replies, edits, revoke, mark-read, typing, full group admin, blocklist, polls, contact cards, transcription, view-once, presence, privacy settings, and the profile "About" text.
 - **Single-instance enforcement** — a `flock(2)` on `store/.lock` prevents two `serve` processes racing on the same SQLite files.
 
 ## Setup
@@ -96,13 +96,14 @@ Paths outside the root, including symlinks that resolve outside it, are rejected
 - `-addr host:port` (env `WHATSAPP_MCP_ADDR`, default `127.0.0.1:8765`).
 - `-allow-remote`: bind a non-loopback address. Requires `WHATSAPP_MCP_TOKEN`, a bearer token for `/mcp` and `/pair/*`; `serve` exits without it.
 - `-read-only` (env `WHATSAPP_MCP_READ_ONLY=1`): expose only the 15 tools that cannot send messages, mark messages read, publish presence, or change the WhatsApp account. Removed tools are rejected even when called directly. `get_status` reports `read_only`, and MCP instructions report the mode.
+- `-enable-labels` (env `WHATSAPP_MCP_LABELS=1`, default off): enable WhatsApp Business label event capture, one-time initial sync, and four read-only label tools. The flag is set before connecting; it is not changed during a live sync.
 - `WHATSAPP_MCP_MEDIA_ROOT`: the file allowlist root above.
 - `WHATSAPP_MCP_TRANSCRIBE_URL`: enables `transcribe_audio`. Base URL of a speech-to-text service that implements the OpenAI-compatible `POST /v1/audio/transcriptions` (a local whisper.cpp or faster-whisper server, LocalAI, or a hosted API). Unset = feature off. A non-loopback host is refused unless `WHATSAPP_MCP_TRANSCRIBE_ALLOW_REMOTE=1`, so audio never leaves the machine by accident. HTTP redirects are refused; configure the final transcription endpoint directly.
   Optional: `WHATSAPP_MCP_TRANSCRIBE_MODEL`, `WHATSAPP_MCP_TRANSCRIBE_LANGUAGE` (ISO 639-1; empty = autodetect), `WHATSAPP_MCP_TRANSCRIBE_TOKEN` (bearer token for the service), `WHATSAPP_MCP_TRANSCRIBE_MAX_SECONDS` (default 600). Ogg/Opus duration is checked before upload; malformed streams are rejected. Other formats rely on the service's duration limit. Transcripts are third-party content and are cached in `messages.db`. The first transcript is reused; changing the model or language affects only messages without a cached transcript.
 - `WHATSAPP_MCP_DEBUG=1` or `-debug`: verbose logs (see [Debug logging](#debug-logging)).
 - `-full-history` (env `WHATSAPP_MCP_FULL_HISTORY`): ask for a full history sync when pairing through `/pair` (see [Full history at pairing](#full-history-at-pairing)).
 
-For an archive or summarisation client, start with `./bin/whatsapp-mcp serve -read-only`. Downloads, history requests and metadata queries still work and can write the local cache; this mode is not offline-only. Transcription is excluded because it uploads private audio to another service. Pairing and reset remain operator actions through `/pair`, and the mode does not restrict which cached data a client can read. The default still exposes all 43 tools. `-read-only=false` overrides an enabled environment setting; invalid environment values stop startup rather than silently enabling mutation tools.
+For an archive or summarisation client, start with `./bin/whatsapp-mcp serve -read-only`. Downloads, history requests and metadata queries still work and can write the local cache; this mode is not offline-only. Transcription is excluded because it uploads private audio to another service. Labels are excluded unless explicitly enabled; with labels enabled, all four label tools are still available in read-only mode. Pairing and reset remain operator actions through `/pair`, and the mode does not restrict which cached data a client can read. The default exposes 43 tools. `-read-only=false` overrides an enabled environment setting; invalid environment values stop startup rather than silently enabling mutation tools.
 
 ## Running the daemon
 
@@ -150,7 +151,7 @@ Data lives under `./store/` (`-store DIR`): `messages.db` (message cache), `what
 
 ## Tools
 
-43 tools, grouped by purpose.
+43 tools by default, grouped by purpose. `-enable-labels` adds four WhatsApp Business tools (47 total).
 
 ### Read / query
 
@@ -176,6 +177,17 @@ Data lives under `./store/` (`-store DIR`): `messages.db` (message cache), `what
 | `send_poll_vote` | Cast a vote on a previously-seen poll; `options` must match option names exactly |
 | `get_poll_results` | Return the tally for a poll we have cached (includes 0-vote options) |
 | `send_contact_card` | Send a contact card; synthesises a vCard 3.0 from `name` + `phone`, or pass a raw `vcard` to skip synthesis. Incoming contact cards are stored as text (`[Contact] Name: +phone`) |
+
+### WhatsApp Business labels (opt-in)
+
+Enable with `serve -enable-labels` or `WHATSAPP_MCP_LABELS=1`. Label tools are not advertised by default. When enabled, the server captures label changes and performs a one-time full app-state sync; `resync_labels` can refresh the local cache later. Personal accounts normally return an empty list.
+
+| Tool | Purpose |
+|---|---|
+| `list_labels` | List cached labels with colour and chat counts |
+| `list_chats_by_label` | List chats carrying a label by id or name |
+| `get_chat_labels` | List labels attached to a chat |
+| `resync_labels` | Re-fetch app state to refresh cached labels |
 
 ### Message actions
 
