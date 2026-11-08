@@ -193,6 +193,47 @@ func TestHandleHistorySync_GroupParticipant(t *testing.T) {
 	}
 }
 
+func TestHandleHistorySync_GroupParticipantResync(t *testing.T) {
+	s := newTestStoreWithLIDMap(t, map[string]string{"99887766": "447700000002"})
+	c := newHistoryTestClient(t, s)
+
+	const group = "123456789-1234567890@g.us"
+	if err := s.StoreChat(group, "Project Team", time.Now()); err != nil {
+		t.Fatalf("seed chat: %v", err)
+	}
+
+	msg := historyMsg(historyKey(group, "resync-1", false, ""), &waProto.Message{Conversation: proto.String("hello")})
+	runHistorySync(c, group, msg)
+	if r := mustStored(t, s, "resync-1"); r.sender != "123456789-1234567890" {
+		t.Fatalf("initial sender = %q, want group fallback", r.sender)
+	}
+
+	msg.Message.Participant = proto.String("99887766@lid")
+	keyFirst := historyMsg(historyKey(group, "key-first", false, "447700000003@s.whatsapp.net"), &waProto.Message{Conversation: proto.String("key sender")})
+	keyFirst.Message.Participant = proto.String("99887766@lid")
+	own := historyMsg(historyKey(group, "own", true, ""), &waProto.Message{Conversation: proto.String("my message")})
+	own.Message.Participant = proto.String("99887766@lid")
+	runHistorySync(c, group, msg, keyFirst, own)
+
+	if r := mustStored(t, s, "resync-1"); r.chatJID != group || r.sender != "447700000002" || r.content != "hello" || r.isFromMe {
+		t.Errorf("resynced message stored as %+v", r)
+	}
+	if r := mustStored(t, s, "key-first"); r.sender != "447700000003" || r.isFromMe {
+		t.Errorf("key participant message stored as %+v", r)
+	}
+	if r := mustStored(t, s, "own"); r.sender != historyOwnPhone || !r.isFromMe {
+		t.Errorf("own message stored as %+v", r)
+	}
+
+	messages, err := s.ListMessages(context.Background(), store.ListMessagesParams{ChatJID: group, SenderPhone: "447700000002"})
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(messages) != 1 || messages[0].ID != "resync-1" {
+		t.Errorf("filtered messages = %+v, want only resync-1", messages)
+	}
+}
+
 func TestHandleHistorySync_SkipsEditsAndRevokes(t *testing.T) {
 	s := newTestStoreWithLIDMap(t, nil)
 	c := newHistoryTestClient(t, s)
