@@ -441,9 +441,10 @@ func (s *Store) resolveSenderPhone(sender string) string {
 	return sender
 }
 
-// chatSelectSQL returns the shared 6-column chat projection (jid, name,
-// last_message_time, plus the latest message's content/sender/is_from_me
-// when includeLastMessage) used by both ListChats and GetChat. alias
+// chatSelectSQL returns the shared 8-column chat projection (jid, name,
+// last_message_time, plus the latest message's content/sender/is_from_me and
+// edit/revoke markers when includeLastMessage) used by both ListChats and
+// GetChat. alias
 // qualifies the chat column references; pass "chats" for an unaliased FROM
 // clause (ListChats) or a short alias like "c" when the caller appends its
 // own WHERE clause on that alias (GetChat).
@@ -459,6 +460,8 @@ func chatSelectSQL(alias string, includeLastMessage bool) string {
 		%s.last_message_time,
 		NULL,
 		NULL,
+		NULL,
+		0,
 		NULL
 	FROM %s`, alias, alias, alias, from)
 	}
@@ -468,7 +471,9 @@ func chatSelectSQL(alias string, includeLastMessage bool) string {
 		%s.last_message_time,
 		latest_msg.content,
 		latest_msg.sender,
-		latest_msg.is_from_me
+		latest_msg.is_from_me,
+		latest_msg.edited_at IS NOT NULL,
+		latest_msg.revoked_at
 	FROM %s
 		LEFT JOIN messages AS latest_msg ON %s.jid = latest_msg.chat_jid
 		AND latest_msg.rowid = (
@@ -478,7 +483,7 @@ func chatSelectSQL(alias string, includeLastMessage bool) string {
 		)`, alias, alias, alias, from, alias, alias)
 }
 
-// scanChatRow scans the 6-column projection used by ListChats and GetChat.
+// scanChatRow scans the 8-column projection used by ListChats and GetChat.
 func scanChatRow(row interface {
 	Scan(dest ...any) error
 }) (Chat, error) {
@@ -489,17 +494,24 @@ func scanChatRow(row interface {
 		lastMessage  sql.NullString
 		lastSender   sql.NullString
 		lastIsFromMe sql.NullBool
+		lastEdited   bool
+		lastRevoked  sql.NullTime
 	)
-	if err := row.Scan(&jid, &name, &lastTime, &lastMessage, &lastSender, &lastIsFromMe); err != nil {
+	if err := row.Scan(&jid, &name, &lastTime, &lastMessage, &lastSender, &lastIsFromMe, &lastEdited, &lastRevoked); err != nil {
 		return Chat{}, err
 	}
 	c := Chat{
 		JID:          jid,
 		Name:         name.String,
-		LastMessage:  lastMessage.String,
 		LastSender:   lastSender.String,
 		LastIsFromMe: lastIsFromMe.Bool,
 	}
+	var revokedAt *time.Time
+	if lastRevoked.Valid {
+		at := lastRevoked.Time.UTC()
+		revokedAt = &at
+	}
+	c.LastMessage = formatMessageContent(lastMessage.String, lastEdited, lastRevoked.Valid, revokedAt)
 	if lastTime.Valid {
 		c.LastMessageTime = lastTime.Time
 	}

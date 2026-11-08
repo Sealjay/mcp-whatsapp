@@ -112,6 +112,18 @@ func (c *Client) checkSendRate(ctx context.Context, recipientJID types.JID) erro
 	return nil
 }
 
+// sendMessage sends msg to `to` after checkSendRate admits it. Replies,
+// reactions, polls, poll votes and contact cards all send through it, so none
+// of them bypasses the limiter. send and inviteParticipant check the limiter
+// themselves before uploading media or building the invite, and the
+// history-sync request to our own phone is not a chat message.
+func (c *Client) sendMessage(ctx context.Context, to types.JID, msg *waProto.Message) (whatsmeow.SendResponse, error) {
+	if err := c.checkSendRate(ctx, to); err != nil {
+		return whatsmeow.SendResponse{}, err
+	}
+	return c.waSend(ctx, to, msg)
+}
+
 // ephemeralContextInfo returns the MessageContextInfo carrying the group's
 // disappearing-message timer for chat, or nil if chat isn't a group,
 // GetGroupInfo fails, or no timer is set. Shared by send and SendReply.

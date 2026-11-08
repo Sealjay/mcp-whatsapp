@@ -88,47 +88,50 @@ func (c *Client) MarkChatRead(ctx context.Context, chatJID string, limit int) (i
 }
 
 // SendReaction adds (or clears, if emoji is empty) a reaction to a message.
+// It goes through the send rate limiter (sendMessage) like any other send:
+// the reaction reaches the recipient's devices as a message.
 func (c *Client) SendReaction(ctx context.Context, chatJID, messageID, senderJID, emoji string) error {
-	if !c.wa.IsConnected() {
+	if !c.isConnected() {
 		return errors.New("not connected to WhatsApp")
 	}
-	chat, err := types.ParseJID(chatJID)
+	chat, err := parseRecipient(chatJID)
 	if err != nil {
 		return fmt.Errorf("invalid chat JID: %w", err)
 	}
 	var sender types.JID
 	if senderJID != "" {
-		sender, err = types.ParseJID(senderJID)
+		sender, err = parseRecipient(senderJID)
 		if err != nil {
 			return fmt.Errorf("invalid sender JID: %w", err)
 		}
 	}
 
 	reaction := c.wa.BuildReaction(chat, sender, types.MessageID(messageID), emoji)
-	if _, err := c.wa.SendMessage(ctx, chat, reaction); err != nil {
+	if _, err := c.sendMessage(ctx, chat, reaction); err != nil {
 		return fmt.Errorf("send reaction: %w", err)
 	}
 	return nil
 }
 
-// SendReply sends a text reply that quotes targetMessageID from chatJID.
+// SendReply sends a text reply that quotes targetMessageID from chatJID. Like
+// Send, it goes through the send rate limiter and caches the sent message.
 func (c *Client) SendReply(ctx context.Context, chatJID, targetMessageID, targetSenderJID, body string) error {
-	if !c.wa.IsConnected() {
+	if !c.isConnected() {
 		return errors.New("not connected to WhatsApp")
 	}
-	chat, err := types.ParseJID(chatJID)
+	chat, err := parseRecipient(chatJID)
 	if err != nil {
 		return fmt.Errorf("invalid chat JID: %w", err)
 	}
 
 	participant := ""
 	if targetSenderJID != "" {
-		// ContextInfo.Participant expects a JID string for group quotes.
-		if sender, perr := types.ParseJID(targetSenderJID); perr == nil {
-			participant = sender.ToNonAD().String()
-		} else {
-			participant = targetSenderJID
+		sender, err := parseRecipient(targetSenderJID)
+		if err != nil {
+			return fmt.Errorf("invalid target sender JID: %w", err)
 		}
+		// ContextInfo.Participant expects a JID string for group quotes.
+		participant = sender.ToNonAD().String()
 	}
 
 	ctxInfo := &waProto.ContextInfo{
@@ -146,9 +149,13 @@ func (c *Client) SendReply(ctx context.Context, chatJID, targetMessageID, target
 		MessageContextInfo: c.ephemeralContextInfo(ctx, chat),
 	}
 
-	if _, err := c.wa.SendMessage(ctx, chat, msg); err != nil {
+	resp, err := c.sendMessage(ctx, chat, msg)
+	if err != nil {
 		return fmt.Errorf("send reply: %w", err)
 	}
+	// Cache the reply like Send does. The cache has no column for the quote,
+	// so the row holds the text only.
+	c.persistSent(ctx, chat, resp.ID, body, "", msg)
 	return nil
 }
 

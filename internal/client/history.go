@@ -40,7 +40,7 @@ const DefaultSyncCount = 50
 // count bounds the batch size; zero means DefaultSyncCount. Returns a
 // human-readable status.
 func (c *Client) RequestHistorySync(ctx context.Context, chatJID string, fromTimestamp time.Time, anchor string, count int, useLID bool) (string, error) {
-	c.log.Infof("[SYNC] Requesting history sync for chat: %s (anchor=%q, from=%v)", chatJID, anchor, fromTimestamp)
+	c.log.Infof("[SYNC] Requesting history sync for chat: %s (anchor=%q, from=%v)", c.redactor.JID(chatJID), anchor, fromTimestamp)
 
 	if c.wa == nil || !c.wa.IsConnected() {
 		return "", fmt.Errorf("client not connected")
@@ -74,13 +74,13 @@ func (c *Client) RequestHistorySync(ctx context.Context, chatJID string, fromTim
 	requestJID := jid
 	if useLID && jid.Server == types.DefaultUserServer {
 		if lidJID, lerr := c.wa.Store.LIDs.GetLIDForPN(ctx, jid); lerr == nil && !lidJID.IsEmpty() {
-			c.log.Infof("[SYNC] Found LID mapping: %s -> %s", jid.String(), lidJID.String())
+			c.log.Infof("[SYNC] Found LID mapping: %s -> %s", c.redactor.JID(jid.String()), c.redactor.JID(lidJID.String()))
 			requestJID = lidJID
 		} else {
-			c.log.Infof("[SYNC] No LID mapping found for %s, using original JID", jid.String())
+			c.log.Infof("[SYNC] No LID mapping found for %s, using original JID", c.redactor.JID(jid.String()))
 		}
 	} else if !useLID {
-		c.log.Infof("[SYNC] LID resolution disabled; requesting with phone-number JID %s", jid.String())
+		c.log.Infof("[SYNC] LID resolution disabled; requesting with phone-number JID %s", c.redactor.JID(jid.String()))
 	}
 
 	messageInfo := &types.MessageInfo{
@@ -98,9 +98,9 @@ func (c *Client) RequestHistorySync(ctx context.Context, chatJID string, fromTim
 	}
 
 	ownJID := c.wa.Store.ID.ToNonAD()
-	c.log.Infof("[SYNC] Sending peer message to own JID: %s", ownJID.String())
+	c.log.Infof("[SYNC] Sending peer message to own JID: %s", c.redactor.JID(ownJID.String()))
 	c.log.Infof("[SYNC] Request details: ChatJID=%s (request uses %s), MsgID=%s, IsFromMe=%v, Timestamp=%v, Count=%d",
-		chatJID, requestJID.String(), msgID, isFromMe, timestamp, count)
+		c.redactor.JID(chatJID), c.redactor.JID(requestJID.String()), c.redactor.MsgID(msgID), isFromMe, timestamp, count)
 
 	resp, err := c.wa.SendMessage(ctx, ownJID, historyMsg, whatsmeow.SendRequestExtra{Peer: true})
 	if err != nil {

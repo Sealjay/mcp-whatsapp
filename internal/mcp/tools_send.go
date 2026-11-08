@@ -167,7 +167,8 @@ func (s *Server) registerSendReaction() {
 		mcp.WithIdempotentHintAnnotation(true),
 		mcp.WithOpenWorldHintAnnotation(true),
 	)
-	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a sendReactionArgs) (*mcp.CallToolResult, error) {
+	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, req mcp.CallToolRequest, a sendReactionArgs) (*mcp.CallToolResult, error) {
+		ctx = withRateLimitOverride(ctx, req)
 		if err := s.client.SendReaction(ctx, a.ChatJID, a.MessageID, a.SenderJID, a.Emoji); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -196,7 +197,8 @@ func (s *Server) registerSendReply() {
 		mcp.WithIdempotentHintAnnotation(false),
 		mcp.WithOpenWorldHintAnnotation(true),
 	)
-	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a sendReplyArgs) (*mcp.CallToolResult, error) {
+	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, req mcp.CallToolRequest, a sendReplyArgs) (*mcp.CallToolResult, error) {
+		ctx = withRateLimitOverride(ctx, req)
 		if err := s.client.SendReply(ctx, a.ChatJID, a.TargetMessageID, a.TargetSenderJID, a.Body); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}

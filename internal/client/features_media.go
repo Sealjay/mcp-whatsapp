@@ -19,7 +19,7 @@ func (c *Client) SendPoll(ctx context.Context, recipient, question string, optio
 	if len(options) < 2 {
 		return SendResult{Success: false, Message: "poll needs at least 2 options"}
 	}
-	if !c.wa.IsConnected() {
+	if !c.isConnected() {
 		return SendResult{Success: false, Message: "Not connected to WhatsApp"}
 	}
 	if selectableCount <= 0 {
@@ -35,7 +35,7 @@ func (c *Client) SendPoll(ctx context.Context, recipient, question string, optio
 	// MessageContextInfo so that votes on the poll can be decrypted later.
 	msg := c.wa.BuildPollCreation(question, options, selectableCount)
 
-	resp, err := c.wa.SendMessage(ctx, recipientJID, msg)
+	resp, err := c.sendMessage(ctx, recipientJID, msg)
 	if err != nil {
 		return SendResult{Success: false, Message: fmt.Sprintf("Error sending poll: %v", err)}
 	}
@@ -58,7 +58,7 @@ func (c *Client) SendPoll(ctx context.Context, recipient, question string, optio
 // original poll's message ID. options must exactly match the option names
 // on the poll creation message.
 func (c *Client) SendPollVote(ctx context.Context, chatJID, pollMessageID string, options []string) SendResult {
-	if !c.wa.IsConnected() {
+	if !c.isConnected() {
 		return SendResult{Success: false, Message: "Not connected to WhatsApp"}
 	}
 	if pollMessageID == "" {
@@ -101,7 +101,7 @@ func (c *Client) SendPollVote(ctx context.Context, chatJID, pollMessageID string
 		return SendResult{Success: false, Message: fmt.Sprintf("Error building poll vote: %v", err)}
 	}
 
-	resp, err := c.wa.SendMessage(ctx, chat, voteMsg)
+	resp, err := c.sendMessage(ctx, chat, voteMsg)
 	if err != nil {
 		return SendResult{Success: false, Message: fmt.Sprintf("Error sending poll vote: %v", err)}
 	}
@@ -178,7 +178,7 @@ func resolvePollSenderJID(sender string, chat types.JID) (types.JID, error) {
 // SendContactCard sends a contact vCard. If vcardOverride is non-empty, it is
 // sent verbatim; otherwise buildVCard(name, phone) synthesises a vCard 3.0.
 func (c *Client) SendContactCard(ctx context.Context, recipient, name, phone, vcardOverride string) SendResult {
-	if !c.wa.IsConnected() {
+	if !c.isConnected() {
 		return SendResult{Success: false, Message: "Not connected to WhatsApp"}
 	}
 	if name == "" && phone == "" && vcardOverride == "" {
@@ -207,7 +207,7 @@ func (c *Client) SendContactCard(ctx context.Context, recipient, name, phone, vc
 		},
 	}
 
-	resp, err := c.wa.SendMessage(ctx, recipientJID, msg)
+	resp, err := c.sendMessage(ctx, recipientJID, msg)
 	if err != nil {
 		return SendResult{Success: false, Message: fmt.Sprintf("Error sending contact card: %v", err)}
 	}

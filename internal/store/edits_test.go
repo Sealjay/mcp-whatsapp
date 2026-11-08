@@ -186,6 +186,7 @@ func TestStoreMessage_KeepsEditOnRedelivery(t *testing.T) {
 	if ok, _ := s.ApplyEdit(ctx, editChat, "e-alice", alice, "edited text", editTS.Add(time.Minute)); !ok {
 		t.Fatal("edit not applied")
 	}
+
 	if err := s.StoreMessage(ctx, Message{ID: "e-alice", ChatJID: editChat, Sender: "447700000001",
 		Content: "original text", Timestamp: editTS}, nil, nil, nil, 0); err != nil {
 		t.Fatalf("re-store: %v", err)
@@ -202,6 +203,49 @@ func TestStoreMessage_KeepsEditOnRedelivery(t *testing.T) {
 	if r := readEditRow(t, s, "e-mine"); r.content != "my text, re-delivered" {
 		t.Errorf("unedited row content = %q, want the re-delivered content", r.content)
 	}
+}
+
+func TestChatPreviewsMarkEditedAndRevokedMessages(t *testing.T) {
+	s := openTestStore(t)
+	seedEditRows(t, s)
+	ctx := context.Background()
+
+	chat, err := s.GetChat(ctx, editChat, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chat.LastMessage != "" {
+		t.Fatalf("GetChat without preview = %q, want empty", chat.LastMessage)
+	}
+
+	if ok, err := s.ApplyEdit(ctx, editChat, "e-media", alice, "edited caption", editTS.Add(30*time.Second)); err != nil || !ok {
+		t.Fatalf("ApplyEdit = %v, %v; want applied", ok, err)
+	}
+	chat, err = s.GetChat(ctx, editChat, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chat.LastMessage != "[edited] edited caption" {
+		t.Fatalf("GetChat preview = %q, want edited marker", chat.LastMessage)
+	}
+
+	if ok, err := s.ApplyRevoke(ctx, editChat, "e-media", alice, editTS.Add(time.Minute)); err != nil || !ok {
+		t.Fatalf("ApplyRevoke = %v, %v; want applied", ok, err)
+	}
+	chats, err := s.ListChats(ctx, "", 20, 0, true, "last_active")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, chat := range chats {
+		if chat.JID == editChat {
+			want := "[deleted 2026-02-01 09:01:00 UTC] edited caption"
+			if chat.LastMessage != want {
+				t.Fatalf("ListChats preview = %q, want %q", chat.LastMessage, want)
+			}
+			return
+		}
+	}
+	t.Fatalf("ListChats did not return %s", editChat)
 }
 
 func TestListMessages_EditedAndRevoked(t *testing.T) {
