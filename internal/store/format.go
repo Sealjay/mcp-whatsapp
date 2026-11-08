@@ -14,6 +14,13 @@ func (s *Store) FormatMessage(ctx context.Context, m Message, showChatInfo bool)
 	b.WriteString(m.Timestamp.Format("2006-01-02 15:04:05"))
 	b.WriteString("] ")
 
+	// Expose the message ID on every line so clients can react to, reply to or mark-read text messages too.
+	if m.ID != "" {
+		b.WriteString("[ID: ")
+		b.WriteString(m.ID)
+		b.WriteString("] ")
+	}
+
 	if showChatInfo && m.ChatName != "" {
 		b.WriteString("Chat: ")
 		b.WriteString(m.ChatName)
