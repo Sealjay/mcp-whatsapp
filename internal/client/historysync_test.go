@@ -1,7 +1,9 @@
 package client
 
 import (
+	"bytes"
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -283,5 +285,53 @@ func TestHandleHistorySync_PollCreation(t *testing.T) {
 	opts, err := s.GetPollOptions(context.Background(), "poll-1", chat)
 	if err != nil || len(opts) != 2 || opts[0] != "Yes" || opts[1] != "No" {
 		t.Errorf("poll options = %v, %v; want [Yes No]", opts, err)
+	}
+}
+
+func TestCombinedHistoryCaptionsContactCardsAndRedaction(t *testing.T) {
+	s := newTestStoreWithLIDMap(t, nil)
+	c := newHistoryTestClient(t, s)
+	var logs bytes.Buffer
+	c.log = &stderrLogger{out: &logs, mod: "test", min: logLevelToInt["DEBUG"]}
+	const chat = "447700900001@s.whatsapp.net"
+	if err := s.StoreChat(chat, "Private chat name", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		id, want string
+		message  *waProto.Message
+	}{
+		{"caption-combined", "Private caption", &waProto.Message{
+			DocumentWithCaptionMessage: &waProto.FutureProofMessage{Message: &waProto.Message{
+				DocumentMessage: &waProto.DocumentMessage{
+					FileName: proto.String("Private filename.pdf"),
+					Caption:  proto.String("Private caption"),
+				},
+			}},
+		}},
+		{"card-combined", "[Contact] Private contact name: +447700900002", &waProto.Message{
+			EphemeralMessage: &waProto.FutureProofMessage{Message: &waProto.Message{
+				ContactMessage: &waProto.ContactMessage{
+					DisplayName: proto.String("Private contact name"),
+					Vcard:       proto.String("BEGIN:VCARD\r\nTEL;waid=447700900002:+447700900002\r\nEND:VCARD\r\n"),
+				},
+			}},
+		}},
+	} {
+		runHistorySync(c, chat, historyMsg(historyKey(chat, tc.id, false, ""), tc.message))
+		result, err := s.GetMessageContext(context.Background(), tc.id, 0, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		formatted := s.FormatMessage(context.Background(), result.Message, false)
+		if result.Message.Content != tc.want || !strings.Contains(formatted, "[ID: "+tc.id+"]") || !strings.Contains(formatted, tc.want) {
+			t.Fatalf("%s lost content or ID: %q", tc.id, formatted)
+		}
+	}
+	for _, private := range []string{"Private", "447700900001", "447700900002"} {
+		if strings.Contains(logs.String(), private) {
+			t.Fatalf("private content in non-debug logs: %s", logs.String())
+		}
 	}
 }
