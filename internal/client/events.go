@@ -164,31 +164,13 @@ func (c *Client) handleMessage(msg *events.Message) {
 		return
 	}
 
-	// Poll creation — store a "[poll] <question>" row for readability and
-	// cache the option names so we can decode vote SHA-256 hashes later.
-	var pollOptions []string
-	if msg.Message != nil {
-		if pc := msg.Message.GetPollCreationMessage(); pc != nil {
-			pollOptions = extractPollOptionNames(pc)
-			if nm.msg.Content == "" {
-				nm.msg.Content = "[poll] " + pc.GetName()
-			}
-		}
-	}
+	pollOptions := applyPollCreation(&nm, msg.Message)
 
 	if nm.msg.Content == "" && nm.msg.MediaType == "" {
 		return
 	}
 
-	err := c.store.StoreMessage(context.Background(), nm.msg, nm.mediaKey, nm.fileSHA256, nm.fileEncSHA256, nm.fileLength)
-
-	if err == nil && len(pollOptions) > 0 {
-		if perr := c.store.StorePollMetadata(context.Background(), msg.Info.ID, nm.chatJID, pollOptions); perr != nil {
-			c.log.Warnf("Failed to store poll metadata for %s: %v", msg.Info.ID, perr)
-		}
-	}
-
-	if err != nil {
+	if err := c.storeNormalized(context.Background(), nm, pollOptions); err != nil {
 		c.log.Warnf("Failed to store message: %v", err)
 		return
 	}
@@ -275,6 +257,14 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 			}
 			timestamp := time.Unix(int64(msgTS), 0)
 
+			// History messages keep the wrappers live events arrive without
+			// (ephemeral, view-once, document with caption, device-sent, ...).
+			// Edits and other protocol messages are not stored.
+			evt := (&events.Message{RawMessage: msg.Message.GetMessage()}).UnwrapRaw()
+			if evt.IsEdit || evt.Message.GetProtocolMessage() != nil {
+				continue
+			}
+
 			// Determine sender and isFromMe from the message key.
 			var rawSenderJID, senderUser string
 			isFromMe := false
@@ -282,8 +272,14 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 				if msg.Message.Key.FromMe != nil {
 					isFromMe = *msg.Message.Key.FromMe
 				}
-				if !isFromMe && msg.Message.Key.Participant != nil && *msg.Message.Key.Participant != "" {
-					rawSenderJID = *msg.Message.Key.Participant
+				// Some history payloads carry a group sender only in the
+				// top-level participant field.
+				participant := msg.Message.Key.GetParticipant()
+				if participant == "" {
+					participant = msg.Message.GetParticipant()
+				}
+				if !isFromMe && participant != "" {
+					rawSenderJID = participant
 					senderUser = strings.Split(rawSenderJID, "@")[0]
 				} else if isFromMe {
 					rawSenderJID = ownID + "@s.whatsapp.net"
@@ -305,8 +301,9 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 			nm := c.normalizeIncomingMessage(
 				rawChatJID, rawSenderJID, senderUser,
 				isGroup, isFromMe, ownID,
-				msgID, timestamp, msg.Message.Message,
+				msgID, timestamp, evt.Message,
 			)
+			pollOptions := applyPollCreation(&nm, evt.Message)
 
 			c.log.Infof("Message content: %s, Media Type: %s", c.redactor.Body(nm.msg.Content), nm.msg.MediaType)
 			if nm.msg.Content == "" && nm.msg.MediaType == "" {
@@ -317,7 +314,7 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 			// conversation header — avoids re-resolving per message.
 			nm.msg.ChatJID = chatJID
 
-			if err := c.store.StoreMessage(ctx, nm.msg, nm.mediaKey, nm.fileSHA256, nm.fileEncSHA256, nm.fileLength); err != nil {
+			if err := c.storeNormalized(ctx, nm, pollOptions); err != nil {
 				c.log.Warnf("Failed to store history message: %v", err)
 				continue
 			}
@@ -333,6 +330,35 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 	}
 
 	c.log.Infof("History sync complete. Stored %d messages.", syncedCount)
+}
+
+// applyPollCreation handles a poll-creation message: it gives the row a
+// readable "[poll] <question>" body when it has none and returns the option
+// names, which must be cached so vote SHA-256 hashes can be decoded later.
+// Returns nil for any other message.
+func applyPollCreation(nm *normalizedMessage, m *waProto.Message) []string {
+	pc := m.GetPollCreationMessage()
+	if pc == nil {
+		return nil
+	}
+	if nm.msg.Content == "" {
+		nm.msg.Content = "[poll] " + pc.GetName()
+	}
+	return extractPollOptionNames(pc)
+}
+
+// storeNormalized persists a normalised message and, for poll creations,
+// the option names returned by applyPollCreation.
+func (c *Client) storeNormalized(ctx context.Context, nm normalizedMessage, pollOptions []string) error {
+	if err := c.store.StoreMessage(ctx, nm.msg, nm.mediaKey, nm.fileSHA256, nm.fileEncSHA256, nm.fileLength); err != nil {
+		return err
+	}
+	if len(pollOptions) > 0 {
+		if err := c.store.StorePollMetadata(ctx, nm.msg.ID, nm.msg.ChatJID, pollOptions); err != nil {
+			c.log.Warnf("Failed to store poll metadata for %s: %v", nm.msg.ID, err)
+		}
+	}
+	return nil
 }
 
 // GetChatName determines the appropriate name for a chat. It checks the
