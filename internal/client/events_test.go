@@ -1,11 +1,17 @@
 package client
 
 import (
+	"context"
+	"strings"
 	"testing"
 	"time"
 
 	waProto "go.mau.fi/whatsmeow/binary/proto"
+	"go.mau.fi/whatsmeow/types"
+	"go.mau.fi/whatsmeow/types/events"
 	"google.golang.org/protobuf/proto"
+
+	"github.com/sealjay/mcp-whatsapp/internal/store"
 )
 
 func TestNormalizeIncomingMessage_LIDOriginSender(t *testing.T) {
@@ -168,5 +174,69 @@ func TestNormalizeIncomingMessage_NilMessage(t *testing.T) {
 	}
 	if nm.msg.MediaType != "" {
 		t.Errorf("mediaType = %q, want empty for nil message", nm.msg.MediaType)
+	}
+}
+
+// TestHandleMessage_MediaCaptionStoredAndSearchable: an incoming captioned
+// image is stored with its caption as content, so a list_messages query finds
+// it and the formatted line shows the caption after the media marker. A
+// caption-less image is still stored, with empty content.
+func TestHandleMessage_MediaCaptionStoredAndSearchable(t *testing.T) {
+	s := newTestStoreWithLIDMap(t, nil)
+	c := newClientWithStore(t, s)
+
+	const chatJIDStr = "447700000001@s.whatsapp.net"
+	if err := s.StoreChat(chatJIDStr, "Alice", time.Now()); err != nil {
+		t.Fatalf("seed chat: %v", err)
+	}
+	chatJID, err := types.ParseJID(chatJIDStr)
+	if err != nil {
+		t.Fatalf("parse chat jid: %v", err)
+	}
+
+	for _, m := range []struct {
+		id  string
+		msg *waProto.Message
+	}{
+		{"caption-img-1", &waProto.Message{ImageMessage: &waProto.ImageMessage{
+			Caption:    proto.String("Receipt for the Lisbon hotel"),
+			FileSHA256: []byte{0x01},
+		}}},
+		{"plain-img-1", &waProto.Message{ImageMessage: &waProto.ImageMessage{
+			FileSHA256: []byte{0x02},
+		}}},
+	} {
+		c.handleMessage(&events.Message{
+			Info: types.MessageInfo{
+				MessageSource: types.MessageSource{Chat: chatJID, Sender: chatJID},
+				ID:            m.id,
+				Timestamp:     time.Date(2026, 2, 1, 10, 0, 0, 0, time.UTC),
+			},
+			Message: m.msg,
+		})
+	}
+
+	ctx := context.Background()
+	got, err := s.ListMessages(ctx, store.ListMessagesParams{Query: "lisbon hotel"})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "caption-img-1" {
+		t.Fatalf("query matched %+v, want only caption-img-1", got)
+	}
+	if got[0].MediaType != "image" || got[0].Content != "Receipt for the Lisbon hotel" {
+		t.Errorf("stored media_type=%q content=%q, want image with caption", got[0].MediaType, got[0].Content)
+	}
+	line := s.FormatMessage(ctx, got[0], false)
+	if !strings.Contains(line, "[image - Message ID: caption-img-1 - Chat JID: "+chatJIDStr+"] Receipt for the Lisbon hotel") {
+		t.Errorf("formatted line = %q, want caption after the media marker", line)
+	}
+
+	var content string
+	if err := s.DB().QueryRow("SELECT content FROM messages WHERE id = ?", "plain-img-1").Scan(&content); err != nil {
+		t.Fatalf("caption-less image not stored: %v", err)
+	}
+	if content != "" {
+		t.Errorf("caption-less image content = %q, want empty", content)
 	}
 }

@@ -1,6 +1,12 @@
 package security
 
-import "testing"
+import (
+	"errors"
+	"fmt"
+	"io/fs"
+	"strings"
+	"testing"
+)
 
 func TestRedactor_JID(t *testing.T) {
 	r := &Redactor{}
@@ -144,5 +150,35 @@ func TestRedactor_MsgID_EmptyDebug(t *testing.T) {
 	r := &Redactor{Debug: true}
 	if got := r.MsgID(""); got != "" {
 		t.Fatalf("MsgID debug mode empty string should be empty, got %q", got)
+	}
+}
+
+func TestRedactor_Err(t *testing.T) {
+	r := &Redactor{}
+	if got := r.Err(nil); got != "<nil>" {
+		t.Errorf("Err(nil) = %q", got)
+	}
+
+	// whatsmeow's message-secret errors name the sender JIDs.
+	decrypt := fmt.Errorf("failed to decrypt secret message: %w (sender: 447700900123:12@s.whatsapp.net, orig sender: 98765432101234@lid and 120363000000000001@g.us)", errors.New("cipher: message authentication failed"))
+	got := r.Err(fmt.Errorf("failed to decrypt poll vote: %w", decrypt))
+	for _, leak := range []string{"447700900123", "98765432101234", "120363000000000001"} {
+		if strings.Contains(got, leak) {
+			t.Errorf("Err leaks %s: %q", leak, got)
+		}
+	}
+	if !strings.Contains(got, "message authentication failed") || !strings.Contains(got, "****00123:12@s.whatsapp.net") {
+		t.Errorf("Err dropped the cause or the masked JID: %q", got)
+	}
+
+	path := "/store/447700900123@s.whatsapp.net/4d5347/photo of Alice.jpg"
+	pathErr := fmt.Errorf("remove cache: %w", &fs.PathError{Op: "unlinkat", Path: path, Err: fs.ErrPermission})
+	if got := r.Err(pathErr); got != "remove cache: unlinkat [path]: permission denied" {
+		t.Errorf("path error = %q, want the path dropped and the cause kept", got)
+	}
+
+	debug := &Redactor{Debug: true}
+	if got := debug.Err(pathErr); !strings.Contains(got, "photo of Alice.jpg") || strings.Contains(got, "447700900123") {
+		t.Errorf("debug Err = %q, want the path kept with phone digits masked", got)
 	}
 }

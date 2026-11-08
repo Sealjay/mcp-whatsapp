@@ -70,6 +70,25 @@ func TestFormatMessage_MediaPrefix(t *testing.T) {
 	}
 }
 
+func TestFormatMessage_TextMessageCarriesID(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	m := Message{
+		ID:        "3EB0ABC123",
+		ChatJID:   "447700000001@s.whatsapp.net",
+		Sender:    "me",
+		Content:   "plain text",
+		Timestamp: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC),
+		IsFromMe:  true,
+	}
+	got := s.FormatMessage(ctx, m, false)
+	want := "[2026-01-02 03:04:05] [ID: 3EB0ABC123] From: Me: plain text\n"
+	if got != want {
+		t.Fatalf("expected %q, got %q", want, got)
+	}
+}
+
 func TestFormatMessage_NoChatPrefixWhenNotShown(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()

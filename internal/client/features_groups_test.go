@@ -15,7 +15,7 @@ import (
 // gate on — so we can exercise the "not-connected" error branch without
 // dragging in sqlite, sockets, or upstream mocks.
 func newDisconnectedClient() *Client {
-	return &Client{log: NewStderrLogger("test", "ERROR", false)}
+	return &Client{log: NewStderrLogger("test", "ERROR", false), isConnected: func() bool { return false }}
 }
 
 func TestParseParticipantJID_PhoneOnly(t *testing.T) {

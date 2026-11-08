@@ -1,5 +1,52 @@
 package mcp
 
+// Every tool is explicitly reviewed; unknown tools fail closed in read-only mode.
+var readOnlyToolAccess = map[string]bool{
+	"block_contact":             false,
+	"create_group":              false,
+	"delete_message":            false,
+	"download_media":            true,
+	"edit_message":              false,
+	"get_blocklist":             true,
+	"get_chat":                  true,
+	"get_group_info":            true,
+	"get_group_invite_link":     false,
+	"get_message_context":       true,
+	"get_poll_results":          true,
+	"get_privacy_settings":      true,
+	"get_status":                true,
+	"is_on_whatsapp":            true,
+	"join_group_with_link":      false,
+	"leave_group":               false,
+	"list_chats":                true,
+	"list_groups":               true,
+	"list_messages":             true,
+	"mark_chat_read":            false,
+	"mark_read":                 false,
+	"pairing_status":            true,
+	"request_sync":              true,
+	"search_contacts":           true,
+	"send_audio_message":        false,
+	"send_contact_card":         false,
+	"send_file":                 false,
+	"send_message":              false,
+	"send_poll":                 false,
+	"send_poll_vote":            false,
+	"send_presence":             false,
+	"send_reaction":             false,
+	"send_reply":                false,
+	"send_typing":               false,
+	"set_group_announce":        false,
+	"set_group_locked":          false,
+	"set_group_name":            false,
+	"set_group_topic":           false,
+	"set_privacy_setting":       false,
+	"set_status_message":        false,
+	"transcribe_audio":          false,
+	"unblock_contact":           false,
+	"update_group_participants": false,
+}
+
 // registerTools wires every MCP tool to the bound WhatsApp client.
 //
 // Tool registrations are split by domain:
@@ -23,4 +70,7 @@ func (s *Server) registerTools() {
 
 	// Phase 2 — polls + contact cards.
 	s.registerMediaTools()
+
+	// Speech-to-text for voice notes (opt-in; needs WHATSAPP_MCP_TRANSCRIBE_URL).
+	s.registerTranscribeTools()
 }

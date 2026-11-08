@@ -15,34 +15,39 @@ import (
 	"strings"
 )
 
-// AnalyzeOggOpus parses Ogg pages to extract duration (seconds) and generates
-// a 64-byte waveform. Returns an error if the input is not a valid Ogg file.
+// AnalyzeOggOpus returns the unclamped duration rounded up to seconds and a
+// 64-byte waveform. Truncated or invalid Ogg/Opus streams return an error.
 func AnalyzeOggOpus(data []byte) (duration uint32, waveform []byte, err error) {
 	if len(data) < 4 || string(data[0:4]) != "OggS" {
 		return 0, nil, fmt.Errorf("not a valid Ogg file (missing OggS signature)")
 	}
 
 	var lastGranule uint64
-	var sampleRate uint32 = 48000
-	var preSkip uint16 = 0
+	var preSkip uint16
 	var foundOpusHead bool
+	var ended bool
+	var unfinishedPacket bool
 
 	for i := 0; i < len(data); {
-		if i+27 >= len(data) {
-			break
+		if ended {
+			return 0, nil, errors.New("unexpected data after Ogg end of stream")
+		}
+		if len(data)-i < 27 {
+			return 0, nil, errors.New("truncated Ogg page header")
 		}
 
 		if string(data[i:i+4]) != "OggS" {
-			i++
-			continue
+			return 0, nil, errors.New("invalid Ogg page signature")
+		}
+		if data[i+4] != 0 {
+			return 0, nil, errors.New("unsupported Ogg page version")
 		}
 
 		granulePos := binary.LittleEndian.Uint64(data[i+6 : i+14])
-		pageSeqNum := binary.LittleEndian.Uint32(data[i+18 : i+22])
 		numSegments := int(data[i+26])
 
-		if i+27+numSegments >= len(data) {
-			break
+		if numSegments > len(data)-i-27 {
+			return 0, nil, errors.New("truncated Ogg segment table")
 		}
 		segmentTable := data[i+27 : i+27+numSegments]
 
@@ -50,40 +55,56 @@ func AnalyzeOggOpus(data []byte) (duration uint32, waveform []byte, err error) {
 		for _, segLen := range segmentTable {
 			pageSize += int(segLen)
 		}
-
-		if !foundOpusHead && pageSeqNum <= 1 {
-			pageData := data[i : i+pageSize]
-			headPos := bytes.Index(pageData, []byte("OpusHead"))
-			if headPos >= 0 && headPos+12 < len(pageData) {
-				headPos += 8
-				if headPos+12 <= len(pageData) {
-					preSkip = binary.LittleEndian.Uint16(pageData[headPos+10 : headPos+12])
-					sampleRate = binary.LittleEndian.Uint32(pageData[headPos+12 : headPos+16])
-					foundOpusHead = true
-				}
-			}
+		if pageSize > len(data)-i {
+			return 0, nil, errors.New("truncated Ogg page body")
 		}
 
-		if granulePos != 0 {
+		if !foundOpusHead {
+			pageData := data[i+27+numSegments : i+pageSize]
+			if !bytes.HasPrefix(pageData, []byte("OpusHead")) {
+				return 0, nil, errors.New("missing OpusHead identification header")
+			}
+			if len(pageData) < 19 {
+				return 0, nil, errors.New("truncated OpusHead identification header")
+			}
+			preSkip = binary.LittleEndian.Uint16(pageData[10:12])
+			foundOpusHead = true
+		}
+
+		ended = data[i+5]&4 != 0
+		if numSegments > 0 {
+			unfinishedPacket = segmentTable[numSegments-1] == 255
+		}
+		if ended && unfinishedPacket {
+			return 0, nil, errors.New("unfinished packet at Ogg end of stream")
+		}
+		if granulePos == math.MaxUint64 {
+			if ended {
+				return 0, nil, errors.New("undefined final Ogg granule position")
+			}
+		} else {
+			if granulePos > math.MaxInt64 || granulePos < lastGranule {
+				return 0, nil, errors.New("invalid Ogg granule position")
+			}
 			lastGranule = granulePos
 		}
 
 		i += pageSize
 	}
 
-	if lastGranule > 0 {
-		durationSeconds := float64(lastGranule-uint64(preSkip)) / float64(sampleRate)
-		duration = uint32(math.Ceil(durationSeconds))
-	} else {
-		durationEstimate := float64(len(data)) / 2000.0
-		duration = uint32(durationEstimate)
+	if !ended {
+		return 0, nil, errors.New("missing Ogg end of stream")
+	}
+	if lastGranule <= uint64(preSkip) {
+		return 0, nil, errors.New("Ogg granule position does not exceed Opus pre-skip")
 	}
 
-	if duration < 1 {
-		duration = 1
-	} else if duration > 300 {
-		duration = 300
+	// Opus granules always count 48 kHz samples, regardless of the input-rate hint.
+	seconds := (lastGranule - uint64(preSkip) + 47999) / 48000
+	if seconds > math.MaxUint32 {
+		return 0, nil, errors.New("Ogg duration exceeds the supported range")
 	}
+	duration = uint32(seconds)
 
 	waveform = PlaceholderWaveform(duration)
 	return duration, waveform, nil

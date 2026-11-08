@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 
 	"github.com/sealjay/mcp-whatsapp/internal/client"
@@ -23,11 +24,21 @@ func runServe(storeDir string, redactor *security.Redactor, args []string) int {
 	var (
 		addr        string
 		allowRemote bool
+		readOnly    bool
 	)
+	if value := os.Getenv("WHATSAPP_MCP_READ_ONLY"); value != "" {
+		var err error
+		readOnly, err = strconv.ParseBool(value)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "WHATSAPP_MCP_READ_ONLY must be a boolean (for example, 1 or 0)")
+			return 2
+		}
+	}
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	fs.StringVar(&addr, "addr", "", "HTTP bind address (default: 127.0.0.1:8765, env WHATSAPP_MCP_ADDR)")
 	fs.BoolVar(&allowRemote, "allow-remote", false, "allow binding to a non-loopback address")
+	fs.BoolVar(&readOnly, "read-only", readOnly, "exclude tools that send or mutate WhatsApp (env WHATSAPP_MCP_READ_ONLY)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -111,7 +122,13 @@ func runServe(storeDir string, redactor *security.Redactor, args []string) int {
 		return 1
 	}
 
-	mcpServer := mcpsrv.NewServer(c, d.Cache())
+	var mcpServer *mcpsrv.Server
+	if readOnly {
+		mcpServer = mcpsrv.NewReadOnlyServer(c, d.Cache())
+		fmt.Fprintln(os.Stderr, "read-only mode: WhatsApp mutation tools are disabled; /pair remains available to the operator")
+	} else {
+		mcpServer = mcpsrv.NewServer(c, d.Cache())
+	}
 	d.SetMCPMount(mcpServer.AttachHTTP)
 
 	fmt.Fprintf(os.Stderr, "whatsapp-mcp listening on http://%s (MCP at /mcp, pairing at /pair)\n", addr)

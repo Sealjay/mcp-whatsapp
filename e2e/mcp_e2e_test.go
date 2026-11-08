@@ -20,6 +20,7 @@ func TestHTTP_ListTools(t *testing.T) {
 		"id":      1,
 		"method":  "tools/list",
 	}
+
 	buf, _ := json.Marshal(body)
 	req, _ := http.NewRequest(http.MethodPost, "http://"+h.addr+"/mcp", bytes.NewReader(buf))
 	req.Header.Set("Content-Type", "application/json")
@@ -50,6 +51,51 @@ func TestHTTP_ListTools(t *testing.T) {
 	if !strings.Contains(body2, `"list_chats"`) {
 		t.Fatalf("tools/list should include list_chats, got: %s", body2)
 	}
+}
+
+func TestHTTP_ReadOnlyMode(t *testing.T) {
+	for _, tc := range []struct {
+		name, env string
+		args      []string
+		want      bool
+	}{
+		{"flag", "", []string{"-read-only"}, true},
+		{"environment", "1", nil, true},
+		{"explicit_disable", "1", []string{"-read-only=false"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("WHATSAPP_MCP_READ_ONLY", tc.env)
+			h := newHarness(t, tc.args...)
+			h.initializeMCP()
+			result := h.callTool("get_status", map[string]any{})
+			var status struct {
+				ReadOnly bool `json:"read_only"`
+			}
+			if err := json.Unmarshal([]byte(result.Text), &status); err != nil {
+				t.Fatal(err)
+			}
+			if result.IsError || status.ReadOnly != tc.want {
+				t.Fatalf("read-only mode: got %s, want %v", result.Text, tc.want)
+			}
+			if result := h.callTool("list_chats", map[string]any{}); result.IsError {
+				t.Fatalf("read-only chat query failed: %s", result.Text)
+			}
+		})
+	}
+}
+
+func TestHTTP_TranscriptionNotConfigured(t *testing.T) {
+	t.Setenv("WHATSAPP_MCP_TRANSCRIBE_URL", "")
+	h := newHarness(t)
+	h.initializeMCP()
+	result := h.callTool("transcribe_audio", map[string]any{
+		"message_id": "AUDIO-1",
+		"chat_jid":   "447700000123@s.whatsapp.net",
+	})
+	if !result.IsError || !strings.Contains(result.Text, "WHATSAPP_MCP_TRANSCRIBE_URL") {
+		t.Fatalf("expected an actionable configuration error, got %+v", result)
+	}
+	t.Logf("First-use response: %s", result.Text)
 }
 
 // TestHTTP_Stateless2026 speaks the 2026-07-28 revision: no initialize, the
