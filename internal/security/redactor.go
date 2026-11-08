@@ -1,7 +1,9 @@
 package security
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"regexp"
 	"strings"
@@ -108,6 +110,32 @@ func (r *Redactor) MsgID(id string) string {
 		return "…" + string(runes[len(runes)-6:])
 	}
 	return "…" + id
+}
+
+// Err formats an error for log output. Errors from whatsmeow and the file
+// system can carry JIDs (a failed decryption names the senders) and paths
+// (media cache paths name the chat and the file). Phone digit runs, which
+// covers the user part of phone-number JIDs and LIDs, are masked to
+// "****<last5>" in both modes; non-debug also replaces the path of a
+// file-system error with "[path]".
+func (r *Redactor) Err(err error) string {
+	if err == nil {
+		return "<nil>"
+	}
+	msg := err.Error()
+	var pe *fs.PathError
+	if !r.Debug && errors.As(err, &pe) && pe.Path != "" {
+		msg = strings.ReplaceAll(msg, pe.Path, "[path]")
+	}
+	return maskPhones(msg)
+}
+
+// Line masks phone digit runs in a log line we did not format ourselves,
+// such as whatsmeow's own log output, which names full JIDs (for example
+// "Error unmarshaling plaintext message from <JID>"). Phone-number JIDs, LIDs
+// and group IDs become "****<last5>" in both modes, as in Err.
+func (r *Redactor) Line(line string) string {
+	return maskPhones(line)
 }
 
 // maskPhones replaces phone digit runs with "****" + last 5 characters.
