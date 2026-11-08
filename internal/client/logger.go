@@ -10,6 +10,8 @@ import (
 	"time"
 
 	waLog "go.mau.fi/whatsmeow/util/log"
+
+	"github.com/sealjay/mcp-whatsapp/internal/security"
 )
 
 var (
@@ -76,4 +78,34 @@ func (s *stderrLogger) Sub(mod string) waLog.Logger {
 		color: s.color,
 		min:   s.min,
 	}
+}
+
+// redactingLogger passes every line through Redactor.Line before handing it to
+// the wrapped logger. Our own log lines redact at the call site; whatsmeow's do
+// not (it logs full sender and chat JIDs, some at WARN), so the loggers given
+// to whatsmeow are wrapped in one.
+type redactingLogger struct {
+	inner    waLog.Logger
+	redactor *security.Redactor
+}
+
+func (l redactingLogger) line(msg string, args []interface{}) string {
+	return l.redactor.Line(fmt.Sprintf(msg, args...))
+}
+
+func (l redactingLogger) Errorf(msg string, args ...interface{}) {
+	l.inner.Errorf("%s", l.line(msg, args))
+}
+func (l redactingLogger) Warnf(msg string, args ...interface{}) {
+	l.inner.Warnf("%s", l.line(msg, args))
+}
+func (l redactingLogger) Infof(msg string, args ...interface{}) {
+	l.inner.Infof("%s", l.line(msg, args))
+}
+func (l redactingLogger) Debugf(msg string, args ...interface{}) {
+	l.inner.Debugf("%s", l.line(msg, args))
+}
+
+func (l redactingLogger) Sub(mod string) waLog.Logger {
+	return redactingLogger{inner: l.inner.Sub(mod), redactor: l.redactor}
 }

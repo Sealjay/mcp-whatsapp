@@ -44,6 +44,38 @@ func TestExtractTextContent_ConversationWinsOverExtendedText(t *testing.T) {
 	}
 }
 
+func TestExtractTextContent_MediaCaptions(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  *waProto.Message
+		want string
+	}{
+		{"image caption", &waProto.Message{ImageMessage: &waProto.ImageMessage{Caption: proto.String("sunset at the pier")}}, "sunset at the pier"},
+		{"video caption", &waProto.Message{VideoMessage: &waProto.VideoMessage{Caption: proto.String("first steps")}}, "first steps"},
+		{"document caption", &waProto.Message{DocumentMessage: &waProto.DocumentMessage{
+			Caption:  proto.String("signed lease"),
+			Title:    proto.String("lease.pdf"),
+			FileName: proto.String("lease.pdf"),
+		}}, "signed lease"},
+		{"image without caption", &waProto.Message{ImageMessage: &waProto.ImageMessage{}}, ""},
+		{"video with empty caption", &waProto.Message{VideoMessage: &waProto.VideoMessage{Caption: proto.String("")}}, ""},
+		// Title and FileName are not captions; the filename has its own column.
+		{"document without caption", &waProto.Message{DocumentMessage: &waProto.DocumentMessage{
+			Title:    proto.String("lease.pdf"),
+			FileName: proto.String("lease.pdf"),
+		}}, ""},
+		{"audio", &waProto.Message{AudioMessage: &waProto.AudioMessage{PTT: proto.Bool(true)}}, ""},
+		{"sticker", &waProto.Message{StickerMessage: &waProto.StickerMessage{}}, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := extractTextContent(tc.msg); got != tc.want {
+				t.Fatalf("extractTextContent = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestExtractMediaInfo_Nil(t *testing.T) {
 	mediaType, filename, url, directPath, mediaKey, sha, encSHA, length := extractMediaInfo(nil)
 	if mediaType != "" || filename != "" || url != "" || directPath != "" ||

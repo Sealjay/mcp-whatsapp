@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sealjay/mcp-whatsapp/internal/security"
 	"github.com/sealjay/mcp-whatsapp/internal/store"
 	"go.mau.fi/whatsmeow"
 )
@@ -253,6 +254,43 @@ func TestDownload_InvalidCacheIsReplacedAfterValidatedDownload(t *testing.T) {
 	onDisk, err := os.ReadFile(cachePath)
 	if err != nil || string(onDisk) != string(payload) {
 		t.Fatalf("cache not replaced: %q err=%v", onDisk, err)
+	}
+}
+
+// An unreadable cache entry is logged and ignored. The file-system error names
+// the cache path, which contains the chat JID and the filename, so the
+// non-debug log line keeps only the operation and cause.
+func TestDownload_InvalidCacheLogRedactsPath(t *testing.T) {
+	for _, debug := range []bool{false, true} {
+		c, logs := newLogCapturingClient(t, debug)
+		const msgID = "M-CACHE-DIR"
+		digest := sha256.Sum256([]byte("payload"))
+		if err := c.store.StoreChat(logTestDMJID, logTestDMName, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.store.StoreMessage(context.Background(), store.Message{
+			ID: msgID, ChatJID: logTestDMJID, Sender: logTestDMJID, Timestamp: time.Now().UTC(),
+			MediaType: "document", Filename: logTestDocName,
+		}, nil, digest[:], nil, 0); err != nil {
+			t.Fatal(err)
+		}
+		// A directory where the cached file should be: stat succeeds, the
+		// SHA-256 check then fails with "read <path>: is a directory".
+		cachePath := filepath.Join(c.store.Dir(), logTestDMJID, hex.EncodeToString([]byte(msgID)), security.SafeFilename(logTestDocName))
+		if err := os.MkdirAll(cachePath, 0o700); err != nil {
+			t.Fatal(err)
+		}
+
+		if got := c.Download(context.Background(), msgID, logTestDMJID, ""); got.Success {
+			t.Fatalf("debug=%v: expected failure at the incomplete-media guard: %+v", debug, got)
+		}
+		out := logs.String()
+		assertLogIncludes(t, out, "Ignoring invalid cached media", "is a directory")
+		assertLogExcludes(t, out, logTestDMUser)
+		if !debug {
+			assertLogIncludes(t, out, "read [path]: is a directory")
+			assertLogExcludes(t, out, "Alice", hex.EncodeToString([]byte(msgID)))
+		}
 	}
 }
 
