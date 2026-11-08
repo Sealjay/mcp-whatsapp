@@ -49,6 +49,7 @@ type Config struct {
 type Client struct {
 	wa               *whatsmeow.Client
 	downloadMedia    func(context.Context, whatsmeow.DownloadableMessage) ([]byte, error)
+	sendMediaRetry   func(context.Context, *types.MessageInfo, []byte) error
 	store            *store.Store
 	log              waLog.Logger
 	handlerID        uint32
@@ -60,11 +61,19 @@ type Client struct {
 	statusMu         sync.RWMutex
 	status           ConnectionStatus
 
+	// mediaRetries tracks media retry receipts awaiting the phone's answer
+	// (see mediaretry.go); mediaRetryTimeout overrides
+	// defaultMediaRetryTimeout when positive.
+	mediaRetries      mediaRetryRegistry
+	mediaRetryTimeout time.Duration
+	// mediaRetryGroupInfo and mediaRetryLIDs replace wa.GetGroupInfo and the
+	// device's LID store in tests (see mediaRetrySender).
+	mediaRetryGroupInfo func(context.Context, types.JID) (*types.GroupInfo, error)
+	mediaRetryLIDs      wmstore.LIDStore
 	// Speech-to-text (see transcribe.go). transcribeFn is a test seam.
 	transcribeCfg transcribe.Config
 	transcribeFn  func(ctx context.Context, cfg transcribe.Config, path, language string) (transcribe.Result, error)
 	transcribeMu  sync.Mutex
-
 	// isConnected and waSend are wa's IsConnected and SendMessage, used by
 	// SendReply, SendReaction, polls and contact cards (waSend through the
 	// rate-limited sendMessage); tests replace them.
@@ -170,6 +179,7 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 	return &Client{
 		wa:               wa,
 		downloadMedia:    wa.Download,
+		sendMediaRetry:   wa.SendMediaRetryReceipt,
 		isConnected:      wa.IsConnected,
 		waSend:           wa.SendMessage,
 		store:            cfg.Store,
