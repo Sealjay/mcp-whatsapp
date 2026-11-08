@@ -49,6 +49,7 @@ type Config struct {
 type Client struct {
 	wa               *whatsmeow.Client
 	downloadMedia    func(context.Context, whatsmeow.DownloadableMessage) ([]byte, error)
+	groupInfo        func(context.Context, types.JID) (*types.GroupInfo, error)
 	sendMediaRetry   func(context.Context, *types.MessageInfo, []byte) error
 	store            *store.Store
 	log              waLog.Logger
@@ -182,6 +183,7 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		sendMediaRetry:   wa.SendMediaRetryReceipt,
 		isConnected:      wa.IsConnected,
 		waSend:           wa.SendMessage,
+		groupInfo:        wa.GetGroupInfo,
 		store:            cfg.Store,
 		log:              logger,
 		allowedMediaRoot: cfg.AllowedMediaRoot,

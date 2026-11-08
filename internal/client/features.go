@@ -177,6 +177,7 @@ func (c *Client) EditMessage(ctx context.Context, chatJID, messageID, newBody st
 	if _, err := c.wa.SendMessage(ctx, chat, edit); err != nil {
 		return fmt.Errorf("send edit: %w", err)
 	}
+	c.recordOwnEdit(ctx, chat, messageID, newBody)
 	return nil
 }
 
@@ -203,6 +204,7 @@ func (c *Client) DeleteMessage(ctx context.Context, chatJID, messageID, senderJI
 	if _, err := c.wa.SendMessage(ctx, chat, revoke); err != nil {
 		return fmt.Errorf("send revoke: %w", err)
 	}
+	c.recordOwnRevoke(ctx, chat, revoke.GetProtocolMessage().GetKey())
 	return nil
 }
 
