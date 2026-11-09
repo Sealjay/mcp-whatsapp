@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 
 	"github.com/sealjay/mcp-whatsapp/internal/security"
 	"go.mau.fi/whatsmeow"
@@ -96,16 +95,14 @@ func (c *Client) download(ctx context.Context, messageID, chatJID, outputPath st
 		}
 	}
 
-	// Skip-if-exists at the caller's destination: symmetric with the cache
-	// short-circuit below. Idempotent re-calls are a no-op.
+	// An existing file at the caller's destination counts as a success only
+	// when it already holds this message's verified payload (a repeat call).
+	// Anything else may be unrelated, so reject before any network work and
+	// leave the file untouched.
 	if resolvedOutput != "" {
 		if _, statErr := os.Stat(resolvedOutput); statErr == nil {
-			return DownloadResult{
-				Success:   true,
-				Message:   fmt.Sprintf("Successfully downloaded %s media", mediaType),
-				MediaType: mediaType,
-				Filename:  filename,
-				Path:      resolvedOutput,
+			if validateCachedMedia(resolvedOutput, fileLength, fileSHA256) != nil {
+				return DownloadResult{Success: false, Message: fmt.Sprintf("output_path already exists with different content: %s; choose a new path", resolvedOutput)}
 			}
 		}
 	}
@@ -300,19 +297,12 @@ func finalizeDownload(localPath, absPath, resolvedOutput, mediaType, filename st
 	}
 }
 
-// placeAtOutput materialises src at dst. Prefers a hard link (zero-copy, O(1))
-// and falls back to a stream copy on cross-device (EXDEV). If dst already
-// exists, returns nil — the caller has already cleared the skip-if-exists
-// check, so EEXIST here is a benign race and the file satisfies the request.
+// placeAtOutput materialises src at dst as an independent copy. A hard link
+// is deliberately not used: writes through dst would then modify the cached
+// file, at the cost of a second copy on disk. O_EXCL means an existing dst is
+// never truncated or overwritten; if it already has identical content (a
+// repeat call) that is a no-op, otherwise it is reported as an error.
 func placeAtOutput(src, dst string) error {
-	if err := os.Link(src, dst); err == nil {
-		return nil
-	} else if errors.Is(err, syscall.EEXIST) {
-		return nil
-	} else if !errors.Is(err, syscall.EXDEV) {
-		return err
-	}
-	// Cross-device — fall back to a copy.
 	in, err := os.Open(src)
 	if err != nil {
 		return err
@@ -320,8 +310,11 @@ func placeAtOutput(src, dst string) error {
 	defer in.Close()
 	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
-		if errors.Is(err, syscall.EEXIST) {
-			return nil
+		if errors.Is(err, os.ErrExist) {
+			if sameContent(src, dst) {
+				return nil
+			}
+			return fmt.Errorf("output_path already exists with different content: %s", dst)
 		}
 		return err
 	}
@@ -330,6 +323,37 @@ func placeAtOutput(src, dst string) error {
 		return err
 	}
 	return out.Close()
+}
+
+// sameContent reports whether the files at a and b have identical bytes.
+func sameContent(a, b string) bool {
+	ai, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	bi, err := os.Stat(b)
+	if err != nil || ai.Size() != bi.Size() {
+		return false
+	}
+	ha, err := fileSHA256Sum(a)
+	if err != nil {
+		return false
+	}
+	hb, err := fileSHA256Sum(b)
+	return err == nil && bytes.Equal(ha, hb)
+}
+
+func fileSHA256Sum(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	digest := sha256.New()
+	if _, err := io.Copy(digest, f); err != nil {
+		return nil, err
+	}
+	return digest.Sum(nil), nil
 }
 
 // preferredDirectPath picks the value handed to whatsmeow as the download's
