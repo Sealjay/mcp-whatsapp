@@ -462,5 +462,45 @@ func migrateSchema(db *sql.DB) error {
 			return fmt.Errorf("add column revoked_at: %w", err)
 		}
 	}
-	return nil
+	return rekeyDevicePollVoters(db)
+}
+
+// devicePollVoter matches voter_jid values carrying a device suffix
+// ("447700000001:5@s.whatsapp.net"), which older versions stored for votes
+// cast from linked devices.
+const devicePollVoter = `instr(voter_jid, ':') BETWEEN 2 AND instr(voter_jid, '@') - 1`
+
+// rekeyDevicePollVoters moves poll votes stored under a device JID to the
+// account JID, keeping each account's newest selection, so a voter is counted
+// once. Idempotent: no device-suffixed voter remains afterwards.
+func rekeyDevicePollVoters(db *sql.DB) error {
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'poll_votes'`).Scan(&n); err != nil {
+		return fmt.Errorf("check poll_votes table: %w", err)
+	}
+	if n == 0 {
+		return nil
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin poll voter rekey: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`INSERT INTO poll_votes
+		 (poll_message_id, poll_chat_jid, voter_jid, selected_options_json, timestamp)
+		 SELECT poll_message_id, poll_chat_jid,
+		        substr(voter_jid, 1, instr(voter_jid, ':') - 1) || substr(voter_jid, instr(voter_jid, '@')),
+		        selected_options_json, timestamp
+		 FROM poll_votes WHERE ` + devicePollVoter + `
+		 ORDER BY timestamp
+		 ON CONFLICT (poll_message_id, poll_chat_jid, voter_jid) DO UPDATE SET
+		     selected_options_json = excluded.selected_options_json,
+		     timestamp = excluded.timestamp
+		 WHERE excluded.timestamp >= poll_votes.timestamp`); err != nil {
+		return fmt.Errorf("rekey device poll voters: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM poll_votes WHERE ` + devicePollVoter); err != nil {
+		return fmt.Errorf("delete device poll voters: %w", err)
+	}
+	return tx.Commit()
 }

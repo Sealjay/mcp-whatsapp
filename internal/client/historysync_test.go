@@ -361,32 +361,40 @@ func TestHandleHistorySync_GroupWithoutParticipant(t *testing.T) {
 }
 
 func TestHandleHistorySync_PollCreation(t *testing.T) {
-	s := newTestStoreWithLIDMap(t, nil)
-	c := newHistoryTestClient(t, s)
-
-	const chat = "447700000001@s.whatsapp.net"
-	if err := s.StoreChat(chat, "Alice", time.Now()); err != nil {
-		t.Fatalf("seed chat: %v", err)
-	}
-
-	runHistorySync(c, chat, historyMsg(historyKey(chat, "poll-1", false, ""), &waProto.Message{
-		EphemeralMessage: &waProto.FutureProofMessage{Message: &waProto.Message{
-			PollCreationMessage: &waProto.PollCreationMessage{
-				Name: proto.String("Lunch?"),
-				Options: []*waProto.PollCreationMessage_Option{
-					{OptionName: proto.String("Yes")},
-					{OptionName: proto.String("No")},
-				},
+	lunch := func() *waProto.PollCreationMessage {
+		return &waProto.PollCreationMessage{
+			Name: proto.String("Lunch?"),
+			Options: []*waProto.PollCreationMessage_Option{
+				{OptionName: proto.String("Yes")},
+				{OptionName: proto.String("No")},
 			},
-		}},
-	}))
-
-	if r := mustStored(t, s, "poll-1"); r.content != "[poll] Lunch?" {
-		t.Errorf("poll-1 content = %q, want \"[poll] Lunch?\"", r.content)
+		}
 	}
-	opts, err := s.GetPollOptions(context.Background(), "poll-1", chat)
-	if err != nil || len(opts) != 2 || opts[0] != "Yes" || opts[1] != "No" {
-		t.Errorf("poll options = %v, %v; want [Yes No]", opts, err)
+	for name, m := range map[string]*waProto.Message{
+		"ephemeral": {EphemeralMessage: &waProto.FutureProofMessage{Message: &waProto.Message{PollCreationMessage: lunch()}}},
+		"V2":        {PollCreationMessageV2: lunch()},
+		"V3":        {PollCreationMessageV3: lunch()},
+		"V5":        {PollCreationMessageV5: lunch()},
+		"V6":        {PollCreationMessageV6: lunch()},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := newTestStoreWithLIDMap(t, nil)
+			c := newHistoryTestClient(t, s)
+			const chat = "447700000001@s.whatsapp.net"
+			if err := s.StoreChat(chat, "Alice", time.Now()); err != nil {
+				t.Fatalf("seed chat: %v", err)
+			}
+
+			runHistorySync(c, chat, historyMsg(historyKey(chat, "poll-1", false, ""), m))
+
+			if r := mustStored(t, s, "poll-1"); r.content != "[poll] Lunch?" {
+				t.Errorf("poll-1 content = %q, want \"[poll] Lunch?\"", r.content)
+			}
+			opts, err := s.GetPollOptions(context.Background(), "poll-1", chat)
+			if err != nil || len(opts) != 2 || opts[0] != "Yes" || opts[1] != "No" {
+				t.Errorf("poll options = %v, %v; want [Yes No]", opts, err)
+			}
+		})
 	}
 }
 
@@ -448,12 +456,15 @@ func storedRevoked(t *testing.T, s *store.Store, id string) bool {
 	return revoked
 }
 
-func TestHandleHistorySync_ImportsPollVotes(t *testing.T) {
+const pollChat = "447700000001@s.whatsapp.net"
+
+// newPollHistoryClient returns a client holding the message secret for
+// POLL-1, a poll sent by the other side of pollChat.
+func newPollHistoryClient(t *testing.T) *Client {
+	t.Helper()
 	c, _ := newOfflinePairedClient(t, nil)
 	ctx := context.Background()
-	s := c.store
-	const chat = "447700000001@s.whatsapp.net"
-	if err := s.StoreChat(chat, "Alex", time.Now()); err != nil {
+	if err := c.store.StoreChat(pollChat, "Alex", time.Now()); err != nil {
 		t.Fatalf("StoreChat: %v", err)
 	}
 	// Message secrets belong to a saved device row.
@@ -467,8 +478,11 @@ func TestHandleHistorySync_ImportsPollVotes(t *testing.T) {
 	if err := c.wa.Store.MsgSecrets.PutMessageSecret(ctx, pollSender, pollSender, "POLL-1", secret); err != nil {
 		t.Fatalf("PutMessageSecret: %v", err)
 	}
+	return c
+}
 
-	runHistorySync(c, chat, historyMsg(historyKey(chat, "POLL-1", false, ""), &waProto.Message{
+func pollCreationMsg() *waProto.HistorySyncMsg {
+	return historyMsg(historyKey(pollChat, "POLL-1", false, ""), &waProto.Message{
 		PollCreationMessage: &waProto.PollCreationMessage{
 			Name: proto.String("Lunch?"),
 			Options: []*waProto.PollCreationMessage_Option{
@@ -476,18 +490,26 @@ func TestHandleHistorySync_ImportsPollVotes(t *testing.T) {
 				{OptionName: proto.String("No")},
 			},
 		},
-	}))
+	})
+}
 
-	vote, err := c.wa.BuildPollVote(ctx, &types.MessageInfo{
+// ownPollVoteMsg is our own encrypted vote on POLL-1.
+func ownPollVoteMsg(t *testing.T, c *Client, options ...string) *waProto.HistorySyncMsg {
+	t.Helper()
+	pollSender := types.NewJID("447700000001", types.DefaultUserServer)
+	vote, err := c.wa.BuildPollVote(context.Background(), &types.MessageInfo{
 		ID:            "POLL-1",
-		MessageSource: types.MessageSource{Chat: pollSender.ToNonAD(), Sender: pollSender.ToNonAD()},
-	}, []string{"Yes"})
+		MessageSource: types.MessageSource{Chat: pollSender, Sender: pollSender},
+	}, options)
 	if err != nil {
 		t.Fatalf("BuildPollVote: %v", err)
 	}
-	runHistorySync(c, chat, historyMsg(historyKey(chat, "VOTE-1", true, ""), vote))
+	return historyMsg(historyKey(pollChat, "VOTE-1", true, ""), vote)
+}
 
-	_, results, err := s.GetPollResults(ctx, "POLL-1", chat)
+func pollTally(t *testing.T, s *store.Store) map[string]int {
+	t.Helper()
+	_, results, err := s.GetPollResults(context.Background(), "POLL-1", pollChat)
 	if err != nil {
 		t.Fatalf("GetPollResults: %v", err)
 	}
@@ -495,7 +517,60 @@ func TestHandleHistorySync_ImportsPollVotes(t *testing.T) {
 	for _, r := range results {
 		got[r.Option] = r.Votes
 	}
-	if got["Yes"] != 1 || got["No"] != 0 {
-		t.Errorf("poll tally = %v, want Yes=1 No=0", got)
+	return got
+}
+
+func TestHandleHistorySync_ImportsPollVotes(t *testing.T) {
+	t.Run("poll cached by an earlier sync", func(t *testing.T) {
+		c := newPollHistoryClient(t)
+		runHistorySync(c, pollChat, pollCreationMsg())
+		runHistorySync(c, pollChat, ownPollVoteMsg(t, c, "Yes"))
+		if got := pollTally(t, c.store); got["Yes"] != 1 || got["No"] != 0 {
+			t.Errorf("poll tally = %v, want Yes=1 No=0", got)
+		}
+	})
+	t.Run("vote ahead of its poll in one batch", func(t *testing.T) {
+		c := newPollHistoryClient(t)
+		// History runs newest first, so the vote precedes the poll.
+		runHistorySync(c, pollChat, ownPollVoteMsg(t, c, "Yes"), pollCreationMsg())
+		if got := pollTally(t, c.store); got["Yes"] != 1 || got["No"] != 0 {
+			t.Errorf("poll tally = %v, want Yes=1 No=0", got)
+		}
+	})
+}
+
+func TestHandleHistorySync_ImportsVotesAggregatedOnPoll(t *testing.T) {
+	c, _ := newOfflinePairedClient(t, nil)
+	poll := pollCreationMsg()
+	hashes := whatsmeow.HashPollOptions([]string{"Yes", "No"})
+	poll.Message.PollUpdates = []*waProto.PollUpdate{
+		{
+			PollUpdateMessageKey: historyKey(pollChat, "VOTE-ME", true, ""),
+			Vote:                 &waProto.PollVoteMessage{SelectedOptions: [][]byte{hashes[0]}},
+			SenderTimestampMS:    proto.Int64(int64(historyTS) * 1000),
+		},
+		{
+			PollUpdateMessageKey: historyKey(pollChat, "VOTE-ALEX", false, ""),
+			Vote:                 &waProto.PollVoteMessage{SelectedOptions: [][]byte{hashes[1]}},
+		},
+	}
+	runHistorySync(c, pollChat, poll)
+
+	if got := pollTally(t, c.store); got["Yes"] != 1 || got["No"] != 1 {
+		t.Errorf("poll tally = %v, want Yes=1 No=1", got)
+	}
+}
+
+func TestRecordPollVote_KeysByAccountNotDevice(t *testing.T) {
+	c, _ := newOfflinePairedClient(t, nil)
+	ctx := context.Background()
+	runHistorySync(c, pollChat, pollCreationMsg())
+	hashes := whatsmeow.HashPollOptions([]string{"Yes", "No"})
+
+	c.recordPollVote(ctx, "POLL-1", pollChat, "447700000001:5@s.whatsapp.net", [][]byte{hashes[0]}, time.Unix(int64(historyTS), 0))
+	c.recordPollVote(ctx, "POLL-1", pollChat, "447700000001@s.whatsapp.net", [][]byte{hashes[1]}, time.Unix(int64(historyTS)+1, 0))
+
+	if got := pollTally(t, c.store); got["Yes"] != 0 || got["No"] != 1 {
+		t.Errorf("poll tally = %v, want Yes=0 No=1", got)
 	}
 }
