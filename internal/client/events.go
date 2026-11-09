@@ -3,7 +3,10 @@ package client
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"slices"
 	"sort"
 	"strings"
@@ -12,8 +15,10 @@ import (
 	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
 	"go.mau.fi/whatsmeow/proto/waHistorySync"
+	wmstore "go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/sealjay/mcp-whatsapp/internal/security"
 	"github.com/sealjay/mcp-whatsapp/internal/store"
@@ -36,6 +41,7 @@ func (c *Client) StartEventHandler() {
 			c.handleMediaRetry(v)
 		case *events.Connected:
 			c.log.Infof("Connected to WhatsApp")
+			c.replayPendingPollVotes(nil)
 			if c.labelsEnabled {
 				go c.maybeInitialLabelSync()
 			}
@@ -67,6 +73,7 @@ func (c *Client) StartEventHandler() {
 		}
 	})
 	c.handlerInstalled = true
+	c.replayPendingPollVotes(nil)
 }
 
 // normalizedMessage holds the result of normalizeIncomingMessage: the
@@ -182,7 +189,7 @@ func (c *Client) handleMessage(msg *events.Message) {
 		if voterFullJID == "" {
 			voterFullJID = msg.Info.Sender.String()
 		}
-		c.handlePollVote(msg, nm.chatJID, voterFullJID)
+		c.logPollVoteError(c.handlePollVote(msg, nm.chatJID, voterFullJID, nil))
 		return
 	}
 
@@ -200,8 +207,11 @@ func (c *Client) handleMessage(msg *events.Message) {
 	}
 
 	if err := c.storeNormalized(ctx, nm, pollOptions); err != nil {
-		c.log.Warnf("Failed to store message: %v", err)
+		c.log.Warnf("Failed to store message: %s", c.redactor.Err(err))
 		return
+	}
+	if pollOptions != nil {
+		c.replayPendingPollVotes([]string{msg.Info.Chat.String()})
 	}
 
 	direction := "<-"
@@ -218,6 +228,9 @@ func (c *Client) handleMessage(msg *events.Message) {
 
 // handleHistorySync processes a bulk history payload from WhatsApp.
 func (c *Client) handleHistorySync(historySync *events.HistorySync) {
+	if historySync == nil || historySync.Data == nil {
+		return
+	}
 	syncType := "UNKNOWN"
 	if historySync.Data.SyncType != nil {
 		syncType = historySync.Data.SyncType.String()
@@ -227,6 +240,9 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 
 	ctx := context.Background()
 	syncedCount := 0
+	if err := c.storeHistoryPollMappings(ctx, historySync.Data); err != nil {
+		c.log.Warnf("Failed to store history PN/LID mappings: %s", c.redactor.Err(err))
+	}
 
 	ownID := ""
 	if c.wa.Store.ID != nil {
@@ -246,6 +262,7 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 		}
 
 		isGroup := strings.HasSuffix(rawChatJID, "@g.us")
+		older := c.pendingPollVotes([]string{rawChatJID})
 
 		// Resolve the chat JID once for the conversation header. We
 		// normalise it here so GetChatName and StoreChat use the
@@ -350,7 +367,9 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 			// same path as live votes instead of storing a message row.
 			if evt.Message.GetPollUpdateMessage() != nil {
 				if parsed, err := c.wa.ParseWebMessage(jid, msg.Message); err == nil {
-					votes = append(votes, pendingVote{msg: parsed, voter: nm.senderFullJID})
+					if saved := c.queueHistoryPollVote(ctx, parsed); saved != nil {
+						votes = append(votes, pendingVote{pending: saved})
+					}
 				} else {
 					c.log.Warnf("Failed to parse history poll vote in %s: %s", c.redactor.JID(chatJID), c.redactor.Err(err))
 				}
@@ -358,6 +377,11 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 			}
 
 			pollOptions := applyPollCreation(&nm, evt.Message)
+			if pollOptions != nil {
+				if err := c.storeHistoryPollSecret(ctx, jid, msg.Message); err != nil {
+					c.log.Warnf("Failed to store history poll secret: %s", c.redactor.Err(err))
+				}
+			}
 
 			c.log.Infof("Message content: %s, Media Type: %s", c.redactor.Body(nm.msg.Content), nm.msg.MediaType)
 			if nm.msg.Content == "" && nm.msg.MediaType == "" {
@@ -369,7 +393,7 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 			nm.msg.ChatJID = chatJID
 
 			if err := c.storeNormalized(ctx, nm, pollOptions); err != nil {
-				c.log.Warnf("Failed to store history message: %v", err)
+				c.log.Warnf("Failed to store history message: %s", c.redactor.Err(err))
 				continue
 			}
 			syncedCount++
@@ -386,12 +410,16 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 		}
 
 		// Votes go first: a revoked poll refuses new votes but keeps those
-		// cast before the revoke.
+		// cast before the revoke. Each replay checks its own dependencies;
+		// an unrelated storage failure must not hold back a ready vote.
+		for _, pending := range older {
+			c.replayPendingPollVote(ctx, pending)
+		}
 		for _, v := range votes {
-			if v.msg != nil {
-				c.handlePollVote(v.msg, chatJID, v.voter)
+			if v.pending != nil {
+				c.replayPendingPollVote(ctx, *v.pending)
 			} else {
-				c.recordPollVote(ctx, v.pollID, chatJID, v.voter, v.selected, v.at)
+				c.logPollVoteError(c.recordPollVote(ctx, v.pollID, chatJID, v.voter, v.selected, v.at, nil))
 			}
 		}
 
@@ -404,6 +432,9 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 		}
 	}
 
+	if len(historySync.Data.GetPhoneNumberToLidMappings()) > 0 {
+		c.replayPendingPollVotes(nil)
+	}
 	c.log.Infof("History sync complete. Stored %d messages.", syncedCount)
 }
 
@@ -448,7 +479,7 @@ func (c *Client) storeNormalized(ctx context.Context, nm normalizedMessage, poll
 	}
 	if len(pollOptions) > 0 {
 		if err := c.store.StorePollMetadata(ctx, nm.msg.ID, nm.msg.ChatJID, pollOptions); err != nil {
-			c.log.Warnf("Failed to store poll metadata for %s: %v", nm.msg.ID, err)
+			return err
 		}
 	}
 	return nil
@@ -462,10 +493,10 @@ type pendingChange struct {
 }
 
 // pendingVote is a history-sync poll vote waiting for its batch to be stored.
-// msg is set for an encrypted PollUpdateMessage; otherwise the vote arrived
+// pending is set for an encrypted PollUpdateMessage; otherwise the vote arrived
 // already decrypted on the poll itself (WebMessageInfo.PollUpdates).
 type pendingVote struct {
-	msg      *events.Message
+	pending  *store.PendingPollVote
 	voter    string
 	pollID   string
 	selected [][]byte
@@ -650,48 +681,52 @@ func extractPollOptionNames(pc *waProto.PollCreationMessage) []string {
 	return out
 }
 
-// handlePollVote decrypts an incoming PollUpdateMessage and records it with
-// recordPollVote. Failures are logged (without poll content) and swallowed so
-// a broken vote never blocks the rest of message handling.
-// voterJID must be the full post-LID-resolution JID string.
-func (c *Client) handlePollVote(msg *events.Message, chatJID, voterJID string) {
+// handlePollVote uses raw message identities for crypto, never tally aliases.
+func (c *Client) handlePollVote(msg *events.Message, chatJID, voterJID string, pending *store.PendingPollVote) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	vote, err := c.wa.DecryptPollVote(ctx, msg)
 	if err != nil {
-		c.log.Warnf("Failed to decrypt poll vote from %s in %s: %s", c.redactor.JID(voterJID), c.redactor.JID(chatJID), c.redactor.Err(err))
-		return
+		return err
 	}
 
 	pollID := msg.Message.GetPollUpdateMessage().GetPollCreationMessageKey().GetID()
-	c.recordPollVote(ctx, pollID, chatJID, voterJID, vote.GetSelectedOptions(), msg.Info.Timestamp)
+	return c.recordPollVote(ctx, pollID, chatJID, voterJID, vote.GetSelectedOptions(), msg.Info.Timestamp, pending)
 }
 
 // recordPollVote reverses a vote's SelectedOptions SHA-256 hashes against the
 // cached option names and records the voter's current selection.
-func (c *Client) recordPollVote(ctx context.Context, pollID, chatJID, voterJID string, selectedHashes [][]byte, ts time.Time) {
+func (c *Client) recordPollVote(ctx context.Context, pollID, chatJID, voterJID string, selectedHashes [][]byte, ts time.Time, pending *store.PendingPollVote) error {
 	if pollID == "" {
-		c.log.Warnf("Poll vote missing poll creation message id (chat=%s)", c.redactor.JID(chatJID))
-		return
+		return errors.New("poll vote missing poll creation message ID")
 	}
 	// Key the vote by account, not device, so a vote changed on another
 	// device or replayed by history sync replaces the earlier one.
 	voter, err := types.ParseJID(voterJID)
 	if err != nil || voter.User == "" {
-		c.log.Warnf("Poll vote with no voter for poll %s in %s", c.redactor.MsgID(pollID), c.redactor.JID(chatJID))
-		return
+		return errors.New("poll vote missing valid voter")
+	}
+	if voter.Server == types.HiddenUserServer {
+		pn, err := c.wa.Store.LIDs.GetPNForLID(ctx, voter)
+		if err != nil {
+			return err
+		}
+		if !pn.IsEmpty() {
+			voter = pn
+		}
 	}
 	voterJID = voter.ToNonAD().String()
 
 	// Scope lookup to our locally-observed chatJID; ignore key.RemoteJID to
 	// prevent a crafted update from another chat polluting this chat's tally.
+	chatJID, err = c.store.ResolvePollChat(ctx, pollID, chatJID)
+	if err != nil {
+		return err
+	}
 	options, err := c.store.GetPollOptions(ctx, pollID, chatJID)
 	if err != nil {
-		// No cached metadata — we've probably never seen the poll creation
-		// message. Log without listing option text and bail.
-		c.log.Warnf("Poll vote for unknown poll %s in %s: %v", c.redactor.MsgID(pollID), c.redactor.JID(chatJID), err)
-		return
+		return err
 	}
 
 	optionHashes := whatsmeow.HashPollOptions(options)
@@ -707,14 +742,195 @@ func (c *Client) recordPollVote(ctx context.Context, pollID, chatJID, voterJID s
 
 	// Clamp the peer-supplied timestamp to now so a malicious far-future value
 	// can't permanently suppress later legitimate updates via the replay guard.
-	if now := time.Now(); ts.After(now) {
-		ts = now
+	if pending != nil {
+		err = c.store.CompletePendingPollVote(ctx, *pending, pollID, chatJID, voterJID, selected, pending.Timestamp)
+	} else {
+		if now := time.Now(); ts.After(now) {
+			ts = now
+		}
+		err = c.store.StorePollVote(ctx, pollID, chatJID, voterJID, selected, ts)
 	}
-
-	if err := c.store.StorePollVote(ctx, pollID, chatJID, voterJID, selected, ts); err != nil {
-		c.log.Warnf("Failed to store poll vote for poll %s in %s: %v", c.redactor.MsgID(pollID), c.redactor.JID(chatJID), err)
-		return
+	if err != nil {
+		return err
 	}
 
 	c.log.Debugf("Recorded poll vote from %s on poll %s with %d selections", c.redactor.JID(voterJID), c.redactor.MsgID(pollID), len(selected))
+	return nil
+}
+
+func (c *Client) pollVoteOwner() string {
+	if c.wa == nil || c.wa.Store == nil || c.wa.Store.ID == nil || c.store == nil {
+		return ""
+	}
+	owner := c.wa.Store.ID.ToNonAD()
+	if owner.User == "" || owner.Server != types.DefaultUserServer {
+		return ""
+	}
+	return owner.String()
+}
+
+func validatePendingPollMessage(msg *events.Message) error {
+	if msg.Info.ID == "" || msg.Info.Timestamp.IsZero() || msg.Info.Chat.User == "" || msg.Info.Chat.Server == "" ||
+		msg.Info.Sender.User == "" || msg.Info.Sender.Server == "" {
+		return errors.New("invalid history poll vote identity")
+	}
+	update := msg.Message.GetPollUpdateMessage()
+	key := update.GetPollCreationMessageKey()
+	if key.GetID() == "" || len(update.GetVote().GetEncIV()) != 12 || len(update.GetVote().GetEncPayload()) < 16 {
+		return errors.New("invalid history poll vote envelope")
+	}
+	if !key.GetFromMe() {
+		sender := key.GetParticipant()
+		if msg.Info.Chat.Server == types.DefaultUserServer || msg.Info.Chat.Server == types.HiddenUserServer {
+			sender = key.GetRemoteJID()
+		}
+		jid, err := types.ParseJID(sender)
+		if err != nil || jid.User == "" || (jid.Server != types.DefaultUserServer && jid.Server != types.HiddenUserServer) {
+			return errors.New("invalid history poll creation key")
+		}
+	}
+	return nil
+}
+
+func (c *Client) queueHistoryPollVote(ctx context.Context, msg *events.Message) *store.PendingPollVote {
+	owner := c.pollVoteOwner()
+	if owner == "" {
+		return nil
+	}
+	if err := validatePendingPollMessage(msg); err != nil {
+		c.logPollVoteError(err)
+		return nil
+	}
+	payload, err := proto.Marshal(msg.Message.GetPollUpdateMessage())
+	if err != nil {
+		c.logPollVoteError(err)
+		return nil
+	}
+	if len(payload) > 16384 {
+		c.log.Warnf("History poll vote exceeds 16 KiB; cached totals may be incomplete")
+		return nil
+	}
+	saved, evicted, err := c.store.QueuePendingPollVote(ctx, store.PendingPollVote{
+		OwnerJID: owner, ChatJID: msg.Info.Chat.String(), SenderJID: msg.Info.Sender.String(),
+		MessageID: msg.Info.ID, Timestamp: msg.Info.Timestamp, Payload: payload,
+	})
+	if err != nil {
+		c.logPollVoteError(err)
+		return nil
+	}
+	if evicted > 0 {
+		c.log.Warnf("Evicted %d oldest pending poll votes at capacity; cached totals may be incomplete", evicted)
+	}
+	return saved
+}
+
+func (c *Client) logPollVoteError(err error) {
+	if err == nil {
+		return
+	}
+	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, whatsmeow.ErrOriginalMessageSecretNotFound) {
+		c.log.Debugf("Poll vote deferred awaiting poll metadata or secret: %s", c.redactor.Err(err))
+	} else {
+		c.log.Warnf("Failed to process poll vote: %s", c.redactor.Err(err))
+	}
+}
+
+func (c *Client) pendingPollVotes(chats []string) []store.PendingPollVote {
+	owner := c.pollVoteOwner()
+	if owner == "" {
+		return nil
+	}
+	pending, err := c.store.PendingPollVotes(context.Background(), owner, chats)
+	if err != nil {
+		c.logPollVoteError(err)
+		return nil
+	}
+	return pending
+}
+
+func (c *Client) replayPendingPollVotes(chats []string) {
+	ctx := context.Background()
+	for _, pending := range c.pendingPollVotes(chats) {
+		c.replayPendingPollVote(ctx, pending)
+	}
+}
+
+func (c *Client) replayPendingPollVote(ctx context.Context, pending store.PendingPollVote) {
+	if pending.OwnerJID != c.pollVoteOwner() {
+		return
+	}
+	chat, chatErr := types.ParseJID(pending.ChatJID)
+	sender, senderErr := types.ParseJID(pending.SenderJID)
+	update := &waProto.PollUpdateMessage{}
+	err := proto.Unmarshal(pending.Payload, update)
+	msg := &events.Message{
+		Info: types.MessageInfo{
+			MessageSource: types.MessageSource{Chat: chat, Sender: sender},
+			ID:            pending.MessageID, Timestamp: pending.Timestamp,
+		},
+		Message: &waProto.Message{PollUpdateMessage: update},
+	}
+	if err != nil || chatErr != nil || senderErr != nil || validatePendingPollMessage(msg) != nil {
+		c.log.Warnf("Dropping malformed pending poll vote; cached totals may be incomplete")
+		c.logPollVoteError(c.store.DropPendingPollVote(ctx, pending))
+		return
+	}
+	c.logPollVoteError(c.handlePollVote(msg, pending.ChatJID, pending.SenderJID, &pending))
+}
+
+func (c *Client) storeHistoryPollMappings(ctx context.Context, history *waProto.HistorySync) error {
+	var mappings []wmstore.LIDMapping
+	for _, mapping := range history.GetPhoneNumberToLidMappings() {
+		pn, pnErr := types.ParseJID(mapping.GetPnJID())
+		lid, lidErr := types.ParseJID(mapping.GetLidJID())
+		if pn.Server == types.LegacyUserServer {
+			pn.Server = types.DefaultUserServer
+		}
+		if pnErr != nil || lidErr != nil || pn.User == "" || lid.User == "" ||
+			pn.Server != types.DefaultUserServer || lid.Server != types.HiddenUserServer {
+			c.log.Warnf("Skipping invalid history PN/LID mapping")
+			continue
+		}
+		mappings = append(mappings, wmstore.LIDMapping{PN: pn, LID: lid})
+	}
+	if len(mappings) == 0 {
+		return nil
+	}
+	if c.wa.Store.LIDs == nil {
+		return errors.New("history PN/LID store unavailable")
+	}
+	return c.wa.Store.LIDs.PutManyLIDMappings(ctx, mappings)
+}
+
+// Secret storage follows whatsmeow's historical storage rules, which differ
+// from ParseWebMessage's crypto sender (notably OriginalSelfAuthorUserJID).
+func (c *Client) storeHistoryPollSecret(ctx context.Context, chat types.JID, info *waProto.WebMessageInfo) error {
+	if len(info.GetMessageSecret()) == 0 || c.pollVoteOwner() == "" {
+		return nil
+	}
+	key := info.GetKey()
+	var sender types.JID
+	switch {
+	case key.GetFromMe():
+		sender = c.wa.Store.ID.ToNonAD()
+	case chat.Server == types.DefaultUserServer || chat.Server == types.HiddenUserServer:
+		sender = chat
+	default:
+		rawSender := key.GetParticipant()
+		if rawSender == "" {
+			rawSender = info.GetParticipant()
+		}
+		var err error
+		sender, err = types.ParseJID(rawSender)
+		if err != nil {
+			return fmt.Errorf("history poll secret sender: %w", err)
+		}
+	}
+	if sender.User == "" || sender.Server == "" || key.GetID() == "" {
+		return errors.New("invalid history poll secret identity")
+	}
+	if c.wa.Store.MsgSecrets == nil {
+		return errors.New("history poll secret store unavailable")
+	}
+	return c.wa.Store.MsgSecrets.PutMessageSecret(ctx, chat, sender, key.GetID(), info.GetMessageSecret())
 }

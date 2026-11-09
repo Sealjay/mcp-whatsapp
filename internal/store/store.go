@@ -398,6 +398,17 @@ CREATE TABLE IF NOT EXISTS poll_votes (
 	timestamp TIMESTAMP NOT NULL,
 	PRIMARY KEY (poll_message_id, poll_chat_jid, voter_jid)
 );
+
+CREATE TABLE IF NOT EXISTS pending_poll_votes (
+	owner_jid TEXT NOT NULL,
+	chat_jid TEXT NOT NULL,
+	sender_jid TEXT NOT NULL,
+	message_id TEXT NOT NULL,
+	timestamp TIMESTAMP NOT NULL,
+	received_at TIMESTAMP NOT NULL,
+	payload BLOB NOT NULL CHECK(length(payload) BETWEEN 1 AND 16384),
+	PRIMARY KEY (owner_jid, chat_jid, message_id)
+);
 `
 
 // migrateSchema brings legacy databases up to the current layout. SQLite lacks

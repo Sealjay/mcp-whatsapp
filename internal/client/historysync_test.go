@@ -3,6 +3,11 @@ package client
 import (
 	"bytes"
 	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -10,9 +15,12 @@ import (
 	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
 	"go.mau.fi/whatsmeow/proto/waAdv"
+	"go.mau.fi/whatsmeow/proto/waHistorySync"
 	wmstore "go.mau.fi/whatsmeow/store"
+	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
+	waLog "go.mau.fi/whatsmeow/util/log"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/sealjay/mcp-whatsapp/internal/store"
@@ -23,6 +31,591 @@ const (
 	historyOwnLID   = "55443322"
 	historyTS       = uint64(1767268800) // 2026-01-01 12:00:00 UTC
 )
+
+func TestHistorySyncPollAcrossChunks(t *testing.T) {
+	for _, mode := range []string{"cached-key", "key-before-second-handler", "key-in-second-payload", "restart", "startup", "live-poll"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := context.Background()
+			builder := newPollHistoryClient(t)
+			vote := ownPollVoteMsg(t, builder, "Yes")
+			sender := types.NewJID("447700000001", types.DefaultUserServer)
+			secret, _, err := builder.wa.Store.MsgSecrets.GetMessageSecret(ctx, sender, sender, "POLL-1")
+			if err != nil || len(secret) == 0 {
+				t.Fatalf("fixture secret: %v", err)
+			}
+			dir := t.TempDir()
+			c, closeReceiver := openPollReceiver(t, dir)
+			putSecret := func() {
+				t.Helper()
+				if err := c.wa.Store.MsgSecrets.PutMessageSecret(ctx, sender, sender, "POLL-1", secret); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if mode == "cached-key" {
+				putSecret()
+			}
+			runHistorySync(c, pollChat, vote)
+			if _, err := c.GetPollResults(ctx, pollChat, "POLL-1"); !errors.Is(err, sql.ErrNoRows) {
+				t.Fatalf("missing poll error: %v", err)
+			} else {
+				t.Logf("before poll completion: %v", err)
+			}
+			if mode == "key-before-second-handler" {
+				putSecret()
+			}
+			poll := pollCreationMsg()
+			if mode == "key-in-second-payload" || mode == "restart" {
+				poll.Message.MessageSecret = secret
+			}
+			switch mode {
+			case "restart":
+				closeReceiver()
+				c, _ = openPollReceiver(t, dir)
+				runHistorySync(c, pollChat, poll)
+			case "startup":
+				putSecret()
+				nm := c.normalizeIncomingMessage(pollChat, pollChat, sender.User, false, false, "", "POLL-1", time.Unix(int64(historyTS), 0), poll.Message.Message)
+				if err := c.storeNormalized(ctx, nm, applyPollCreation(&nm, poll.Message.Message)); err != nil {
+					t.Fatal(err)
+				}
+				closeReceiver()
+				c, _ = openPollReceiver(t, dir)
+				before, err := c.GetPollResults(ctx, pollChat, "POLL-1")
+				if err != nil || before.Tally["Yes"] != 0 || pendingPollCount(t, c) != 1 {
+					t.Fatalf("getter must not replay pending work: %+v %v", before, err)
+				}
+				c.StartEventHandler()
+			case "live-poll":
+				putSecret()
+				parsed, err := c.wa.ParseWebMessage(sender, poll.Message)
+				if err != nil {
+					t.Fatal(err)
+				}
+				c.handleMessage(parsed)
+			default:
+				runHistorySync(c, pollChat, poll)
+			}
+			result, err := c.GetPollResults(ctx, pollChat, "POLL-1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			output, err := json.Marshal(result)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("after recovery: %s", output)
+			if string(output) != `{"poll_message_id":"POLL-1","chat_jid":"447700000001@s.whatsapp.net","tally":{"No":0,"Yes":1}}` {
+				t.Fatalf("cross-chunk vote lost: %s", output)
+			}
+			runHistorySync(c, pollChat, vote)
+			result, err = c.GetPollResults(ctx, pollChat, "POLL-1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			output, err = json.Marshal(result)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("after duplicate: %s", output)
+			if string(output) != `{"poll_message_id":"POLL-1","chat_jid":"447700000001@s.whatsapp.net","tally":{"No":0,"Yes":1}}` {
+				t.Fatalf("duplicate changed tally: %s", output)
+			}
+		})
+	}
+}
+
+// Both databases share a directory, as in production; nothing connects to WhatsApp.
+func openPollReceiver(t *testing.T, dir string) (*Client, func()) {
+	t.Helper()
+	ctx := context.Background()
+	container, err := sqlstore.New(ctx, "sqlite3", "file:"+filepath.Join(dir, "whatsapp.db")+"?_foreign_keys=on", waLog.Noop)
+	if err != nil {
+		t.Fatal(err)
+	}
+	device, err := container.GetFirstDevice(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if device.ID == nil {
+		device.ID = &types.JID{User: "447700000010", Device: 3, Server: types.DefaultUserServer}
+		device.Account = &waAdv.ADVSignedDeviceIdentity{Details: []byte{}, AccountSignature: make([]byte, 64), AccountSignatureKey: make([]byte, 32), DeviceSignature: make([]byte, 64)}
+		if err := device.Save(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := newClientWithStore(t, s)
+	c.wa = whatsmeow.NewClient(device, NewStderrLogger("test", "ERROR", false))
+	if err := s.StoreChat(pollChat, "Alex", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	closed := false
+	closeReceiver := func() {
+		if closed {
+			return
+		}
+		closed = true
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+		if err := container.Close(); err != nil {
+			t.Error(err)
+		}
+	}
+	t.Cleanup(closeReceiver)
+	return c, closeReceiver
+}
+
+func pendingPollCount(t *testing.T, c *Client) int {
+	t.Helper()
+	rows, err := c.store.PendingPollVotes(context.Background(), c.wa.Store.ID.ToNonAD().String(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(rows)
+}
+
+func TestHistorySyncPollReplayOrdering(t *testing.T) {
+	ctx := context.Background()
+	builder := newPollHistoryClient(t)
+	for _, mode := range []string{"changed-then-withdrawn", "older-before-aggregated-and-revoke", "future-clamp"} {
+		t.Run(mode, func(t *testing.T) {
+			c, _ := openPollReceiver(t, t.TempDir())
+			yes := ownPollVoteMsg(t, builder, "Yes")
+			if mode == "future-clamp" {
+				yes.Message.MessageTimestamp = proto.Uint64(uint64(time.Now().Add(24 * time.Hour).Unix()))
+			}
+			runHistorySync(c, pollChat, yes)
+			rows, err := c.store.PendingPollVotes(ctx, c.wa.Store.ID.ToNonAD().String(), nil)
+			if err != nil || len(rows) != 1 {
+				t.Fatalf("pending: %v %v", rows, err)
+			}
+			first := rows[0]
+			runHistorySync(c, pollChat, yes)
+			rows, err = c.store.PendingPollVotes(ctx, first.OwnerJID, nil)
+			if err != nil || len(rows) != 1 || !rows[0].Timestamp.Equal(first.Timestamp) || !rows[0].ReceivedAt.Equal(first.ReceivedAt) {
+				t.Fatalf("duplicate advanced receipt/clamp: %v %v", rows, err)
+			}
+			poll := pollCreationMsg()
+			poll.Message.MessageSecret = append([]byte{1}, make([]byte, 31)...)
+			switch mode {
+			case "changed-then-withdrawn":
+				runHistorySync(c, pollChat, poll)
+				no := ownPollVoteMsg(t, builder, "No")
+				no.Message.Key.ID = proto.String("VOTE-2")
+				no.Message.MessageTimestamp = proto.Uint64(historyTS + 1)
+				runHistorySync(c, pollChat, no, yes)
+				if got := pollTally(t, c.store); got["No"] != 1 || got["Yes"] != 0 {
+					t.Fatalf("changed: %v", got)
+				}
+				withdraw := ownPollVoteMsg(t, builder)
+				withdraw.Message.Key.ID = proto.String("VOTE-3")
+				withdraw.Message.MessageTimestamp = proto.Uint64(historyTS + 2)
+				runHistorySync(c, pollChat, withdraw, no)
+				if got := pollTally(t, c.store); got["No"] != 0 || got["Yes"] != 0 {
+					t.Fatalf("withdrawn: %v", got)
+				}
+			case "older-before-aggregated-and-revoke":
+				poll.Message.PollUpdates = []*waProto.PollUpdate{{
+					PollUpdateMessageKey: historyKey(pollChat, "attached", true, ""),
+					Vote:                 &waProto.PollVoteMessage{SelectedOptions: whatsmeow.HashPollOptions([]string{"No"})},
+					SenderTimestampMS:    proto.Int64(int64(historyTS) * 1000),
+				}}
+				revoke := historyMsg(historyKey(pollChat, "revoke", false, ""), &waProto.Message{
+					ProtocolMessage: &waProto.ProtocolMessage{Type: waProto.ProtocolMessage_REVOKE.Enum(), Key: historyKey(pollChat, "POLL-1", false, "")},
+				})
+				revoke.Message.MessageTimestamp = proto.Uint64(historyTS + 1)
+				runHistorySync(c, pollChat, revoke, poll)
+				if got := pollTally(t, c.store); got["No"] != 1 || got["Yes"] != 0 {
+					t.Fatalf("vote/revoke order: %v", got)
+				}
+				if !storedRevoked(t, c.store, "POLL-1") {
+					t.Fatal("poll not revoked")
+				}
+			case "future-clamp":
+				// A later local vote must survive replay of the old future-dated
+				// update: its ordering time is fixed at the first receipt.
+				nm := c.normalizeIncomingMessage(pollChat, pollChat, "447700000001", false, false, "", "POLL-1", time.Unix(int64(historyTS), 0), poll.Message.Message)
+				if err := c.storeNormalized(ctx, nm, applyPollCreation(&nm, poll.Message.Message)); err != nil {
+					t.Fatal(err)
+				}
+				if err := c.store.StorePollVote(ctx, "POLL-1", pollChat, first.OwnerJID, []string{"No"}, first.Timestamp.Add(time.Nanosecond)); err != nil {
+					t.Fatal(err)
+				}
+				runHistorySync(c, pollChat, poll)
+				if got := pollTally(t, c.store); got["No"] != 1 || got["Yes"] != 0 {
+					t.Fatalf("replay advanced clamp: %v", got)
+				}
+			}
+			if n := pendingPollCount(t, c); n != 0 {
+				t.Fatalf("unacknowledged votes: %d", n)
+			}
+		})
+	}
+}
+
+func TestHistorySyncPollMappingOnlyRecovery(t *testing.T) {
+	ctx := context.Background()
+	builder := newPollHistoryClient(t)
+	for _, malformedPosition := range []string{"before", "after"} {
+		t.Run(malformedPosition, func(t *testing.T) {
+			c, closeReceiver := openPollReceiver(t, t.TempDir())
+			const lidChat = "9988776655@lid"
+			if err := c.store.StoreChat(lidChat, "Alex", time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			poll := pollCreationMsg()
+			poll.Message.Key.RemoteJID = proto.String(lidChat)
+			poll.Message.MessageSecret = append([]byte{1}, make([]byte, 31)...)
+			runHistorySync(c, lidChat, poll)
+			vote := ownPollVoteMsg(t, builder, "Yes")
+			runHistorySync(c, pollChat, vote)
+			if pendingPollCount(t, c) != 1 {
+				t.Fatal("vote should wait for verified alias")
+			}
+			rows, err := c.store.PendingPollVotes(ctx, c.wa.Store.ID.ToNonAD().String(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			other := rows[0]
+			other.OwnerJID = "447700000011@s.whatsapp.net"
+			if _, _, err := c.store.QueuePendingPollVote(ctx, other); err != nil {
+				t.Fatal(err)
+			}
+			dir := c.store.Dir()
+			closeReceiver()
+			c, _ = openPollReceiver(t, dir)
+			var logs bytes.Buffer
+			c.log = &stderrLogger{out: &logs, mod: "test", min: logLevelToInt["DEBUG"]}
+			mapping := &waHistorySync.PhoneNumberToLIDMapping{PnJID: proto.String("447700000001@c.us"), LidJID: proto.String(lidChat)}
+			data := &waProto.HistorySync{PhoneNumberToLidMappings: []*waHistorySync.PhoneNumberToLIDMapping{mapping}}
+			malformed := &waHistorySync.PhoneNumberToLIDMapping{
+				PnJID: proto.String("447700009999@g.us"), LidJID: proto.String("9988776699@lid"),
+			}
+			if malformedPosition == "before" {
+				data.PhoneNumberToLidMappings = append([]*waHistorySync.PhoneNumberToLIDMapping{malformed}, data.PhoneNumberToLidMappings...)
+			} else {
+				data.PhoneNumberToLidMappings = append(data.PhoneNumberToLidMappings, malformed)
+			}
+			before := proto.Clone(data)
+			c.handleHistorySync(&events.HistorySync{Data: data})
+			if !proto.Equal(before, data) {
+				t.Fatal("history mapping input mutated")
+			}
+			result, err := c.GetPollResults(ctx, pollChat, "POLL-1")
+			if err != nil || result.Tally["Yes"] != 1 {
+				t.Fatalf("mapping-only recovery: %+v %v", result, err)
+			}
+			if !strings.Contains(logs.String(), "Skipping invalid history PN/LID mapping") {
+				t.Fatalf("missing malformed-pair warning: %s", logs.String())
+			}
+			for _, private := range []string{"447700009999", "9988776699"} {
+				if strings.Contains(logs.String(), private) {
+					t.Fatalf("unredacted malformed mapping: %s", logs.String())
+				}
+			}
+			var actual string
+			if err := c.store.DB().QueryRow("SELECT poll_chat_jid FROM poll_votes").Scan(&actual); err != nil || actual != lidChat {
+				t.Fatalf("actual cached key: %s %v", actual, err)
+			}
+			if pendingPollCount(t, c) != 0 {
+				t.Fatal("owner's vote not acknowledged")
+			}
+			otherRows, err := c.store.PendingPollVotes(ctx, other.OwnerJID, nil)
+			if err != nil || len(otherRows) != 1 {
+				t.Fatalf("wrong owner's row consumed: %v %v", otherRows, err)
+			}
+			if _, err := c.GetPollResults(ctx, "447700000099@s.whatsapp.net", "POLL-1"); !errors.Is(err, sql.ErrNoRows) {
+				t.Fatalf("poll ID escaped chat: %v", err)
+			}
+		})
+	}
+}
+
+func TestHistorySyncPollDependencyFailureDoesNotSkipReadyVoteBeforeRevoke(t *testing.T) {
+	ctx := context.Background()
+	for _, failure := range []string{"other-poll-secret", "unrelated-mapping"} {
+		t.Run(failure, func(t *testing.T) {
+			builder := newPollHistoryClient(t)
+			c, _ := openPollReceiver(t, t.TempDir())
+			runHistorySync(c, pollChat, ownPollVoteMsg(t, builder, "Yes"))
+			sender := types.NewJID("447700000001", types.DefaultUserServer)
+			secret := append([]byte{1}, make([]byte, 31)...)
+			if err := builder.wa.Store.MsgSecrets.PutMessageSecret(ctx, sender, sender, "POLL-2", secret); err != nil {
+				t.Fatal(err)
+			}
+			secondVote, err := builder.wa.BuildPollVote(ctx, &types.MessageInfo{
+				ID: "POLL-2", MessageSource: types.MessageSource{Chat: sender, Sender: sender},
+			}, []string{"Yes"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if failure == "other-poll-secret" {
+				runHistorySync(c, pollChat, historyMsg(historyKey(pollChat, "VOTE-2", true, ""), secondVote))
+			}
+			waDB, err := sql.Open("sqlite3", filepath.Join(c.store.Dir(), "whatsapp.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer waDB.Close()
+			trigger := `CREATE TRIGGER fail_dependency BEFORE INSERT ON whatsmeow_message_secrets
+				WHEN NEW.message_id = 'POLL-2' BEGIN SELECT RAISE(FAIL, 'second poll secret blocked'); END`
+			if failure == "unrelated-mapping" {
+				trigger = `CREATE TRIGGER fail_dependency BEFORE INSERT ON whatsmeow_lid_map
+					WHEN NEW.lid = '9988776655' BEGIN SELECT RAISE(FAIL, 'unrelated mapping blocked'); END`
+			}
+			if _, err := waDB.Exec(trigger); err != nil {
+				t.Fatal(err)
+			}
+			first, second := pollCreationMsg(), pollCreationMsg()
+			first.Message.MessageSecret = secret
+			second.Message.Key.ID = proto.String("POLL-2")
+			second.Message.MessageSecret = secret
+			revoke := historyMsg(historyKey(pollChat, "REVOKE-1", false, ""), &waProto.Message{
+				ProtocolMessage: &waProto.ProtocolMessage{
+					Type: waProto.ProtocolMessage_REVOKE.Enum(), Key: historyKey(pollChat, "POLL-1", false, ""),
+				},
+			})
+			revoke.Message.MessageTimestamp = proto.Uint64(historyTS + 1)
+			data := &waProto.HistorySync{Conversations: []*waProto.Conversation{{
+				ID: proto.String(pollChat), Messages: []*waProto.HistorySyncMsg{revoke, second, first},
+			}}}
+			if failure == "unrelated-mapping" {
+				data.PhoneNumberToLidMappings = []*waHistorySync.PhoneNumberToLIDMapping{{
+					PnJID: proto.String("447700000099@s.whatsapp.net"), LidJID: proto.String("9988776655@lid"),
+				}}
+			}
+			c.handleHistorySync(&events.HistorySync{Data: data})
+			if !storedRevoked(t, c.store, "POLL-1") {
+				t.Fatal("poll not revoked")
+			}
+			got := pollTally(t, c.store)
+			if got["Yes"] != 1 || got["No"] != 0 {
+				t.Fatalf("ready vote lost before revoke after %s failure: %v", failure, got)
+			}
+			wantPending := 0
+			if failure == "other-poll-secret" {
+				wantPending = 1
+			}
+			if n := pendingPollCount(t, c); n != wantPending {
+				t.Fatalf("affected pending votes: got %d, want %d", n, wantPending)
+			}
+			if _, err := waDB.Exec("DROP TRIGGER fail_dependency"); err != nil {
+				t.Fatal(err)
+			}
+			runHistorySync(c, pollChat, second)
+			if pendingPollCount(t, c) != 0 {
+				t.Fatal("affected vote not recovered")
+			}
+			if got := pollTally(t, c.store); got["Yes"] != 1 {
+				t.Fatalf("later retry changed revoked poll tally: %v", got)
+			}
+		})
+	}
+}
+
+func TestHistorySyncPollStorageFailuresRetainPending(t *testing.T) {
+	builder := newPollHistoryClient(t)
+	for _, mode := range []string{"metadata", "secret", "tally", "mapping", "decrypt-db", "decrypt-auth"} {
+		t.Run(mode, func(t *testing.T) {
+			c, _ := openPollReceiver(t, t.TempDir())
+			var logs bytes.Buffer
+			c.log = &stderrLogger{out: &logs, mod: "test", min: logLevelToInt["DEBUG"]}
+			runHistorySync(c, pollChat, ownPollVoteMsg(t, builder, "Yes"))
+			waDB, err := sql.Open("sqlite3", filepath.Join(c.store.Dir(), "whatsapp.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer waDB.Close()
+			poll := pollCreationMsg()
+			poll.Message.MessageSecret = append([]byte{1}, make([]byte, 31)...)
+			var undo func()
+			switch mode {
+			case "metadata":
+				_, err = c.store.DB().Exec(`CREATE TRIGGER fail_metadata BEFORE UPDATE OF poll_options_json ON messages BEGIN SELECT RAISE(FAIL,'blocked 447700000001'); END`)
+				undo = func() { _, err = c.store.DB().Exec("DROP TRIGGER fail_metadata") }
+			case "secret":
+				_, err = waDB.Exec(`CREATE TRIGGER fail_secret BEFORE INSERT ON whatsmeow_message_secrets BEGIN SELECT RAISE(FAIL,'blocked 447700000001'); END`)
+				undo = func() { _, err = waDB.Exec("DROP TRIGGER fail_secret") }
+			case "tally":
+				_, err = c.store.DB().Exec(`CREATE TRIGGER fail_tally BEFORE INSERT ON poll_votes BEGIN SELECT RAISE(FAIL,'blocked 447700000001'); END`)
+				undo = func() { _, err = c.store.DB().Exec("DROP TRIGGER fail_tally") }
+			case "mapping":
+				// This vote genuinely needs the mapping: its poll and secret
+				// are cached under a LID, while the update arrived in the PN chat.
+				const lidChat = "9988776655@lid"
+				poll.Message.Key.RemoteJID = proto.String(lidChat)
+				if err := c.store.StoreChat(lidChat, "Alex", time.Now()); err != nil {
+					t.Fatal(err)
+				}
+				runHistorySync(c, lidChat, poll)
+				_, err = waDB.Exec(`CREATE TRIGGER fail_mapping BEFORE INSERT ON whatsmeow_lid_map BEGIN SELECT RAISE(FAIL,'blocked 447700000001'); END`)
+				undo = func() { _, err = waDB.Exec("DROP TRIGGER fail_mapping") }
+			case "decrypt-db":
+				_, err = waDB.Exec("ALTER TABLE whatsmeow_message_secrets RENAME TO unavailable_secrets")
+				poll.Message.MessageSecret = nil
+				undo = func() {
+					_, err = waDB.Exec("ALTER TABLE unavailable_secrets RENAME TO whatsmeow_message_secrets")
+					poll.Message.MessageSecret = append([]byte{1}, make([]byte, 31)...)
+				}
+			case "decrypt-auth":
+				poll.Message.MessageSecret = append([]byte{99}, make([]byte, 31)...)
+				undo = func() {
+					_, err = waDB.Exec("DELETE FROM whatsmeow_message_secrets")
+					poll.Message.MessageSecret = append([]byte{1}, make([]byte, 31)...)
+				}
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			run := func() {
+				if mode == "mapping" {
+					c.handleHistorySync(&events.HistorySync{Data: &waProto.HistorySync{
+						PhoneNumberToLidMappings: []*waHistorySync.PhoneNumberToLIDMapping{{PnJID: proto.String(pollChat), LidJID: proto.String("9988776655@lid")}},
+					}})
+				} else {
+					runHistorySync(c, pollChat, poll)
+				}
+			}
+			run()
+			if pendingPollCount(t, c) != 1 {
+				t.Fatal("storage/decrypt failure acknowledged vote")
+			}
+			var count int
+			if err := c.store.DB().QueryRow("SELECT count(*) FROM poll_votes").Scan(&count); err != nil || count != 0 {
+				t.Fatalf("partial tally: %d %v", count, err)
+			}
+			if !strings.Contains(logs.String(), "WARN") {
+				t.Fatalf("failure not warned: %s", logs.String())
+			}
+			if strings.Contains(logs.String(), "447700000001") {
+				t.Fatalf("unredacted error: %s", logs.String())
+			}
+			undo()
+			if err != nil {
+				t.Fatal(err)
+			}
+			run()
+			if got := pollTally(t, c.store); got["Yes"] != 1 || got["No"] != 0 {
+				t.Fatalf("retry failed: %v", got)
+			}
+			if pendingPollCount(t, c) != 0 {
+				t.Fatal("successful retry not acknowledged")
+			}
+		})
+	}
+}
+
+func TestHistorySyncPollMalformedAndCapacityWarnings(t *testing.T) {
+	ctx := context.Background()
+	builder := newPollHistoryClient(t)
+	c, _ := openPollReceiver(t, t.TempDir())
+	var logs bytes.Buffer
+	c.log = &stderrLogger{out: &logs, mod: "test", min: logLevelToInt["DEBUG"]}
+	vote := ownPollVoteMsg(t, builder, "Yes")
+	runHistorySync(c, pollChat, vote)
+	if strings.Contains(logs.String(), "WARN") || !strings.Contains(logs.String(), "deferred") {
+		t.Fatalf("missing dependency should defer at debug: %s", logs.String())
+	}
+	for i, payload := range [][]byte{{0xff}, {0x08, 0x01}} {
+		_, _, err := c.store.QueuePendingPollVote(ctx, store.PendingPollVote{
+			OwnerJID: c.wa.Store.ID.ToNonAD().String(), ChatJID: pollChat, SenderJID: pollChat,
+			MessageID: fmt.Sprint("malformed-", i), Timestamp: time.Now(), Payload: payload,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	c.StartEventHandler()
+	if pendingPollCount(t, c) != 1 || !strings.Contains(logs.String(), "Dropping malformed") {
+		t.Fatalf("malformed snapshots not dropped: %s", logs.String())
+	}
+	// Pressure is global, including rows from a different owner; those rows
+	// must never be decrypted by this receiver.
+	_, err := c.store.DB().Exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 999)
+					INSERT INTO pending_poll_votes(owner_jid,chat_jid,sender_jid,message_id,timestamp,received_at,payload)
+					SELECT ?, ?, ?, 'other-' || i, ?, ?, x'01' FROM n`,
+		"447700000011@s.whatsapp.net", pollChat, pollChat, time.Now().Add(-time.Hour), time.Now().UTC().Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	vote.Message.Key.ID = proto.String("capacity-vote")
+	runHistorySync(c, pollChat, vote)
+	var count int
+	if err := c.store.DB().QueryRow("SELECT count(*) FROM pending_poll_votes").Scan(&count); err != nil || count != 1000 {
+		t.Fatalf("capacity: %d %v", count, err)
+	}
+	if !strings.Contains(logs.String(), "Evicted 1 oldest pending poll votes at capacity; cached totals may be incomplete") {
+		t.Fatalf("missing eviction warning: %s", logs.String())
+	}
+	vote.Message.Key.ID = proto.String("oversized-vote")
+	vote.Message.Message.PollUpdateMessage.Vote.EncPayload = make([]byte, 16384)
+	runHistorySync(c, pollChat, vote)
+	if !strings.Contains(logs.String(), "exceeds 16 KiB; cached totals may be incomplete") {
+		t.Fatalf("missing size warning: %s", logs.String())
+	}
+	for _, sensitive := range []string{"447700000001", "447700000010", "447700000011", "capacity-vote", "oversized-vote", "Lunch?", "Yes"} {
+		if strings.Contains(logs.String(), sensitive) {
+			t.Fatalf("private content in logs: %s", logs.String())
+		}
+	}
+}
+func TestHistorySyncPollGroupRawSender(t *testing.T) {
+	ctx := context.Background()
+	for _, fromMe := range []bool{false, true} {
+		t.Run(fmt.Sprint("from-me-", fromMe), func(t *testing.T) {
+			builder := newPollHistoryClient(t)
+			builder.wa.Store.LID = types.NewJID("5544332211", types.HiddenUserServer)
+			chat := types.NewJID("120363123456789", types.GroupServer)
+			creator := types.NewJID("9988776655", types.HiddenUserServer)
+			secret := append([]byte{2}, make([]byte, 31)...)
+			if err := builder.wa.Store.MsgSecrets.PutMessageSecret(ctx, chat, creator, "POLL-1", secret); err != nil {
+				t.Fatal(err)
+			}
+			encrypted, err := builder.wa.BuildPollVote(ctx, &types.MessageInfo{ID: "POLL-1", MessageSource: types.MessageSource{Chat: chat, Sender: creator, IsGroup: true}}, []string{"Yes"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			c, _ := openPollReceiver(t, t.TempDir())
+			if err := c.store.StoreChat(chat.String(), "Team", time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			vote := historyMsg(historyKey(chat.String(), "group-vote", fromMe, "447700000099@s.whatsapp.net"), encrypted)
+			rawSender := "5544332211:7@lid"
+			if fromMe {
+				vote.Message.OriginalSelfAuthorUserJIDString = proto.String(rawSender)
+			} else {
+				vote.Message.Participant = proto.String(rawSender)
+			}
+			runHistorySync(c, chat.String(), vote)
+			rows, err := c.store.PendingPollVotes(ctx, c.wa.Store.ID.ToNonAD().String(), nil)
+			if err != nil || len(rows) != 1 || rows[0].SenderJID != rawSender {
+				t.Fatalf("raw parsed crypto sender lost: %v %v", rows, err)
+			}
+			poll := pollCreationMsg()
+			poll.Message.Key = historyKey(chat.String(), "POLL-1", false, creator.String())
+			poll.Message.Participant = proto.String("447700000099@s.whatsapp.net")
+			poll.Message.MessageSecret = secret
+			c.handleHistorySync(&events.HistorySync{Data: &waProto.HistorySync{
+				PhoneNumberToLidMappings: []*waHistorySync.PhoneNumberToLIDMapping{{
+					PnJID: proto.String("447700000010@s.whatsapp.net"), LidJID: proto.String("5544332211@lid"),
+				}},
+				Conversations: []*waProto.Conversation{{ID: proto.String(chat.String()), Messages: []*waProto.HistorySyncMsg{poll}}},
+			}})
+			result, err := c.GetPollResults(ctx, chat.String(), "POLL-1")
+			if err != nil || result.Tally["Yes"] != 1 {
+				t.Fatalf("raw group replay: %+v %v", result, err)
+			}
+			var voter string
+			if err := c.store.DB().QueryRow("SELECT voter_jid FROM poll_votes").Scan(&voter); err != nil || voter != "447700000010@s.whatsapp.net" {
+				t.Fatalf("normalised tally voter: %s %v", voter, err)
+			}
+		})
+	}
+}
 
 // newHistoryTestClient returns a Client whose whatsmeow client is real but
 // never connected: its device carries only our own phone JID and LID, which
@@ -567,8 +1160,8 @@ func TestRecordPollVote_KeysByAccountNotDevice(t *testing.T) {
 	runHistorySync(c, pollChat, pollCreationMsg())
 	hashes := whatsmeow.HashPollOptions([]string{"Yes", "No"})
 
-	c.recordPollVote(ctx, "POLL-1", pollChat, "447700000001:5@s.whatsapp.net", [][]byte{hashes[0]}, time.Unix(int64(historyTS), 0))
-	c.recordPollVote(ctx, "POLL-1", pollChat, "447700000001@s.whatsapp.net", [][]byte{hashes[1]}, time.Unix(int64(historyTS)+1, 0))
+	c.recordPollVote(ctx, "POLL-1", pollChat, "447700000001:5@s.whatsapp.net", [][]byte{hashes[0]}, time.Unix(int64(historyTS), 0), nil)
+	c.recordPollVote(ctx, "POLL-1", pollChat, "447700000001@s.whatsapp.net", [][]byte{hashes[1]}, time.Unix(int64(historyTS)+1, 0), nil)
 
 	if got := pollTally(t, c.store); got["Yes"] != 0 || got["No"] != 1 {
 		t.Errorf("poll tally = %v, want Yes=0 No=1", got)
