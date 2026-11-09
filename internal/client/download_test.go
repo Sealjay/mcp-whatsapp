@@ -329,6 +329,28 @@ func TestDownload_OutputPathHappyPath(t *testing.T) {
 	}
 }
 
+// Editing the exported output must not change the cached copy: the output is
+// a separate file, not a hard link to the cache entry.
+func TestDownload_OutputPathIsolatedFromCache(t *testing.T) {
+	cachePath, mediaRoot, c := seedCacheHit(t, "447700000099@s.whatsapp.net", "M-OUT-4", "p.jpg")
+	outPath := filepath.Join(mediaRoot, "isolated.jpg")
+
+	got := c.Download(context.Background(), "M-OUT-4", "447700000099@s.whatsapp.net", outPath)
+	if !got.Success {
+		t.Fatalf("expected success, got: %+v", got)
+	}
+	if err := os.WriteFile(outPath, []byte("CALLER-EDITED"), 0o600); err != nil {
+		t.Fatalf("edit output: %v", err)
+	}
+	cached, err := os.ReadFile(cachePath)
+	if err != nil {
+		t.Fatalf("read cache: %v", err)
+	}
+	if string(cached) != "PRETEND-JPEG-BYTES" {
+		t.Fatalf("cache file was modified through output_path: got %q", cached)
+	}
+}
+
 // assertSamePath compares two paths after resolving any platform-level
 // symlinks on their parent directories (e.g. macOS /var → /private/var).
 func assertSamePath(t *testing.T, got, want string) {
@@ -360,9 +382,9 @@ func TestDownload_OutputPathRejectsOutsideRoot(t *testing.T) {
 	}
 }
 
-// If a file already exists at output_path, the call is a no-op: success
-// returned, no overwrite, no work.
-func TestDownload_OutputPathSkipIfExists(t *testing.T) {
+// If a file already exists at output_path, the call fails and leaves the
+// file untouched: an unrelated file must not be reported as a download.
+func TestDownload_OutputPathExistingFileRejected(t *testing.T) {
 	_, mediaRoot, c := seedCacheHit(t, "447700000099@s.whatsapp.net", "M-OUT-3", "p.jpg")
 	outPath := filepath.Join(mediaRoot, "already-there.jpg")
 	original := []byte("USER-EDITED-CONTENT")
@@ -371,15 +393,36 @@ func TestDownload_OutputPathSkipIfExists(t *testing.T) {
 	}
 
 	got := c.Download(context.Background(), "M-OUT-3", "447700000099@s.whatsapp.net", outPath)
-	if !got.Success {
-		t.Fatalf("expected success, got: %+v", got)
+	if got.Success {
+		t.Fatalf("expected failure for existing output_path, got: %+v", got)
 	}
-	assertSamePath(t, got.Path, outPath)
 	on_disk, err := os.ReadFile(outPath)
 	if err != nil {
 		t.Fatalf("read back: %v", err)
 	}
 	if string(on_disk) != string(original) {
 		t.Fatalf("existing file content was overwritten: want %q, got %q", original, on_disk)
+	}
+}
+
+// A repeat call whose output_path already holds this message's media is a
+// no-op success, so idempotent callers keep working.
+func TestDownload_OutputPathRepeatIdenticalIsNoop(t *testing.T) {
+	cachePath, mediaRoot, c := seedCacheHit(t, "447700000099@s.whatsapp.net", "M-OUT-5", "p.jpg")
+	outPath := filepath.Join(mediaRoot, "repeat.jpg")
+
+	if got := c.Download(context.Background(), "M-OUT-5", "447700000099@s.whatsapp.net", outPath); !got.Success {
+		t.Fatalf("first call: expected success, got: %+v", got)
+	}
+	got := c.Download(context.Background(), "M-OUT-5", "447700000099@s.whatsapp.net", outPath)
+	if !got.Success {
+		t.Fatalf("repeat call: expected success, got: %+v", got)
+	}
+	cached, err := os.ReadFile(cachePath)
+	if err != nil {
+		t.Fatalf("read cache: %v", err)
+	}
+	if string(cached) != "PRETEND-JPEG-BYTES" {
+		t.Fatalf("cache changed: got %q", cached)
 	}
 }
