@@ -49,9 +49,10 @@ func (d *MediaDownloader) GetMediaType() whatsmeow.MediaType {
 // Download fetches media for a previously-cached message and writes it under
 // <StoreDir>/<chat_sanitized>/<hex(message_id)>/<filename>. If outputPath is non-empty, the
 // decrypted bytes are additionally placed at that location (validated against
-// the configured media root). The cache is always populated so subsequent
-// calls remain idempotent. Download never contacts the phone; see
-// DownloadWithMediaRetry.
+// the configured media root). An outputPath that already holds the verified
+// payload is returned without touching the cache or the network; otherwise
+// the cache is populated so subsequent calls remain idempotent. Download
+// never contacts the phone; see DownloadWithMediaRetry.
 func (c *Client) Download(ctx context.Context, messageID, chatJID, outputPath string) DownloadResult {
 	return c.download(ctx, messageID, chatJID, outputPath, false)
 }
@@ -68,8 +69,8 @@ func (c *Client) DownloadWithMediaRetry(ctx context.Context, messageID, chatJID,
 
 func (c *Client) download(ctx context.Context, messageID, chatJID, outputPath string, mediaRetry bool) DownloadResult {
 	// Validate output_path first so a bad path fails the call before any DB
-	// or network work. The skip-if-exists check waits until after we have
-	// the media metadata (so the success response carries the right fields).
+	// or network work. The existing-file check waits until after we have the
+	// media metadata it verifies against.
 	var resolvedOutput string
 	if outputPath != "" {
 		var err error
@@ -95,15 +96,27 @@ func (c *Client) download(ctx context.Context, messageID, chatJID, outputPath st
 		}
 	}
 
-	// An existing file at the caller's destination counts as a success only
-	// when it already holds this message's verified payload (a repeat call).
-	// Anything else may be unrelated, so reject before any network work and
-	// leave the file untouched.
+	// An existing file at the caller's destination is never replaced. A repeat
+	// call whose output is a regular file holding this message's payload
+	// (checked against the recorded SHA-256) succeeds straight away. Anything
+	// else, including a symlink, may be unrelated, so the call fails without
+	// reading through it.
 	if resolvedOutput != "" {
-		if _, statErr := os.Stat(resolvedOutput); statErr == nil {
-			if validateCachedMedia(resolvedOutput, fileLength, fileSHA256) != nil {
-				return DownloadResult{Success: false, Message: fmt.Sprintf("output_path already exists with different content: %s; choose a new path", resolvedOutput)}
+		info, statErr := os.Lstat(resolvedOutput)
+		switch {
+		case statErr == nil:
+			if !info.Mode().IsRegular() || len(fileSHA256) == 0 || validateCachedMedia(resolvedOutput, fileLength, fileSHA256) != nil {
+				return DownloadResult{Success: false, Message: fmt.Sprintf("output_path already exists and does not hold this media: %s; choose a new path or remove the file", resolvedOutput)}
 			}
+			return DownloadResult{
+				Success:   true,
+				Message:   fmt.Sprintf("Successfully downloaded %s media", mediaType),
+				MediaType: mediaType,
+				Filename:  filename,
+				Path:      resolvedOutput,
+			}
+		case !errors.Is(statErr, os.ErrNotExist):
+			return DownloadResult{Success: false, Message: fmt.Sprintf("failed to inspect output_path: %v", statErr)}
 		}
 	}
 
@@ -129,8 +142,7 @@ func (c *Client) download(ctx context.Context, messageID, chatJID, outputPath st
 	}
 
 	// Short-circuit if we already have the file in cache. If output_path is
-	// set, materialise it there from the cache (cheap hardlink + copy
-	// fallback) and return the output path instead.
+	// set, copy it there from the cache and return the output path instead.
 	if _, statErr := os.Stat(localPath); statErr == nil {
 		if err := validateCachedMedia(localPath, fileLength, fileSHA256); err == nil {
 			return finalizeDownload(localPath, absPath, resolvedOutput, mediaType, filename)
@@ -297,11 +309,10 @@ func finalizeDownload(localPath, absPath, resolvedOutput, mediaType, filename st
 	}
 }
 
-// placeAtOutput materialises src at dst as an independent copy. A hard link
-// is deliberately not used: writes through dst would then modify the cached
-// file, at the cost of a second copy on disk. O_EXCL means an existing dst is
-// never truncated or overwritten; if it already has identical content (a
-// repeat call) that is a no-op, otherwise it is reported as an error.
+// placeAtOutput copies src to dst as an independent file; a hard link would
+// let writes through dst modify the cached file. O_EXCL never truncates,
+// replaces or follows an existing dst, and a failed copy removes the partial
+// file so the caller can retry the same path.
 func placeAtOutput(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
@@ -310,50 +321,16 @@ func placeAtOutput(src, dst string) error {
 	defer in.Close()
 	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
-		if errors.Is(err, os.ErrExist) {
-			if sameContent(src, dst) {
-				return nil
-			}
-			return fmt.Errorf("output_path already exists with different content: %s", dst)
-		}
 		return err
 	}
-	defer out.Close()
-	if _, err := io.Copy(out, in); err != nil {
-		return err
+	_, err = io.Copy(out, in)
+	if closeErr := out.Close(); err == nil {
+		err = closeErr
 	}
-	return out.Close()
-}
-
-// sameContent reports whether the files at a and b have identical bytes.
-func sameContent(a, b string) bool {
-	ai, err := os.Stat(a)
 	if err != nil {
-		return false
+		os.Remove(dst)
 	}
-	bi, err := os.Stat(b)
-	if err != nil || ai.Size() != bi.Size() {
-		return false
-	}
-	ha, err := fileSHA256Sum(a)
-	if err != nil {
-		return false
-	}
-	hb, err := fileSHA256Sum(b)
-	return err == nil && bytes.Equal(ha, hb)
-}
-
-func fileSHA256Sum(path string) ([]byte, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	digest := sha256.New()
-	if _, err := io.Copy(digest, f); err != nil {
-		return nil, err
-	}
-	return digest.Sum(nil), nil
+	return err
 }
 
 // preferredDirectPath picks the value handed to whatsmeow as the download's
