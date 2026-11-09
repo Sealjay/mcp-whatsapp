@@ -1,16 +1,265 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 )
+
+func TestPendingPollVotePersistenceAndBounds(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	v := PendingPollVote{OwnerJID: "1@s.whatsapp.net", ChatJID: "2@s.whatsapp.net", SenderJID: "1:3@s.whatsapp.net", MessageID: "first", Timestamp: time.Now().Add(time.Hour), Payload: []byte{1}}
+	first, evicted, err := s.QueuePendingPollVote(ctx, v)
+	if err != nil || evicted != 0 {
+		t.Fatalf("queue: %d %v", evicted, err)
+	}
+	if !first.Timestamp.Equal(first.ReceivedAt) {
+		t.Fatal("future timestamp not clamped to first receipt")
+	}
+	v.Payload = []byte{2}
+	v.Timestamp = time.Now().Add(-time.Hour)
+	duplicate, _, err := s.QueuePendingPollVote(ctx, v)
+	if err != nil || !bytes.Equal(duplicate.Payload, first.Payload) || !duplicate.ReceivedAt.Equal(first.ReceivedAt) || !duplicate.Timestamp.Equal(first.Timestamp) {
+		t.Fatalf("duplicate changed original: %+v %v", duplicate, err)
+	}
+	v.Payload = make([]byte, 16385)
+	if _, _, err := s.QueuePendingPollVote(ctx, v); err == nil {
+		t.Fatal("oversized payload accepted")
+	}
+	v.Payload = nil
+	if _, _, err := s.QueuePendingPollVote(ctx, v); err == nil {
+		t.Fatal("empty payload accepted")
+	}
+	v.Payload = []byte{1}
+	for i := 0; i < 1000; i++ {
+		v.MessageID = fmt.Sprint(i)
+		if i == 999 {
+			v.OwnerJID = "3@s.whatsapp.net"
+		}
+		_, n, err := s.QueuePendingPollVote(ctx, v)
+		if err != nil || (i == 999 && n != 1) || (i != 999 && n != 0) {
+			t.Fatalf("queue %d: %d %v", i, n, err)
+		}
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.PendingPollVotes(ctx, first.OwnerJID, nil)
+	if err != nil || len(rows) != 999 || rows[0].MessageID != "0" {
+		t.Fatalf("oldest/global bound/reopen: %d %v", len(rows), err)
+	}
+	other, err := s.PendingPollVotes(ctx, v.OwnerJID, nil)
+	if err != nil || len(other) != 1 {
+		t.Fatalf("owner isolation: %d %v", len(other), err)
+	}
+	// A stale receipt must not acknowledge a replacement after pressure eviction.
+	if _, _, err := s.QueuePendingPollVote(ctx, *first); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DropPendingPollVote(ctx, *first); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = s.PendingPollVotes(ctx, first.OwnerJID, nil)
+	if err != nil || rows[len(rows)-1].MessageID != "first" {
+		t.Fatalf("stale drop removed replacement: %v", err)
+	}
+}
+
+func TestPendingPollVoteAtomicCompletion(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	s.db.SetMaxOpenConns(1)
+	const chat = "2@s.whatsapp.net"
+	at := time.Now().Add(-time.Hour).UTC()
+	if err := s.StoreChat(chat, "poll", at); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.StoreMessage(ctx, Message{ID: "poll", ChatJID: chat, Content: "poll", Timestamp: at}, nil, nil, nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.StorePollMetadata(ctx, "poll", chat, []string{"Yes", "No"}); err != nil {
+		t.Fatal(err)
+	}
+	a, _, err := s.QueuePendingPollVote(ctx, PendingPollVote{OwnerJID: "1@s.whatsapp.net", ChatJID: chat, SenderJID: chat, MessageID: "a", Timestamp: at, Payload: []byte{1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`CREATE TRIGGER fail_vote BEFORE INSERT ON poll_votes BEGIN SELECT RAISE(FAIL, 'test failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CompletePendingPollVote(ctx, *a, "poll", chat, chat, []string{"Yes"}, at); err == nil {
+		t.Fatal("expected write failure")
+	}
+	rows, err := s.PendingPollVotes(ctx, a.OwnerJID, nil)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("failed write lost pending: %v %v", rows, err)
+	}
+	var count int
+	if err := s.db.QueryRow("SELECT count(*) FROM poll_votes").Scan(&count); err != nil || count != 0 {
+		t.Fatalf("partial tally: %d %v", count, err)
+	}
+	if _, err := s.db.Exec("DROP TRIGGER fail_vote"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CompletePendingPollVote(ctx, *a, "poll", chat, chat, []string{"Yes"}, at); err != nil {
+		t.Fatal(err)
+	}
+	b := *a
+	b.MessageID = "b"
+	savedB, _, err := s.QueuePendingPollVote(ctx, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CompletePendingPollVote(ctx, *savedB, "poll", chat, chat, []string{"No"}, at); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CompletePendingPollVote(ctx, *a, "poll", chat, chat, []string{"Yes"}, at); err != nil {
+		t.Fatal(err)
+	}
+	_, results, err := s.GetPollResults(ctx, "poll", chat)
+	if err != nil || results[0].Votes != 0 || results[1].Votes != 1 {
+		t.Fatalf("stale same-time retry overwrote B: %v %v", results, err)
+	}
+	rows, err = s.PendingPollVotes(ctx, a.OwnerJID, nil)
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("completion not acknowledged: %v %v", rows, err)
+	}
+	for _, revoked := range []bool{false, true} {
+		b.MessageID = fmt.Sprint("no-op-", revoked)
+		pending, _, err := s.QueuePendingPollVote(ctx, b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		timestamp := at.Add(-time.Hour)
+		if revoked {
+			timestamp = at.Add(time.Hour)
+			if _, err := s.db.Exec("UPDATE messages SET revoked_at = ? WHERE id = 'poll' AND chat_jid = ?", at, chat); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := s.CompletePendingPollVote(ctx, *pending, "poll", chat, chat, []string{"Yes"}, timestamp); err != nil {
+			t.Fatal(err)
+		}
+		_, results, err := s.GetPollResults(ctx, "poll", chat)
+		if err != nil || results[0].Votes != 0 || results[1].Votes != 1 {
+			t.Fatalf("no-op altered tally: %v %v", results, err)
+		}
+		rows, err := s.PendingPollVotes(ctx, a.OwnerJID, nil)
+		if err != nil || len(rows) != 0 {
+			t.Fatalf("no-op not acknowledged: %v %v", rows, err)
+		}
+	}
+}
+
+func TestPollChatAliasesAndLookupErrors(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	wa, err := sql.Open("sqlite3", filepath.Join(dir, "whatsapp.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wa.Close()
+	if _, err := wa.Exec(`CREATE TABLE whatsmeow_lid_map (lid TEXT PRIMARY KEY,pn TEXT UNIQUE); INSERT INTO whatsmeow_lid_map VALUES ('22','2')`); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	const lid = "22@lid"
+	const pn = "2@s.whatsapp.net"
+	at := time.Now()
+	if err := s.StoreChat(lid, "poll", at); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.StoreMessage(ctx, Message{ID: "poll", ChatJID: lid, Content: "poll", Timestamp: at}, nil, nil, nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.StorePollMetadata(ctx, "poll", lid, []string{"Yes"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.ResolvePollChat(ctx, "poll", pn)
+	if err != nil || got != lid {
+		t.Fatalf("cached alias: %s %v", got, err)
+	}
+	v, _, err := s.QueuePendingPollVote(ctx, PendingPollVote{OwnerJID: pn, ChatJID: lid, SenderJID: lid, MessageID: "vote", Timestamp: at, Payload: []byte{1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.PendingPollVotes(ctx, pn, []string{pn})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("alias filter: %v %v", rows, err)
+	}
+	if err := s.CompletePendingPollVote(ctx, *v, "poll", got, pn, []string{"Yes"}, at); err != nil {
+		t.Fatal(err)
+	}
+	_, results, err := s.GetPollResults(ctx, "poll", pn)
+	if err != nil || results[0].Votes != 1 {
+		t.Fatalf("alias tally: %v %v", results, err)
+	}
+	if _, err := s.ResolvePollChat(ctx, "poll", "3@s.whatsapp.net"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("unrelated poll: %v", err)
+	}
+	if err := s.StoreChat(pn, "poll", at); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.StoreMessage(ctx, Message{ID: "reverse", ChatJID: pn, Content: "poll", Timestamp: at}, nil, nil, nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.StorePollMetadata(ctx, "reverse", pn, []string{"No"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if got, err := s.ResolvePollChat(ctx, "reverse", lid); err != nil || got != pn {
+		t.Fatalf("reopened reverse alias: %s %v", got, err)
+	}
+	_, results, err = s.GetPollResults(ctx, "poll", pn)
+	if err != nil || results[0].Votes != 1 {
+		t.Fatalf("reopened alias tally: %v %v", results, err)
+	}
+	if err := s.whatsmeowDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.ResolvePollChat(ctx, "poll", lid); err != nil || got != lid {
+		t.Fatalf("exact must not need alias: %s %v", got, err)
+	}
+	if _, err := s.ResolvePollChat(ctx, "poll", pn); err == nil || errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("mapping DB error hidden: %v", err)
+	}
+	if _, err := s.PendingPollVotes(ctx, pn, []string{pn}); err == nil {
+		t.Fatal("mapping filter error hidden")
+	}
+}
 
 func TestStorePollMetadata_RoundTrip(t *testing.T) {
 	s := openTestStore(t)

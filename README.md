@@ -290,6 +290,8 @@ The cache follows edits and deletions for everyone, whether they arrive live, in
 
 Events reach SQLite **only while `serve` runs**. Messages sent while it is stopped reach the cache only if WhatsApp delivers them later, and delivery is controlled by WhatsApp. `request_sync` can ask for older history for one chat that already has a cached message.
 
+Encrypted poll votes received through history sync are saved until the poll and its decryption key are available, even across sync chunks or a restart. Replay is local and does not request more history.
+
 A file lock on `store/.lock` allows one `serve` or `login` process per store. Multiple MCP clients can share that daemon and its WhatsApp session.
 
 For monitoring, `GET /healthz` returns `200 {"ok":true}` while the HTTP server is alive. `GET /readyz` returns `200 {"ready":true}` only while paired and connected, or `503 {"ready":false}` otherwise (not paired, or disconnected). Both are unauthenticated, even with `-allow-remote`, and expose no account identifiers; restrict network access to the listener as needed. `get_status` also reports `connection_state` and `connection_state_since`, including logged-out, replaced, outdated, temporary-ban and connection-failure events. A keepalive timeout is reported until restored or disconnected; it does not itself mean the socket has closed.
@@ -324,6 +326,7 @@ The image includes a readiness `HEALTHCHECK`. Set `WHATSAPP_MCP_ADDR` to the sam
 - **Log redaction is obfuscation:** see [Debug logging](#debug-logging).
 - **Unauthenticated probes:** `/healthz` and `/readyz` need no token.
 - **Message gaps:** the cache holds only what WhatsApp delivered while `serve` was running or during a sync. It is not a complete archive. See [Running the daemon](#running-the-daemon).
+- **Poll history:** pending votes are limited to 1,000 encrypted updates in total, each at most 16 KiB, with no age expiry. When full, the oldest pending update is evicted and a warning is logged. Oversized or evicted votes, history WhatsApp never delivered, and votes discarded by an older release can leave tallies incomplete.
 - **One daemon per store:** a second `serve` on the same store is refused. Point extra MCP clients at the same daemon.
 - **Windows:** requires CGO and a C compiler. See [docs/windows.md](docs/windows.md).
 - **Upstream bounds:** message fetch and send are bounded by what [whatsmeow](https://github.com/tulir/whatsmeow) supports against the WhatsApp web multidevice API.
