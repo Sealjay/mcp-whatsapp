@@ -345,6 +345,17 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 				isGroup, isFromMe, ownID,
 				msgID, timestamp, evt.Message,
 			)
+			// Poll votes are signals with no content: tally them through the
+			// same path as live votes instead of storing a message row.
+			if evt.Message.GetPollUpdateMessage() != nil {
+				if parsed, err := c.wa.ParseWebMessage(jid, msg.Message); err == nil {
+					c.handlePollVote(parsed, chatJID, nm.senderFullJID)
+				} else {
+					c.log.Warnf("Failed to parse history poll vote in %s: %v", c.redactor.JID(chatJID), err)
+				}
+				continue
+			}
+
 			pollOptions := applyPollCreation(&nm, evt.Message)
 
 			c.log.Infof("Message content: %s, Media Type: %s", c.redactor.Body(nm.msg.Content), nm.msg.MediaType)
