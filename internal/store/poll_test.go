@@ -407,6 +407,57 @@ func TestMigrateSchema_AddsPollOptionsColumn(t *testing.T) {
 	}
 }
 
+func TestMigrateSchema_RekeysDevicePollVoters(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	const chat = "447700000001@s.whatsapp.net"
+	if err := s.StorePollMetadata(ctx, "poll-1", chat, []string{"Yes", "No"}); err != nil {
+		t.Fatalf("StorePollMetadata: %v", err)
+	}
+	// Votes as older versions stored them: one account voting from two
+	// devices and earlier without a suffix, and an unresolved LID device.
+	for _, v := range []struct {
+		voter, option string
+		at            time.Time
+	}{
+		{"447700000001@s.whatsapp.net", "Yes", time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC)},
+		{"447700000001:7@s.whatsapp.net", "No", time.Date(2026, 1, 1, 11, 0, 0, 0, time.UTC)},
+		{"447700000001:5@s.whatsapp.net", "Yes", time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)},
+		{"123456789:3@lid", "Yes", time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)},
+	} {
+		if _, err := s.db.Exec(`INSERT INTO poll_votes VALUES ('poll-1', ?, ?, ?, ?)`, chat, v.voter, `["`+v.option+`"]`, v.at); err != nil {
+			t.Fatalf("seed vote %s: %v", v.voter, err)
+		}
+	}
+
+	for i := 0; i < 2; i++ {
+		if err := migrateSchema(s.db); err != nil {
+			t.Fatalf("migrateSchema run %d: %v", i+1, err)
+		}
+	}
+
+	got := map[string]string{}
+	rows, err := s.db.Query(`SELECT voter_jid, selected_options_json FROM poll_votes`)
+	if err != nil {
+		t.Fatalf("query votes: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var voter, selected string
+		if err := rows.Scan(&voter, &selected); err != nil {
+			t.Fatalf("scan vote: %v", err)
+		}
+		got[voter] = selected
+	}
+	want := map[string]string{
+		"447700000001@s.whatsapp.net": `["No"]`,
+		"123456789@lid":               `["Yes"]`,
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("votes after migration = %v, want %v", got, want)
+	}
+}
+
 func columnExists(t *testing.T, db *sql.DB, table, column string) bool {
 	t.Helper()
 	return columnCount(t, db, table, column) > 0

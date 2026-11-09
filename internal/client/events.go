@@ -275,9 +275,10 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 		}
 		_ = c.store.StoreChat(chatJID, name, time.Unix(int64(ts), 0))
 
-		// Edits and deletes for everyone are applied once the
+		// Poll votes, edits and deletes for everyone are applied once the
 		// conversation's messages are stored: they may target a message
 		// further on in the same batch (history runs newest first).
+		var votes []pendingVote
 		var changes []pendingChange
 
 		for _, msg := range messages {
@@ -349,9 +350,9 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 			// same path as live votes instead of storing a message row.
 			if evt.Message.GetPollUpdateMessage() != nil {
 				if parsed, err := c.wa.ParseWebMessage(jid, msg.Message); err == nil {
-					c.handlePollVote(parsed, chatJID, nm.senderFullJID)
+					votes = append(votes, pendingVote{msg: parsed, voter: nm.senderFullJID})
 				} else {
-					c.log.Warnf("Failed to parse history poll vote in %s: %v", c.redactor.JID(chatJID), err)
+					c.log.Warnf("Failed to parse history poll vote in %s: %s", c.redactor.JID(chatJID), c.redactor.Err(err))
 				}
 				continue
 			}
@@ -372,12 +373,25 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 				continue
 			}
 			syncedCount++
+			if pollOptions != nil {
+				votes = append(votes, c.aggregatedPollVotes(msg.Message, msgID, chatJID, isGroup, ownID, timestamp)...)
+			}
 			if nm.msg.MediaType != "" {
 				c.log.Infof("Stored message: [%s] %s -> %s: [%s: %s] %s",
 					timestamp.Format("2006-01-02 15:04:05"), c.redactor.JID(nm.msg.Sender), c.redactor.JID(chatJID), nm.msg.MediaType, c.redactor.Body(nm.msg.Filename), c.redactor.Body(nm.msg.Content))
 			} else {
 				c.log.Infof("Stored message: [%s] %s -> %s: %s",
 					timestamp.Format("2006-01-02 15:04:05"), c.redactor.JID(nm.msg.Sender), c.redactor.JID(chatJID), c.redactor.Body(nm.msg.Content))
+			}
+		}
+
+		// Votes go first: a revoked poll refuses new votes but keeps those
+		// cast before the revoke.
+		for _, v := range votes {
+			if v.msg != nil {
+				c.handlePollVote(v.msg, chatJID, v.voter)
+			} else {
+				c.recordPollVote(ctx, v.pollID, chatJID, v.voter, v.selected, v.at)
 			}
 		}
 
@@ -398,7 +412,7 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 // names, which must be cached so vote SHA-256 hashes can be decoded later.
 // Returns nil for any other message.
 func applyPollCreation(nm *normalizedMessage, m *waProto.Message) []string {
-	pc := m.GetPollCreationMessage()
+	pc := pollCreation(m)
 	if pc == nil {
 		return nil
 	}
@@ -406,6 +420,24 @@ func applyPollCreation(nm *normalizedMessage, m *waProto.Message) []string {
 		nm.msg.Content = "[poll] " + pc.GetName()
 	}
 	return extractPollOptionNames(pc)
+}
+
+// pollCreation returns the poll from whichever field carries it. WhatsApp
+// clients put some polls in versioned fields (single-answer polls in V3,
+// announcement-group polls in V2); every version is voted on the same way.
+func pollCreation(m *waProto.Message) *waProto.PollCreationMessage {
+	for _, pc := range []*waProto.PollCreationMessage{
+		m.GetPollCreationMessage(),
+		m.GetPollCreationMessageV2(),
+		m.GetPollCreationMessageV3(),
+		m.GetPollCreationMessageV5(),
+		m.GetPollCreationMessageV6(),
+	} {
+		if pc != nil {
+			return pc
+		}
+	}
+	return nil
 }
 
 // storeNormalized persists a normalised message and, for poll creations,
@@ -427,6 +459,50 @@ func (c *Client) storeNormalized(ctx context.Context, nm normalizedMessage, poll
 type pendingChange struct {
 	who changer
 	ch  messageChange
+}
+
+// pendingVote is a history-sync poll vote waiting for its batch to be stored.
+// msg is set for an encrypted PollUpdateMessage; otherwise the vote arrived
+// already decrypted on the poll itself (WebMessageInfo.PollUpdates).
+type pendingVote struct {
+	msg      *events.Message
+	voter    string
+	pollID   string
+	selected [][]byte
+	at       time.Time
+}
+
+// aggregatedPollVotes returns the votes WhatsApp attaches to a poll in
+// history sync. Each carries the selected option hashes in the clear.
+func (c *Client) aggregatedPollVotes(info *waProto.WebMessageInfo, pollID, chatJID string, isGroup bool, ownID string, pollTS time.Time) []pendingVote {
+	var votes []pendingVote
+	for _, pu := range info.GetPollUpdates() {
+		key := pu.GetPollUpdateMessageKey()
+		var voter string
+		switch {
+		case key.GetFromMe():
+			if ownID != "" {
+				voter = ownID + "@" + types.DefaultUserServer
+			}
+		case key.GetParticipant() != "":
+			voter = c.store.ResolveLIDToJID(key.GetParticipant())
+		case !isGroup:
+			voter = chatJID
+		}
+		at := pollTS
+		if ms := pu.GetSenderTimestampMS(); ms > 0 {
+			at = time.UnixMilli(ms)
+		} else if ms := pu.GetServerTimestampMS(); ms > 0 {
+			at = time.UnixMilli(ms)
+		}
+		votes = append(votes, pendingVote{
+			voter:    voter,
+			pollID:   pollID,
+			selected: pu.GetVote().GetSelectedOptions(),
+			at:       at,
+		})
+	}
+	return votes
 }
 
 // GetChatName determines the appropriate name for a chat. It checks the
@@ -574,10 +650,9 @@ func extractPollOptionNames(pc *waProto.PollCreationMessage) []string {
 	return out
 }
 
-// handlePollVote decrypts an incoming PollUpdateMessage, reverses its
-// SelectedOptions SHA-256 hashes against the cached option names, and records
-// the voter's current selection. Failures are logged (without poll content)
-// and swallowed so a broken vote never blocks the rest of message handling.
+// handlePollVote decrypts an incoming PollUpdateMessage and records it with
+// recordPollVote. Failures are logged (without poll content) and swallowed so
+// a broken vote never blocks the rest of message handling.
 // voterJID must be the full post-LID-resolution JID string.
 func (c *Client) handlePollVote(msg *events.Message, chatJID, voterJID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -589,13 +664,25 @@ func (c *Client) handlePollVote(msg *events.Message, chatJID, voterJID string) {
 		return
 	}
 
-	pu := msg.Message.GetPollUpdateMessage()
-	key := pu.GetPollCreationMessageKey()
-	pollID := key.GetID()
+	pollID := msg.Message.GetPollUpdateMessage().GetPollCreationMessageKey().GetID()
+	c.recordPollVote(ctx, pollID, chatJID, voterJID, vote.GetSelectedOptions(), msg.Info.Timestamp)
+}
+
+// recordPollVote reverses a vote's SelectedOptions SHA-256 hashes against the
+// cached option names and records the voter's current selection.
+func (c *Client) recordPollVote(ctx context.Context, pollID, chatJID, voterJID string, selectedHashes [][]byte, ts time.Time) {
 	if pollID == "" {
 		c.log.Warnf("Poll vote missing poll creation message id (chat=%s)", c.redactor.JID(chatJID))
 		return
 	}
+	// Key the vote by account, not device, so a vote changed on another
+	// device or replayed by history sync replaces the earlier one.
+	voter, err := types.ParseJID(voterJID)
+	if err != nil || voter.User == "" {
+		c.log.Warnf("Poll vote with no voter for poll %s in %s", c.redactor.MsgID(pollID), c.redactor.JID(chatJID))
+		return
+	}
+	voterJID = voter.ToNonAD().String()
 
 	// Scope lookup to our locally-observed chatJID; ignore key.RemoteJID to
 	// prevent a crafted update from another chat polluting this chat's tally.
@@ -608,7 +695,6 @@ func (c *Client) handlePollVote(msg *events.Message, chatJID, voterJID string) {
 	}
 
 	optionHashes := whatsmeow.HashPollOptions(options)
-	selectedHashes := vote.GetSelectedOptions()
 	selected := make([]string, 0, len(selectedHashes))
 	for _, h := range selectedHashes {
 		for i, known := range optionHashes {
@@ -621,7 +707,6 @@ func (c *Client) handlePollVote(msg *events.Message, chatJID, voterJID string) {
 
 	// Clamp the peer-supplied timestamp to now so a malicious far-future value
 	// can't permanently suppress later legitimate updates via the replay guard.
-	ts := msg.Info.Timestamp
 	if now := time.Now(); ts.After(now) {
 		ts = now
 	}
