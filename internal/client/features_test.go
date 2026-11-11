@@ -177,6 +177,76 @@ func TestSendReaction_AcceptsBarePhoneDigits(t *testing.T) {
 	}
 }
 
+// seedMessage caches a message the way the event handler would.
+func seedMessage(t *testing.T, c *Client, id, chat, sender string, fromMe bool) {
+	t.Helper()
+	if err := c.store.StoreChat(chat, "x", time.Now().UTC()); err != nil {
+		t.Fatalf("seed chat: %v", err)
+	}
+	if err := c.store.StoreMessage(context.Background(), store.Message{
+		ID: id, ChatJID: chat, Sender: sender, Content: "hola", Timestamp: time.Now().UTC(), IsFromMe: fromMe,
+	}, nil, nil, nil, 0); err != nil {
+		t.Fatalf("seed message: %v", err)
+	}
+}
+
+// Reacting to a message the contact wrote, without sender_jid (what the tool
+// description used to suggest for direct chats), must not mark the target as
+// ours: WhatsApp would look for our message with that ID and show nothing.
+func TestSendReaction_ResolvesTheSenderFromTheCache(t *testing.T) {
+	const (
+		direct = "447700000001@s.whatsapp.net"
+		group  = "120363025246125486@g.us"
+	)
+	c, sent := newOfflinePairedClient(t, nil)
+	ctx := context.Background()
+	seedMessage(t, c, "in1", direct, "447700000001", false)
+	seedMessage(t, c, "out1", direct, "447700000010", true)
+	seedMessage(t, c, "gin1", group, "447700900002", false)
+	seedMessage(t, c, "nosnd", direct, "", false)
+
+	for _, id := range []string{"in1", "out1", "gin1", "nosnd", "unknown"} {
+		chat := direct
+		if id == "gin1" {
+			chat = group
+		}
+		if err := c.SendReaction(ctx, chat, id, "", "👍"); err != nil {
+			t.Fatalf("%s: %v", id, err)
+		}
+	}
+	key := func(i int) (fromMe bool, participant string) {
+		k := (*sent)[i].msg.GetReactionMessage().GetKey()
+		return k.GetFromMe(), k.GetParticipant()
+	}
+	if fromMe, _ := key(0); fromMe {
+		t.Error("a message the contact wrote must not be marked as from us")
+	}
+	if fromMe, _ := key(1); !fromMe {
+		t.Error("our own message stays marked as from us")
+	}
+	if fromMe, p := key(2); fromMe || p != "447700900002@s.whatsapp.net" {
+		t.Errorf("group message: fromMe=%v participant=%q, want false and the cached sender", fromMe, p)
+	}
+	if fromMe, _ := key(3); fromMe {
+		t.Error("a cached incoming message with no stored sender in a direct chat is the other party's")
+	}
+	if fromMe, _ := key(4); !fromMe {
+		t.Error("a message that is not cached keeps the old behaviour")
+	}
+}
+
+func TestSendReaction_ExplicitSenderWins(t *testing.T) {
+	const chat = "447700000001@s.whatsapp.net"
+	c, sent := newOfflinePairedClient(t, nil)
+	seedMessage(t, c, "in1", chat, "447700000001", false)
+	if err := c.SendReaction(context.Background(), chat, "in1", "447700000099", "👍"); err != nil {
+		t.Fatal(err)
+	}
+	if k := (*sent)[0].msg.GetReactionMessage().GetKey(); k.GetFromMe() {
+		t.Error("an explicit sender other than us means the message is not ours")
+	}
+}
+
 func TestSendReplyAndReaction_NotConnected(t *testing.T) {
 	c, sent := newOfflinePairedClient(t, nil)
 	c.isConnected = c.wa.IsConnected // never connected
