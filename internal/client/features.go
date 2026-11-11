@@ -87,7 +87,27 @@ func (c *Client) MarkChatRead(ctx context.Context, chatJID string, limit int) (i
 	return count, nil
 }
 
+// cachedReactionSender returns who wrote the cached message messageID in chatJID,
+// or "" when it is unknown or was sent by this account (a reaction to our own
+// message needs no sender). In a direct chat with no stored sender the other
+// party is the chat itself; in a group an unknown sender stays unknown.
+func (c *Client) cachedReactionSender(chatJID, messageID string) string {
+	sender, fromMe, err := c.store.GetMessageOrigin(messageID, chatJID)
+	if err != nil || fromMe {
+		return ""
+	}
+	if sender != "" {
+		return sender
+	}
+	if strings.HasSuffix(chatJID, "@g.us") {
+		return ""
+	}
+	return chatJID
+}
+
 // SendReaction adds (or clears, if emoji is empty) a reaction to a message.
+// When senderJID is empty the cached message tells who wrote it, so reacting to
+// a message the contact sent works without passing their JID.
 // It goes through the send rate limiter (sendMessage) like any other send:
 // the reaction reaches the recipient's devices as a message.
 func (c *Client) SendReaction(ctx context.Context, chatJID, messageID, senderJID, emoji string) error {
@@ -103,6 +123,17 @@ func (c *Client) SendReaction(ctx context.Context, chatJID, messageID, senderJID
 		sender, err = parseRecipient(senderJID)
 		if err != nil {
 			return fmt.Errorf("invalid sender JID: %w", err)
+		}
+	}
+
+	if senderJID == "" {
+		// whatsmeow marks a message key "from me" unless a sender is given, so a reaction to a
+		// message the contact wrote would point at a message of ours that does not exist and
+		// never show. The cache knows who wrote the target.
+		if cached := c.cachedReactionSender(chat.String(), messageID); cached != "" {
+			if sender, err = parseRecipient(cached); err != nil {
+				return fmt.Errorf("invalid sender JID: %w", err)
+			}
 		}
 	}
 
