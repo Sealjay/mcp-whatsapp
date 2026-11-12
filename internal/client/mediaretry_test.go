@@ -668,16 +668,17 @@ func TestDownload_MediaRetryErrorLogRedactsJIDs(t *testing.T) {
 	}
 }
 
-// fakeLIDStore is a device LID map holding only the given phone → LID pairs.
+// fakeLIDStore is a device LID map holding the given phone ↔ LID pairs.
 type fakeLIDStore struct {
 	byPN    map[types.JID]types.JID
+	byLID   map[types.JID]types.JID
 	lookups int
 }
 
 func (f *fakeLIDStore) PutManyLIDMappings(context.Context, []wmstore.LIDMapping) error { return nil }
 func (f *fakeLIDStore) PutLIDMapping(context.Context, types.JID, types.JID) error      { return nil }
-func (f *fakeLIDStore) GetPNForLID(context.Context, types.JID) (types.JID, error) {
-	return types.JID{}, nil
+func (f *fakeLIDStore) GetPNForLID(_ context.Context, lid types.JID) (types.JID, error) {
+	return f.byLID[lid], nil
 }
 func (f *fakeLIDStore) GetLIDForPN(_ context.Context, pn types.JID) (types.JID, error) {
 	f.lookups++

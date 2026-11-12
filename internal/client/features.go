@@ -10,6 +10,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	waProto "go.mau.fi/whatsmeow/binary/proto"
+	wmstore "go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/types"
 
 	"github.com/sealjay/mcp-whatsapp/internal/ratelimit"
@@ -87,8 +88,163 @@ func (c *Client) MarkChatRead(ctx context.Context, chatJID string, limit int) (i
 	return count, nil
 }
 
+// inferReactionSender returns the cached sender in the addressing mode the
+// target chat uses. Direct-chat aliases are resolved only for the cache lookup;
+// the caller keeps the original chat JID for the outbound reaction.
+func (c *Client) inferReactionSender(ctx context.Context, chat types.JID, messageID string) (types.JID, error) {
+	cacheChat := c.cacheChatJID(chat)
+	sender, fromMe, err := c.store.GetMessageOrigin(messageID, cacheChat)
+	if err != nil {
+		if chat.Server == types.GroupServer {
+			return types.EmptyJID, fmt.Errorf("cannot infer reaction participant for group message %q: %w; pass sender_jid explicitly or cache the target message", messageID, err)
+		}
+		return types.EmptyJID, fmt.Errorf("cannot infer reaction sender for message %q: %w; pass sender_jid explicitly or cache the target message", messageID, err)
+	}
+	if fromMe {
+		return types.EmptyJID, nil
+	}
+	if chat.Server != types.GroupServer {
+		if sender == "" {
+			return chat, nil
+		}
+		inferred, err := parseRecipient(sender)
+		if err != nil {
+			return types.EmptyJID, fmt.Errorf("invalid cached reaction sender: %w", err)
+		}
+		return inferred, nil
+	}
+	if sender == "" {
+		return types.EmptyJID, fmt.Errorf("cannot infer reaction participant for group message %q: the cached sender is unknown; pass sender_jid explicitly or refresh the message cache", messageID)
+	}
+
+	groupInfo := c.groupInfo
+	if groupInfo == nil && c.wa != nil {
+		groupInfo = c.wa.GetGroupInfo
+	}
+	if groupInfo == nil {
+		return types.EmptyJID, errors.New("cannot infer reaction participant: group addressing mode is unavailable; pass sender_jid explicitly")
+	}
+	groupCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	info, err := groupInfo(groupCtx, chat)
+	if err != nil {
+		return types.EmptyJID, fmt.Errorf("cannot infer reaction participant: group addressing mode is unavailable: %w; pass sender_jid explicitly", err)
+	}
+	if info == nil || (info.AddressingMode != types.AddressingModeLID && info.AddressingMode != types.AddressingModePN) {
+		return types.EmptyJID, errors.New("cannot infer reaction participant: group addressing mode is unknown; pass sender_jid explicitly")
+	}
+	var lids wmstore.LIDStore
+	if c.wa != nil && c.wa.Store != nil {
+		lids = c.wa.Store.LIDs
+	}
+	participant, err := reactionParticipant(ctx, sender, info, lids)
+	if err != nil {
+		return types.EmptyJID, fmt.Errorf("cannot infer reaction participant for group message %q: %w; pass sender_jid explicitly or refresh the cached PN/LID mapping", messageID, err)
+	}
+	return participant, nil
+}
+
+func reactionParticipant(ctx context.Context, sender string, info *types.GroupInfo, lids wmstore.LIDStore) (types.JID, error) {
+	phone := types.NewJID(sender, types.DefaultUserServer)
+	lid := types.NewJID(sender, types.HiddenUserServer)
+	var member *types.GroupParticipant
+	for i := range info.Participants {
+		p := &info.Participants[i]
+		if !participantMatches(*p, phone) && !participantMatches(*p, lid) {
+			continue
+		}
+		if member != nil && !sameUser(member.JID, p.JID) {
+			return types.EmptyJID, errors.New("cached sender matches multiple group participants")
+		}
+		member = p
+	}
+	if member != nil {
+		expectedServer := types.DefaultUserServer
+		if info.AddressingMode == types.AddressingModeLID {
+			expectedServer = types.HiddenUserServer
+		}
+		if member.JID.Server != expectedServer {
+			return types.EmptyJID, errors.New("group participant has no address in the group's addressing mode")
+		}
+		return member.JID.ToNonAD(), nil
+	}
+
+	fromPhone, phoneErr := verifiedLIDForReactionPN(ctx, lids, phone)
+	fromLIDPN, lidErr := verifiedPNForReactionLID(ctx, lids, lid)
+	if info.AddressingMode == types.AddressingModePN {
+		if lidErr == nil {
+			if phoneErr == nil && fromPhone != lid {
+				return types.EmptyJID, errors.New("cached sender matches conflicting phone-number and LID identities")
+			}
+			return fromLIDPN, nil
+		}
+		if phoneErr == nil {
+			return phone, nil
+		}
+		return types.EmptyJID, errors.New("no verified phone-number or LID mapping is available for the cached sender")
+	}
+
+	var fromLID types.JID
+	if lidErr == nil {
+		fromLID, lidErr = verifiedLIDForReactionPN(ctx, lids, fromLIDPN)
+	}
+	switch {
+	case phoneErr == nil && lidErr == nil && fromPhone != fromLID:
+		return types.EmptyJID, errors.New("cached sender matches conflicting phone-number and LID mappings")
+	case phoneErr == nil:
+		return fromPhone, nil
+	case lidErr == nil:
+		return lid, nil
+	default:
+		return types.EmptyJID, errors.New("no verified LID mapping is available for the cached sender")
+	}
+}
+
+func verifiedLIDForReactionPN(ctx context.Context, lids wmstore.LIDStore, phone types.JID) (types.JID, error) {
+	if lids == nil {
+		return types.EmptyJID, errors.New("LID mapping store is unavailable")
+	}
+	lid, err := lids.GetLIDForPN(ctx, phone.ToNonAD())
+	if err != nil {
+		return types.EmptyJID, err
+	}
+	if lid.IsEmpty() || lid.Server != types.HiddenUserServer {
+		return types.EmptyJID, errors.New("no LID mapping is available for the cached phone number")
+	}
+	mappedPhone, err := lids.GetPNForLID(ctx, lid.ToNonAD())
+	if err != nil {
+		return types.EmptyJID, err
+	}
+	if mappedPhone.IsEmpty() || mappedPhone.ToNonAD() != phone.ToNonAD() {
+		return types.EmptyJID, errors.New("the cached phone number and LID mapping do not match")
+	}
+	return lid.ToNonAD(), nil
+}
+
+func verifiedPNForReactionLID(ctx context.Context, lids wmstore.LIDStore, lid types.JID) (types.JID, error) {
+	if lids == nil {
+		return types.EmptyJID, errors.New("LID mapping store is unavailable")
+	}
+	phone, err := lids.GetPNForLID(ctx, lid.ToNonAD())
+	if err != nil {
+		return types.EmptyJID, err
+	}
+	if phone.IsEmpty() || phone.Server != types.DefaultUserServer {
+		return types.EmptyJID, errors.New("no phone-number mapping is available for the cached LID")
+	}
+	mappedLID, err := lids.GetLIDForPN(ctx, phone.ToNonAD())
+	if err != nil {
+		return types.EmptyJID, err
+	}
+	if mappedLID.IsEmpty() || mappedLID.ToNonAD() != lid.ToNonAD() {
+		return types.EmptyJID, errors.New("the cached LID and phone-number mapping do not match")
+	}
+	return phone.ToNonAD(), nil
+}
+
 // SendReaction adds (or clears, if emoji is empty) a reaction to a message.
-// It goes through the send rate limiter (sendMessage) like any other send:
+// When senderJID is empty, the cached message and group addressing mode infer
+// the target sender where possible. It goes through the send rate limiter:
 // the reaction reaches the recipient's devices as a message.
 func (c *Client) SendReaction(ctx context.Context, chatJID, messageID, senderJID, emoji string) error {
 	if !c.isConnected() {
@@ -103,6 +259,11 @@ func (c *Client) SendReaction(ctx context.Context, chatJID, messageID, senderJID
 		sender, err = parseRecipient(senderJID)
 		if err != nil {
 			return fmt.Errorf("invalid sender JID: %w", err)
+		}
+	} else {
+		sender, err = c.inferReactionSender(ctx, chat, messageID)
+		if err != nil {
+			return err
 		}
 	}
 
