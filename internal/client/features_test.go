@@ -137,6 +137,8 @@ func TestSendReaction_GoesThroughRateLimiter(t *testing.T) {
 	c, sent := newOfflinePairedClient(t, ratelimit.New(ratelimit.DefaultConfig()))
 	ctx := context.Background()
 	const chat = "447700000001@s.whatsapp.net"
+	seedReactionMessage(t, c, "a1", chat, "447700000001", false)
+	seedReactionMessage(t, c, "a3", chat, "447700000001", false)
 
 	if err := c.SendReaction(ctx, chat, "a1", "", "👍"); err != nil {
 		t.Fatalf("first reaction: %v", err)
@@ -156,6 +158,7 @@ func TestSendReaction_GoesThroughRateLimiter(t *testing.T) {
 func TestSendReaction_AcceptsBarePhoneDigits(t *testing.T) {
 	c, sent := newOfflinePairedClient(t, nil)
 	ctx := context.Background()
+	seedReactionMessage(t, c, "a1", "447700000001@s.whatsapp.net", "447700000001", false)
 
 	if err := c.SendReaction(ctx, "447700000001", "a1", "", "👍"); err != nil {
 		t.Fatalf("direct-chat reaction: %v", err)
@@ -174,6 +177,174 @@ func TestSendReaction_AcceptsBarePhoneDigits(t *testing.T) {
 	group := (*sent)[1].msg.GetReactionMessage().GetKey()
 	if group.GetParticipant() != "447700900002@s.whatsapp.net" || group.GetID() != "g1" {
 		t.Errorf("group reaction key = {Participant %q, ID %q}, want {447700900002@s.whatsapp.net, g1}", group.GetParticipant(), group.GetID())
+	}
+}
+
+func TestSendReaction_UncachedTargetRequiresSender(t *testing.T) {
+	c, sent := newOfflinePairedClient(t, nil)
+	err := c.SendReaction(context.Background(), "447700000001", "uncached", "", "👍")
+	if err == nil || !strings.Contains(err.Error(), "pass sender_jid explicitly") {
+		t.Fatalf("SendReaction error = %v, want actionable cache-miss error", err)
+	}
+	if len(*sent) != 0 {
+		t.Fatalf("sent %d reactions for an uncached target", len(*sent))
+	}
+	if err := c.SendReaction(context.Background(), "447700000001", "uncached", "447700000001", "👍"); err != nil {
+		t.Fatalf("SendReaction with explicit sender: %v", err)
+	}
+}
+
+func seedReactionMessage(t *testing.T, c *Client, id, chat, sender string, fromMe bool) {
+	t.Helper()
+	if err := c.store.StoreChat(chat, "test", time.Now().UTC()); err != nil {
+		t.Fatalf("seed chat: %v", err)
+	}
+	if err := c.store.StoreMessage(context.Background(), store.Message{
+		ID: id, ChatJID: chat, Sender: sender, Content: "target", Timestamp: time.Now().UTC(), IsFromMe: fromMe,
+	}, nil, nil, nil, 0); err != nil {
+		t.Fatalf("seed message: %v", err)
+	}
+}
+
+func TestSendReaction_InferredParticipantUsesGroupAddressingMode(t *testing.T) {
+	const (
+		pnGroup  = "120363025246125486@g.us"
+		lidGroup = "120363025246125487@g.us"
+		pn       = "447700900002"
+		lidUser  = "99887766"
+	)
+	c, sent := newOfflinePairedClient(t, nil)
+	seedReactionMessage(t, c, "pn-message", pnGroup, pn, false)
+	seedReactionMessage(t, c, "pn-unresolved-lid", pnGroup, lidUser, false)
+	seedReactionMessage(t, c, "lid-message", lidGroup, pn, false)
+	lid := types.NewJID(lidUser, types.HiddenUserServer)
+	c.wa.Store.LIDs = &fakeLIDStore{
+		byPN:  map[types.JID]types.JID{types.NewJID(pn, types.DefaultUserServer): lid},
+		byLID: map[types.JID]types.JID{lid: types.NewJID(pn, types.DefaultUserServer)},
+	}
+	c.groupInfo = func(_ context.Context, group types.JID) (*types.GroupInfo, error) {
+		mode := types.AddressingModePN
+		if group.String() == lidGroup {
+			mode = types.AddressingModeLID
+		}
+		return &types.GroupInfo{JID: group, AddressingMode: mode}, nil
+	}
+
+	for _, target := range []struct {
+		id, group string
+	}{
+		{"pn-message", pnGroup},
+		{"pn-unresolved-lid", pnGroup},
+		{"lid-message", lidGroup},
+	} {
+		if err := c.SendReaction(context.Background(), target.group, target.id, "", "👍"); err != nil {
+			t.Fatalf("%s: %v", target.id, err)
+		}
+	}
+	if len(*sent) != 3 {
+		t.Fatalf("sent %d reactions, want 3", len(*sent))
+	}
+	for i, target := range []struct {
+		group, participant string
+	}{
+		{pnGroup, pn + "@s.whatsapp.net"},
+		{pnGroup, pn + "@s.whatsapp.net"},
+		{lidGroup, lid.String()},
+	} {
+		message := (*sent)[i]
+		key := message.msg.GetReactionMessage().GetKey()
+		if message.to.String() != target.group || key.GetRemoteJID() != target.group ||
+			key.GetParticipant() != target.participant || key.GetFromMe() {
+			t.Errorf("reaction key = %+v sent to %s; want remote %s, participant %s, fromMe false",
+				key, message.to, target.group, target.participant)
+		}
+	}
+}
+
+func TestSendReaction_InferredLIDParticipantRequiresUnambiguousMapping(t *testing.T) {
+	const (
+		group = "120363025246125487@g.us"
+		pn    = "447700900002"
+	)
+	for _, tc := range []struct {
+		name string
+		lids *fakeLIDStore
+	}{
+		{name: "missing mapping", lids: &fakeLIDStore{}},
+		{
+			name: "ambiguous mappings",
+			lids: &fakeLIDStore{
+				byPN: map[types.JID]types.JID{
+					types.NewJID(pn, types.DefaultUserServer):             types.NewJID("11111111", types.HiddenUserServer),
+					types.NewJID("447700900099", types.DefaultUserServer): types.NewJID(pn, types.HiddenUserServer),
+				},
+				byLID: map[types.JID]types.JID{
+					types.NewJID("11111111", types.HiddenUserServer): types.NewJID(pn, types.DefaultUserServer),
+					types.NewJID(pn, types.HiddenUserServer):         types.NewJID("447700900099", types.DefaultUserServer),
+				},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, sent := newOfflinePairedClient(t, nil)
+			seedReactionMessage(t, c, "group-message", group, pn, false)
+			c.wa.Store.LIDs = tc.lids
+			c.groupInfo = func(_ context.Context, jid types.JID) (*types.GroupInfo, error) {
+				return &types.GroupInfo{JID: jid, AddressingMode: types.AddressingModeLID}, nil
+			}
+
+			err := c.SendReaction(context.Background(), group, "group-message", "", "👍")
+			if err == nil || !strings.Contains(err.Error(), "pass sender_jid explicitly") {
+				t.Fatalf("SendReaction error = %v, want actionable mapping error", err)
+			}
+			if len(*sent) != 0 {
+				t.Fatalf("sent %d reactions despite unresolved participant", len(*sent))
+			}
+		})
+	}
+}
+
+func TestSendReaction_UsesMappedDirectChatAliasForCacheLookup(t *testing.T) {
+	const (
+		alias = "99887766@lid"
+		phone = "447700000001@s.whatsapp.net"
+	)
+	c, sent := newOfflinePairedClient(t, nil)
+	c.store = newTestStoreWithLIDMap(t, map[string]string{"99887766": "447700000001"})
+	seedReactionMessage(t, c, "direct-message", phone, "447700000001", false)
+
+	if err := c.SendReaction(context.Background(), alias, "direct-message", "", "👍"); err != nil {
+		t.Fatalf("SendReaction: %v", err)
+	}
+	key := (*sent)[0].msg.GetReactionMessage().GetKey()
+	if (*sent)[0].to.String() != alias || key.GetRemoteJID() != alias || key.GetFromMe() {
+		t.Errorf("reaction sent to %s with key %+v, want outbound chat %s and an incoming target", (*sent)[0].to, key, alias)
+	}
+}
+
+func TestSendReaction_ExplicitSenderTakesPrecedence(t *testing.T) {
+	const group = "120363025246125486@g.us"
+	c, sent := newOfflinePairedClient(t, nil)
+	seedReactionMessage(t, c, "cached-message", group, "447700000001", false)
+	if err := c.SendReaction(context.Background(), group, "cached-message", "447700000099", "👍"); err != nil {
+		t.Fatalf("SendReaction: %v", err)
+	}
+	key := (*sent)[0].msg.GetReactionMessage().GetKey()
+	if key.GetFromMe() || key.GetParticipant() != "447700000099@s.whatsapp.net" {
+		t.Errorf("explicit sender reaction key = %+v, want participant 447700000099@s.whatsapp.net and fromMe false", key)
+	}
+}
+
+func TestSendReaction_InferredOwnGroupMessageKeepsFromMe(t *testing.T) {
+	const group = "120363025246125486@g.us"
+	c, sent := newOfflinePairedClient(t, nil)
+	seedReactionMessage(t, c, "own-message", group, "447700000010", true)
+	if err := c.SendReaction(context.Background(), group, "own-message", "", "👍"); err != nil {
+		t.Fatalf("SendReaction: %v", err)
+	}
+	key := (*sent)[0].msg.GetReactionMessage().GetKey()
+	if !key.GetFromMe() || key.GetParticipant() != "" {
+		t.Errorf("own-message reaction key = %+v, want fromMe true with no participant", key)
 	}
 }
 
