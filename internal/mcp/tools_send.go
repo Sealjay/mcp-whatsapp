@@ -160,7 +160,7 @@ func (s *Server) registerSendReaction() {
 		mcp.WithDescription("Add or replace an emoji reaction on an existing message; recipients see the small emoji badge attached to the original message. Reversible by calling again with an empty `emoji` string (clears the reaction); for a fresh message use send_message and for a quoted reply use send_reply. Returns the plain-text string `Reaction sent` on success."),
 		mcp.WithString("chat_jid", mcp.Required(), mcp.Description(jidDesc)),
 		mcp.WithString("message_id", mcp.Required(), mcp.Description("WhatsApp message ID of the target message (use `message_id` from list_messages)")),
-		mcp.WithString("sender_jid", mcp.Description("JID of the original sender; required in group chats, omit in 1:1 chats ("+jidDesc+")")),
+		mcp.WithString("sender_jid", mcp.Description("JID of the original sender; optional when the message is in the local cache (the sender is then looked up), pass it for a message that is not cached ("+jidDesc+")")),
 		mcp.WithString("emoji", mcp.Description("single emoji to react with; pass an empty string to clear an existing reaction")),
 		mcp.WithReadOnlyHintAnnotation(false),
 		mcp.WithDestructiveHintAnnotation(false),
