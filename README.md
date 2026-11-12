@@ -285,6 +285,7 @@ The cache follows edits and deletions for everyone, whether they arrive live, in
 - **Edits** replace the cached text (or media caption) and keep the message's ID and timestamp. `list_messages` marks the row `[edited]` and searches match the new text.
 - **Deletions for everyone** mark the row deleted and record when: `list_messages` shows `[deleted <time> UTC]` before the text, and `get_message_context` adds `revoked: true` and `revoked_at`. The cache never removes the message: its text, media fields, poll data and any downloaded copy are kept, and it still matches searches.
 - Only the original sender's edits and deletions are applied; a deletion of someone else's message is applied only in a group, from an admin. Edits and deletions of messages that are not cached are ignored.
+- `list_messages` cursors are positional (the normalised timestamp key plus the message ID), not offsets: pass the `next_cursor` line of a previous response back as `cursor` to continue. An edit keeps both ordering fields and a deletion never removes the row, so an issued cursor survives edits and deletions; messages arriving mid-walk can neither duplicate nor skip results.
 
 ## Running the daemon
 

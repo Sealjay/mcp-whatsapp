@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -13,8 +15,10 @@ import (
 // queryContextWindow.
 const listMessageColumns = "messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type, messages.edited_at IS NOT NULL, messages.revoked_at"
 
-// ListMessagesParams holds the filters accepted by ListMessages. Zero values
-// mean "unset" except for Limit, which defaults to 20 when <= 0.
+// ListMessagesParams holds the filters accepted by ListMessages and
+// ListMessagesPage. Zero values mean "unset" except for Limit, which defaults
+// to 20 when <= 0. Page is the legacy offset; Cursor (the opaque value from a
+// previous ListMessagesPage) takes precedence over it when set.
 type ListMessagesParams struct {
 	After          time.Time
 	Before         time.Time
@@ -23,14 +27,27 @@ type ListMessagesParams struct {
 	Query          string
 	Limit          int
 	Page           int
+	Cursor         string
 	IncludeContext bool
 	ContextBefore  int
 	ContextAfter   int
 }
 
 // ListMessages returns messages matching the given filters, optionally expanded
-// with surrounding context messages when IncludeContext is true.
+// with surrounding context messages when IncludeContext is true. It discards
+// the continuation cursor; use ListMessagesPage to paginate.
 func (s *Store) ListMessages(ctx context.Context, params ListMessagesParams) ([]Message, error) {
+	msgs, _, err := s.ListMessagesPage(ctx, params)
+	return msgs, err
+}
+
+// ListMessagesPage is ListMessages plus the opaque cursor for the next page
+// ("" once the results are exhausted). The cursor names a position in the
+// ordering (normalised timestamp key + message ID), not an offset, so messages
+// arriving between requests cannot make a walk repeat or skip rows. It stays
+// valid across edits and deletions: an edit keeps a message's ID and timestamp,
+// and a deletion never removes the row from the cache.
+func (s *Store) ListMessagesPage(ctx context.Context, params ListMessagesParams) ([]Message, string, error) {
 	limit := params.Limit
 	if limit <= 0 {
 		limit = 20
@@ -65,6 +82,18 @@ func (s *Store) ListMessages(ctx context.Context, params ListMessagesParams) ([]
 		whereClauses = append(whereClauses, "LOWER(messages.content) LIKE LOWER(?)")
 		args = append(args, "%"+params.Query+"%")
 	}
+	if params.Cursor != "" {
+		ts, id, err := decodeCursor(params.Cursor)
+		if err != nil {
+			return nil, "", err
+		}
+		// Keyset predicate mirroring the ORDER BY below: resume strictly after
+		// the cursor position, with the message ID breaking timestamp ties so
+		// rows sharing a timestamp are neither repeated nor skipped.
+		whereClauses = append(whereClauses,
+			"("+listMessageTimeKey+" < "+cursorTimeParam+" OR ("+listMessageTimeKey+" = "+cursorTimeParam+" AND messages.id < ?))")
+		args = append(args, ts, ts, id)
+	}
 
 	var b strings.Builder
 	b.WriteString("SELECT " + listMessageColumns + " FROM messages")
@@ -73,15 +102,19 @@ func (s *Store) ListMessages(ctx context.Context, params ListMessagesParams) ([]
 		b.WriteString(" WHERE ")
 		b.WriteString(strings.Join(whereClauses, " AND "))
 	}
-	b.WriteString(" ORDER BY messages.timestamp DESC")
-	b.WriteString(" LIMIT ? OFFSET ?")
-
-	offset := page * limit
-	args = append(args, limit, offset)
+	// Order on the normalised timestamp key with the message ID as a
+	// deterministic tie-breaker; fetch one extra row to detect a next page.
+	b.WriteString(" ORDER BY " + listMessageTimeKey + " DESC, messages.id DESC")
+	b.WriteString(" LIMIT ?")
+	args = append(args, limit+1)
+	if params.Cursor == "" {
+		b.WriteString(" OFFSET ?")
+		args = append(args, page*limit)
+	}
 
 	rows, err := s.db.QueryContext(ctx, b.String(), args...)
 	if err != nil {
-		return nil, fmt.Errorf("list messages: %w", err)
+		return nil, "", fmt.Errorf("list messages: %w", err)
 	}
 	defer rows.Close()
 
@@ -89,16 +122,25 @@ func (s *Store) ListMessages(ctx context.Context, params ListMessagesParams) ([]
 	for rows.Next() {
 		m, err := s.scanListMessageRow(rows)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		result = append(result, m)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, "", err
+	}
+
+	// One row beyond the limit was fetched: it means another page exists. The
+	// cursor points at the last message actually returned, so the next call
+	// resumes exactly after it even if rows were inserted meanwhile.
+	var next string
+	if len(result) > limit {
+		result = result[:limit]
+		next = encodeCursor(result[len(result)-1])
 	}
 
 	if !params.IncludeContext || len(result) == 0 {
-		return result, nil
+		return result, next, nil
 	}
 
 	before := params.ContextBefore
@@ -115,13 +157,13 @@ func (s *Store) ListMessages(ctx context.Context, params ListMessagesParams) ([]
 	for _, m := range result {
 		c, err := s.GetMessageContext(ctx, m.ID, before, after)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		expanded = append(expanded, c.Before...)
 		expanded = append(expanded, c.Message)
 		expanded = append(expanded, c.After...)
 	}
-	return expanded, nil
+	return expanded, next, nil
 }
 
 // ListChats returns chats matching query. sortBy is "last_active" (default) or "name".
@@ -525,4 +567,43 @@ func setRevoked(m *Message, revokedAt sql.NullTime) {
 		at := revokedAt.Time.UTC()
 		m.Revoked, m.RevokedAt = true, &at
 	}
+}
+
+// listMessageTimeKey normalises a stored timestamp into a fixed-width UTC
+// millisecond key through strftime. Rows written by the driver (RFC3339 text
+// with a zone offset) and legacy rows inserted as bare "2006-01-02 15:04:05"
+// text are not compared consistently as raw text, so both the ordering and the
+// cursor predicate go through this key. Millisecond resolution plus the
+// message ID keeps the total order deterministic.
+const listMessageTimeKey = "strftime('%Y-%m-%d %H:%M:%f', messages.timestamp)"
+
+// cursorTimeParam is listMessageTimeKey applied to a bound cursor timestamp,
+// so the cursor key is computed by the same code as every row key.
+const cursorTimeParam = "strftime('%Y-%m-%d %H:%M:%f', ?)"
+
+// encodeCursor returns an opaque continuation cursor for the last message
+// returned on a page: its timestamp plus the message ID as the deterministic
+// tie-breaker. A cursor names a position, not an offset, so messages arriving
+// between pages cannot shift it.
+func encodeCursor(m Message) string {
+	payload := m.Timestamp.UTC().Format(time.RFC3339Nano) + "\x00" + m.ID
+	return base64.RawURLEncoding.EncodeToString([]byte(payload))
+}
+
+// decodeCursor reverses encodeCursor. Malformed cursors are rejected with an
+// "invalid cursor" error instead of silently falling back to offsets.
+func decodeCursor(cursor string) (time.Time, string, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(cursor)
+	if err != nil {
+		return time.Time{}, "", fmt.Errorf("invalid cursor: %w", err)
+	}
+	parts := strings.SplitN(string(raw), "\x00", 2)
+	if len(parts) != 2 || parts[1] == "" {
+		return time.Time{}, "", errors.New("invalid cursor: expected timestamp and message id")
+	}
+	ts, err := time.Parse(time.RFC3339Nano, parts[0])
+	if err != nil {
+		return time.Time{}, "", fmt.Errorf("invalid cursor: %w", err)
+	}
+	return ts, parts[1], nil
 }
