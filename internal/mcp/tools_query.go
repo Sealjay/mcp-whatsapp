@@ -57,6 +57,7 @@ type listMessagesArgs struct {
 	Query             string `json:"query,omitempty"`
 	Limit             int    `json:"limit,omitempty"`
 	Page              int    `json:"page,omitempty"`
+	Cursor            string `json:"cursor,omitempty"`
 	IncludeContext    *bool  `json:"include_context,omitempty"`
 	ContextBefore     int    `json:"context_before,omitempty"`
 	ContextAfter      int    `json:"context_after,omitempty"`
@@ -64,14 +65,15 @@ type listMessagesArgs struct {
 
 func (s *Server) registerListMessages() {
 	tool := mcp.NewTool("list_messages",
-		mcp.WithDescription(offlineSafePrefix+"Search and page through cached WhatsApp messages, optionally filtering by chat, sender, time range, and substring; can include surrounding context messages. Read-only; no side effects. Use get_message_context to expand around a single known message ID, or request_sync to backfill missing history. Returns a human-readable formatted text block listing matching messages; edited messages show an `[edited]` marker and messages deleted for everyone keep their text behind a `[deleted <time> UTC]` marker."),
+		mcp.WithDescription(offlineSafePrefix+"Search and page through cached WhatsApp messages, optionally filtering by chat, sender, time range, and substring; can include surrounding context messages. Read-only; no side effects. Use get_message_context to expand around a single known message ID, or request_sync to backfill missing history. Returns a human-readable formatted text block listing matching messages and, when more results remain, a `next_cursor` line; edited messages show an `[edited]` marker and messages deleted for everyone keep their text behind a `[deleted <time> UTC]` marker. Continue stable walks with that `next_cursor` passed back as `cursor`, because the legacy `page` offset can repeat or miss messages when new messages arrive between calls."),
 		mcp.WithString("after", mcp.Description("ISO-8601 UTC lower bound on message timestamp (inclusive)")),
 		mcp.WithString("before", mcp.Description("ISO-8601 UTC upper bound on message timestamp (inclusive)")),
 		mcp.WithString("sender_phone_number", mcp.Description("filter to messages sent by this phone or JID ("+jidDesc+")")),
 		mcp.WithString("chat_jid", mcp.Description("filter to messages in this chat ("+jidDesc+")")),
 		mcp.WithString("query", mcp.Description("case-insensitive substring to match within message body (text, or the caption of an image, video or document; edited messages match their latest text; messages deleted for everyone still match)")),
 		mcp.WithNumber("limit", mcp.DefaultNumber(20), mcp.Description("max messages to return (default 20, capped at 100 server-side)")),
-		mcp.WithNumber("page", mcp.DefaultNumber(0), mcp.Description("zero-based page index for paging through results (default 0)")),
+		mcp.WithNumber("page", mcp.DefaultNumber(0), mcp.Description("zero-based page index for offset pagination (default 0); offsets shift as new messages arrive, so prefer `cursor` for stable walks")),
+		mcp.WithString("cursor", mcp.Description("opaque `next_cursor` value from a previous response; resumes strictly after that position (timestamp key + message ID tie-break) and takes precedence over `page`; edits and deletions keep it valid because rows are never removed from the cache")),
 		mcp.WithBoolean("include_context", mcp.DefaultBool(true), mcp.Description("if true, attach a few surrounding messages to each match (defaults to true)")),
 		mcp.WithNumber("context_before", mcp.DefaultNumber(1), mcp.Description("messages to include before each match (default 1, capped at 20 server-side)")),
 		mcp.WithNumber("context_after", mcp.DefaultNumber(1), mcp.Description("messages to include after each match (default 1, capped at 20 server-side)")),
@@ -100,6 +102,7 @@ func (s *Server) registerListMessages() {
 			Query:          a.Query,
 			Limit:          limit,
 			Page:           a.Page,
+			Cursor:         a.Cursor,
 			IncludeContext: a.IncludeContext == nil || *a.IncludeContext,
 			ContextBefore:  ctxBefore,
 			ContextAfter:   ctxAfter,
@@ -118,11 +121,15 @@ func (s *Server) registerListMessages() {
 			}
 			params.Before = t
 		}
-		msgs, err := s.client.Store().ListMessages(ctx, params)
+		msgs, next, err := s.client.Store().ListMessagesPage(ctx, params)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		return mcp.NewToolResultText(s.client.Store().FormatMessagesList(ctx, msgs, true)), nil
+		out := s.client.Store().FormatMessagesList(ctx, msgs, true)
+		if next != "" {
+			out += "next_cursor: " + next + "\n"
+		}
+		return mcp.NewToolResultText(out), nil
 	}))
 }
 
