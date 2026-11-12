@@ -1,6 +1,8 @@
 package client
 
 import (
+	"bytes"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -122,5 +124,111 @@ func TestMediaTypeFromExtDocuments(t *testing.T) {
 		if got != want {
 			t.Errorf("%s: mime = %q, want %q", path, got, want)
 		}
+	}
+}
+
+// TestOutgoingDocumentMessageFileName checks that an outgoing document keeps
+// the existing title and MIME type, and sets FileName from the sanitised
+// source filename.
+func TestOutgoingDocumentMessageFileName(t *testing.T) {
+	uploaded := whatsmeow.UploadResponse{
+		URL:           "https://mmg.example/doc",
+		DirectPath:    "/v/doc",
+		MediaKey:      []byte{1, 2},
+		FileSHA256:    []byte{3, 4},
+		FileEncSHA256: []byte{5, 6},
+		FileLength:    42,
+	}
+	cases := []struct {
+		name      string
+		path      string
+		caption   string
+		wantTitle string
+		wantFile  string
+		wantMIME  string
+		fallback  bool
+	}{
+		{
+			name:      "source basename is the title and filename",
+			path:      filepath.Join("uploads", "lease.pdf"),
+			caption:   "signed lease",
+			wantTitle: "lease.pdf",
+			wantFile:  "lease.pdf",
+			wantMIME:  "application/pdf",
+		},
+		{
+			name:      "extension case is preserved on the name",
+			path:      filepath.Join("uploads", "Q3 report (final).PDF"),
+			wantTitle: "Q3 report (final).PDF",
+			wantFile:  "Q3 report (final).PDF",
+			wantMIME:  "application/pdf",
+		},
+		{
+			name:      "directory prefix is not part of the filename",
+			path:      filepath.Join("..", "etc", "passwd.pdf"),
+			wantTitle: "passwd.pdf",
+			wantFile:  "passwd.pdf",
+			wantMIME:  "application/pdf",
+		},
+		{
+			name:      "degenerate basename keeps the raw title",
+			path:      ".",
+			wantTitle: ".",
+			wantMIME:  "application/octet-stream",
+			fallback:  true,
+		},
+		{
+			name:      "parent basename keeps the raw title",
+			path:      "..",
+			wantTitle: "..",
+			wantMIME:  "application/octet-stream",
+			fallback:  true,
+		},
+		{
+			name:      "null byte keeps the raw title",
+			path:      "evil\x00name.pdf",
+			wantTitle: filepath.Base("evil\x00name.pdf"),
+			wantMIME:  "application/pdf",
+			fallback:  true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, mimeType := mediaTypeFromExt(tc.path)
+			if mimeType != tc.wantMIME {
+				t.Fatalf("mediaTypeFromExt(%q) mime = %q, want %q", tc.path, mimeType, tc.wantMIME)
+			}
+			doc := outgoingDocumentMessage(tc.path, tc.caption, mimeType, uploaded)
+			if doc.GetTitle() != tc.wantTitle {
+				t.Errorf("title = %q, want %q", doc.GetTitle(), tc.wantTitle)
+			}
+			if doc.GetMimetype() != mimeType {
+				t.Errorf("mimetype = %q, want the existing type %q", doc.GetMimetype(), mimeType)
+			}
+			if tc.fallback {
+				if !strings.HasPrefix(doc.GetFileName(), "document_") {
+					t.Errorf("filename = %q, want sanitised document_* fallback", doc.GetFileName())
+				}
+				if doc.GetFileName() == doc.GetTitle() {
+					t.Errorf("filename = %q, want it sanitised away from the raw title", doc.GetFileName())
+				}
+			} else if doc.GetFileName() != tc.wantFile {
+				t.Errorf("filename = %q, want %q", doc.GetFileName(), tc.wantFile)
+			}
+			if doc.GetCaption() != tc.caption {
+				t.Errorf("caption = %q, want %q", doc.GetCaption(), tc.caption)
+			}
+			if doc.GetURL() != uploaded.URL || doc.GetDirectPath() != uploaded.DirectPath || doc.GetFileLength() != uploaded.FileLength {
+				t.Errorf("upload location = (%q, %q, %d), want (%q, %q, %d)",
+					doc.GetURL(), doc.GetDirectPath(), doc.GetFileLength(),
+					uploaded.URL, uploaded.DirectPath, uploaded.FileLength)
+			}
+			if !bytes.Equal(doc.GetMediaKey(), uploaded.MediaKey) ||
+				!bytes.Equal(doc.GetFileSHA256(), uploaded.FileSHA256) ||
+				!bytes.Equal(doc.GetFileEncSHA256(), uploaded.FileEncSHA256) {
+				t.Errorf("upload digests were not copied onto the document")
+			}
+		})
 	}
 }
