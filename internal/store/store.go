@@ -61,6 +61,15 @@ type Message struct {
 	Revoked bool `json:"revoked,omitempty"`
 	// RevokedAt is when the message was deleted for everyone (nil if it was not).
 	RevokedAt *time.Time `json:"revoked_at,omitempty"`
+	// The Quoted fields describe the message this one replies to, as the
+	// reply carried it: the quoted message ID, the chat it lives in (the
+	// reply's own chat unless WhatsApp named another), the quoted sender's
+	// JID and a bounded copy of the quoted text. They are empty for a
+	// message that is not a reply.
+	QuotedMessageID string `json:"quoted_message_id,omitempty"`
+	QuotedChatJID   string `json:"quoted_chat_jid,omitempty"`
+	QuotedSenderJID string `json:"quoted_sender_jid,omitempty"`
+	QuotedText      string `json:"quoted_text,omitempty"`
 }
 
 // Chat is a cached WhatsApp chat.
@@ -82,11 +91,15 @@ type Contact struct {
 	JID         string `json:"jid"`
 }
 
-// MessageContext wraps a target message with surrounding context.
+// MessageContext wraps a target message with surrounding context. When the
+// target is a reply, QuotedMessage is the cached message it quotes, or
+// QuotedMessageMissing is set when that message is not in the cache.
 type MessageContext struct {
-	Message Message   `json:"message"`
-	Before  []Message `json:"before,omitempty"`
-	After   []Message `json:"after,omitempty"`
+	Message              Message   `json:"message"`
+	Before               []Message `json:"before,omitempty"`
+	After                []Message `json:"after,omitempty"`
+	QuotedMessage        *Message  `json:"quoted_message,omitempty"`
+	QuotedMessageMissing bool      `json:"quoted_message_missing,omitempty"`
 }
 
 // Store handles the message cache and read-only access to whatsmeow's DB.
@@ -184,14 +197,29 @@ func (s *Store) StoreChat(jid, name string, lastMessageTime time.Time) error {
 // events (typing, receipts, key exchange, etc.). A message that is delivered
 // again (history sync, request_sync) keeps what edits and revokes did to it:
 // an edited row keeps its edited content and a revoked row is left as is.
+// Quote fields are never erased by a delivery without them, and a delivery
+// quoting a different message does not replace or mix with the stored quote
+// (see quoteColumnUpdate).
 func (s *Store) StoreMessage(ctx context.Context, m Message, mediaKey, fileSHA256, fileEncSHA256 []byte, fileLength uint64) error {
 	if m.Content == "" && m.MediaType == "" {
 		return nil
 	}
+	// Up to two other forms of the incoming quoted chat (?19 and ?20 below),
+	// so a stored quote naming the same conversation by its PN or LID still
+	// counts as the same quote.
+	var quotedChatAliases [2]sql.NullString
+	if m.QuotedChatJID != "" {
+		for i, alias := range s.chatAliases(ctx, m.QuotedChatJID) {
+			if i < len(quotedChatAliases) {
+				quotedChatAliases[i] = nullIfEmpty(alias)
+			}
+		}
+	}
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO messages
-		(id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, direct_path, media_key, file_sha256, file_enc_sha256, file_length)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		(id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, direct_path, media_key, file_sha256, file_enc_sha256, file_length,
+		 quoted_message_id, quoted_chat_jid, quoted_sender_jid, quoted_text)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (id, chat_jid) DO UPDATE SET
 			sender = excluded.sender,
 			content = CASE WHEN messages.edited_at IS NULL THEN excluded.content ELSE messages.content END,
@@ -204,12 +232,42 @@ func (s *Store) StoreMessage(ctx context.Context, m Message, mediaKey, fileSHA25
 			media_key = excluded.media_key,
 			file_sha256 = excluded.file_sha256,
 			file_enc_sha256 = excluded.file_enc_sha256,
-			file_length = excluded.file_length
+			file_length = excluded.file_length,
+			`+quoteColumnUpdate("quoted_message_id")+`,
+			`+quoteColumnUpdate("quoted_chat_jid")+`,
+			`+quoteColumnUpdate("quoted_sender_jid")+`,
+			`+quoteColumnUpdate("quoted_text")+`
 		WHERE messages.revoked_at IS NULL`,
 		m.ID, m.ChatJID, m.Sender, m.Content, m.Timestamp, m.IsFromMe,
 		m.MediaType, m.Filename, m.URL, m.DirectPath, mediaKey, fileSHA256, fileEncSHA256, fileLength,
+		nullIfEmpty(m.QuotedMessageID), nullIfEmpty(m.QuotedChatJID), nullIfEmpty(m.QuotedSenderJID), nullIfEmpty(m.QuotedText),
+		quotedChatAliases[0], quotedChatAliases[1],
 	)
 	return err
+}
+
+// quoteColumnUpdate returns the upsert assignment for one quote column. The
+// four columns move together, keyed on the stored quote: a row with no quote
+// takes the incoming one; a delivery quoting the same message (same ID, and
+// the same conversation where both chats are known) only fills fields still
+// missing, as a sent reply is cached without the quoted text that its
+// history copy carries; anything else leaves the stored quote untouched, so
+// fields from two quotes are never mixed. A delivery without a quote never
+// erases one. ?19 and ?20 are the incoming quoted chat's PN/LID aliases.
+func quoteColumnUpdate(col string) string {
+	return col + ` = CASE
+				WHEN messages.quoted_message_id IS NULL THEN excluded.` + col + `
+				WHEN messages.quoted_message_id = excluded.quoted_message_id
+					AND (messages.quoted_chat_jid IS NULL OR excluded.quoted_chat_jid IS NULL
+						OR messages.quoted_chat_jid IN (excluded.quoted_chat_jid, ?19, ?20))
+					THEN COALESCE(messages.` + col + `, excluded.` + col + `)
+				ELSE messages.` + col + `
+			END`
+}
+
+// nullIfEmpty binds an empty string as SQL NULL.
+func nullIfEmpty(s string) sql.NullString {
+	return sql.NullString{String: s, Valid: s != ""}
 }
 
 // StoreMediaInfo updates the media columns of an existing message row.
@@ -386,6 +444,10 @@ CREATE TABLE IF NOT EXISTS messages (
 	poll_options_json TEXT,
 	edited_at TIMESTAMP,
 	revoked_at TIMESTAMP,
+	quoted_message_id TEXT,
+	quoted_chat_jid TEXT,
+	quoted_sender_jid TEXT,
+	quoted_text TEXT,
 	PRIMARY KEY (id, chat_jid),
 	FOREIGN KEY (chat_jid) REFERENCES chats(jid)
 );
@@ -425,6 +487,10 @@ func migrateSchema(db *sql.DB) error {
 	hasDirectPath := false
 	hasEditedAt := false
 	hasRevokedAt := false
+	hasQuotedMessageID := false
+	hasQuotedChatJID := false
+	hasQuotedSenderJID := false
+	hasQuotedText := false
 	for rows.Next() {
 		var (
 			cid        int
@@ -449,6 +515,18 @@ func migrateSchema(db *sql.DB) error {
 		if name == "revoked_at" {
 			hasRevokedAt = true
 		}
+		if name == "quoted_message_id" {
+			hasQuotedMessageID = true
+		}
+		if name == "quoted_chat_jid" {
+			hasQuotedChatJID = true
+		}
+		if name == "quoted_sender_jid" {
+			hasQuotedSenderJID = true
+		}
+		if name == "quoted_text" {
+			hasQuotedText = true
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate table_info(messages): %w", err)
@@ -471,6 +549,26 @@ func migrateSchema(db *sql.DB) error {
 	if !hasRevokedAt {
 		if _, err := db.Exec("ALTER TABLE messages ADD COLUMN revoked_at TIMESTAMP"); err != nil {
 			return fmt.Errorf("add column revoked_at: %w", err)
+		}
+	}
+	if !hasQuotedMessageID {
+		if _, err := db.Exec("ALTER TABLE messages ADD COLUMN quoted_message_id TEXT"); err != nil {
+			return fmt.Errorf("add column quoted_message_id: %w", err)
+		}
+	}
+	if !hasQuotedChatJID {
+		if _, err := db.Exec("ALTER TABLE messages ADD COLUMN quoted_chat_jid TEXT"); err != nil {
+			return fmt.Errorf("add column quoted_chat_jid: %w", err)
+		}
+	}
+	if !hasQuotedSenderJID {
+		if _, err := db.Exec("ALTER TABLE messages ADD COLUMN quoted_sender_jid TEXT"); err != nil {
+			return fmt.Errorf("add column quoted_sender_jid: %w", err)
+		}
+	}
+	if !hasQuotedText {
+		if _, err := db.Exec("ALTER TABLE messages ADD COLUMN quoted_text TEXT"); err != nil {
+			return fmt.Errorf("add column quoted_text: %w", err)
 		}
 	}
 	return rekeyDevicePollVoters(db)

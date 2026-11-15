@@ -339,7 +339,8 @@ func documentMimeType(ext string) string {
 }
 
 // persistSent writes a cache row for a message we sent so the local history
-// stays complete regardless of device multiplexing.
+// stays complete regardless of device multiplexing. A reply keeps the ID,
+// chat and sender of the message it quotes.
 func (c *Client) persistSent(ctx context.Context, recipientJID types.JID, msgID, message, mediaPath string, msg *waProto.Message) {
 	chatJID := c.cacheChatJID(recipientJID)
 
@@ -365,7 +366,7 @@ func (c *Client) persistSent(ctx context.Context, recipientJID types.JID, msgID,
 			storedMediaKey, storedFileSHA256, storedFileEnc, storedFileLength = extractMediaInfo(msg)
 	}
 
-	err := c.store.StoreMessage(ctx, store.Message{
+	m := store.Message{
 		ID:         msgID,
 		ChatJID:    chatJID,
 		Sender:     ourJID,
@@ -376,7 +377,9 @@ func (c *Client) persistSent(ctx context.Context, recipientJID types.JID, msgID,
 		Filename:   storedFilename,
 		URL:        storedURL,
 		DirectPath: storedDirectPath,
-	}, storedMediaKey, storedFileSHA256, storedFileEnc, storedFileLength)
+	}
+	c.applyQuote(&m, msg, chatJID)
+	err := c.store.StoreMessage(ctx, m, storedMediaKey, storedFileSHA256, storedFileEnc, storedFileLength)
 	if err != nil {
 		c.log.Warnf("Failed to store sent message: %v", err)
 		return

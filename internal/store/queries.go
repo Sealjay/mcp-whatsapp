@@ -4,14 +4,16 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 )
 
-// listMessageColumns is the 10-column projection shared by ListMessages and
-// queryContextWindow.
-const listMessageColumns = "messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type, messages.edited_at IS NOT NULL, messages.revoked_at"
+// listMessageColumns is the 14-column projection shared by ListMessages,
+// GetMessageContext and queryContextWindow.
+const listMessageColumns = "messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type, messages.edited_at IS NOT NULL, messages.revoked_at, " +
+	"messages.quoted_message_id, messages.quoted_chat_jid, messages.quoted_sender_jid, messages.quoted_text"
 
 // ListMessagesParams holds the filters accepted by ListMessages. Zero values
 // mean "unset" except for Limit, which defaults to 20 when <= 0.
@@ -113,7 +115,7 @@ func (s *Store) ListMessages(ctx context.Context, params ListMessagesParams) ([]
 	// Expand context: before messages (DESC), the match, after messages (ASC).
 	var expanded []Message
 	for _, m := range result {
-		c, err := s.GetMessageContext(ctx, m.ID, before, after)
+		c, err := s.messageContextInChat(ctx, m.ID, m.ChatJID, before, after)
 		if err != nil {
 			return nil, err
 		}
@@ -255,64 +257,145 @@ func (s *Store) SearchContacts(ctx context.Context, query string) ([]Contact, er
 }
 
 // GetMessageContext returns the target message together with before/after
-// windows from the same chat.
+// windows from the same chat. For a reply it also returns the quoted message
+// when it is cached, or reports it missing. Message IDs are unique per chat,
+// not globally, so an ID cached in more than one conversation is an error
+// rather than an arbitrary pick (see messageChat).
 func (s *Store) GetMessageContext(ctx context.Context, messageID string, before, after int) (*MessageContext, error) {
-	row := s.db.QueryRowContext(ctx, `
-		SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.chat_jid, messages.media_type,
-		       messages.edited_at IS NOT NULL, messages.revoked_at
+	chatJID, err := s.messageChat(ctx, messageID)
+	if err != nil {
+		return nil, err
+	}
+	result, err := s.messageContextInChat(ctx, messageID, chatJID, before, after)
+	if err != nil {
+		return nil, err
+	}
+	target := result.Message
+	if target.QuotedMessageID != "" && target.QuotedChatJID != "" {
+		quoted, err := s.quotedMessage(ctx, target.QuotedMessageID, target.QuotedChatJID)
+		if err != nil {
+			return nil, err
+		}
+		result.QuotedMessage = quoted
+		result.QuotedMessageMissing = quoted == nil
+	}
+	return result, nil
+}
+
+// messageChat returns the chat holding messageID, failing when the ID is not
+// cached or is cached in more than one conversation. A direct chat can be
+// cached under both its LID and its phone-number JID (a message stored before
+// the mapping was known and again after it); such copies are one
+// conversation, and the phone-number copy, the JID ResolveLIDToJID gives, is
+// returned. Without it the lowest chat JID is used, so the choice is stable.
+func (s *Store) messageChat(ctx context.Context, messageID string) (string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT messages.chat_jid
 		FROM messages
 		JOIN chats ON messages.chat_jid = chats.jid
-		WHERE messages.id = ?`, messageID)
-
-	var (
-		ts        time.Time
-		sender    string
-		chatName  sql.NullString
-		content   sql.NullString
-		isFromMe  bool
-		chatJID   string
-		id        string
-		msgChat   string
-		mediaType sql.NullString
-		edited    bool
-		revokedAt sql.NullTime
-	)
-	if err := row.Scan(&ts, &sender, &chatName, &content, &isFromMe, &chatJID, &id, &msgChat, &mediaType, &edited, &revokedAt); err != nil {
-		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("message with ID %s not found", messageID)
+		WHERE messages.id = ?
+		ORDER BY messages.chat_jid`, messageID)
+	if err != nil {
+		return "", fmt.Errorf("get message context: %w", err)
+	}
+	defer rows.Close()
+	var chats []string
+	for rows.Next() {
+		var chat string
+		if err := rows.Scan(&chat); err != nil {
+			return "", fmt.Errorf("get message context: %w", err)
 		}
-		return nil, fmt.Errorf("get message context: %w", err)
+		chats = append(chats, chat)
 	}
-
-	target := Message{
-		ID:        id,
-		ChatJID:   chatJID,
-		Sender:    sender,
-		Content:   content.String,
-		Timestamp: ts,
-		IsFromMe:  isFromMe,
-		MediaType: mediaType.String,
-		ChatName:  chatName.String,
-		Edited:    edited,
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("get message context: %w", err)
 	}
-	setRevoked(&target, revokedAt)
-	target.IsGroup = strings.HasSuffix(target.ChatJID, "@g.us")
-	target.SenderPhone = s.resolveSenderPhone(target.Sender)
+	if len(chats) == 0 {
+		return "", fmt.Errorf("message with ID %s not found", messageID)
+	}
+	canonical := s.ResolveLIDToJID(chats[0])
+	for _, chat := range chats[1:] {
+		if s.ResolveLIDToJID(chat) != canonical {
+			return "", fmt.Errorf("message ID %s is ambiguous: it is cached in more than one chat; use list_messages with chat_jid to read it in its chat", messageID)
+		}
+	}
+	if slices.Contains(chats, canonical) {
+		return canonical, nil
+	}
+	return chats[0], nil
+}
 
-	beforeMsgs, err := s.queryContextWindow(ctx, msgChat, ts, before, false)
+// messageContextInChat returns the message (messageID, chatJID) with its
+// before/after windows from that chat.
+func (s *Store) messageContextInChat(ctx context.Context, messageID, chatJID string, before, after int) (*MessageContext, error) {
+	target, err := s.messageInChat(ctx, messageID, chatJID)
 	if err != nil {
 		return nil, err
 	}
-	afterMsgs, err := s.queryContextWindow(ctx, msgChat, ts, after, true)
+	if target == nil {
+		return nil, fmt.Errorf("message with ID %s not found", messageID)
+	}
+
+	beforeMsgs, err := s.queryContextWindow(ctx, target.ChatJID, target.Timestamp, before, false)
 	if err != nil {
 		return nil, err
 	}
-
+	afterMsgs, err := s.queryContextWindow(ctx, target.ChatJID, target.Timestamp, after, true)
+	if err != nil {
+		return nil, err
+	}
 	return &MessageContext{
-		Message: target,
+		Message: *target,
 		Before:  beforeMsgs,
 		After:   afterMsgs,
 	}, nil
+}
+
+// messageInChat returns the cached message with the exact key (messageID,
+// chatJID), or nil when there is none.
+func (s *Store) messageInChat(ctx context.Context, messageID, chatJID string) (*Message, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT `+listMessageColumns+`
+		FROM messages
+		JOIN chats ON messages.chat_jid = chats.jid
+		WHERE messages.id = ? AND messages.chat_jid = ?`, messageID, chatJID)
+	m, err := s.scanListMessageRow(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get message: %w", err)
+	}
+	return &m, nil
+}
+
+// quotedMessage looks up the cached message a reply quotes, by message ID in
+// the quoted chat or one of its aliases (see chatAliases). Returns nil when
+// the message is not cached.
+func (s *Store) quotedMessage(ctx context.Context, messageID, chatJID string) (*Message, error) {
+	for _, chat := range append([]string{chatJID}, s.chatAliases(ctx, chatJID)...) {
+		m, err := s.messageInChat(ctx, messageID, chat)
+		if err != nil || m != nil {
+			return m, err
+		}
+	}
+	return nil, nil
+}
+
+// chatAliases returns the other JIDs a direct chat may be cached under: its
+// phone-number JID for a LID and its LID for a phone-number JID, as the
+// PN/LID map stands now rather than when a message was stored. A message can
+// sit under either, depending on which was known when it arrived. Groups and
+// unmapped chats have none.
+func (s *Store) chatAliases(ctx context.Context, chatJID string) []string {
+	var aliases []string
+	if resolved := s.ResolveLIDToJID(chatJID); resolved != chatJID {
+		aliases = append(aliases, resolved)
+	}
+	if alias, err := s.pollChatAlias(ctx, chatJID); err == nil && alias != chatJID && !slices.Contains(aliases, alias) {
+		aliases = append(aliases, alias)
+	}
+	return aliases
 }
 
 // GetSenderName resolves a sender JID to a display name, preferring the
@@ -389,36 +472,45 @@ func (s *Store) queryContextWindow(ctx context.Context, chatJID string, anchor t
 	return out, rows.Err()
 }
 
-// scanListMessageRow scans the 10-column projection used by list_messages and
-// the context window queries.
+// scanListMessageRow scans the 14-column projection used by list_messages,
+// get_message_context and the context window queries.
 func (s *Store) scanListMessageRow(row interface {
 	Scan(dest ...any) error
 }) (Message, error) {
 	var (
-		ts        time.Time
-		sender    string
-		chatName  sql.NullString
-		content   sql.NullString
-		isFromMe  bool
-		chatJID   string
-		id        string
-		mediaType sql.NullString
-		edited    bool
-		revokedAt sql.NullTime
+		ts           time.Time
+		sender       string
+		chatName     sql.NullString
+		content      sql.NullString
+		isFromMe     bool
+		chatJID      string
+		id           string
+		mediaType    sql.NullString
+		edited       bool
+		revokedAt    sql.NullTime
+		quotedID     sql.NullString
+		quotedChat   sql.NullString
+		quotedSender sql.NullString
+		quotedText   sql.NullString
 	)
-	if err := row.Scan(&ts, &sender, &chatName, &content, &isFromMe, &chatJID, &id, &mediaType, &edited, &revokedAt); err != nil {
+	if err := row.Scan(&ts, &sender, &chatName, &content, &isFromMe, &chatJID, &id, &mediaType, &edited, &revokedAt,
+		&quotedID, &quotedChat, &quotedSender, &quotedText); err != nil {
 		return Message{}, err
 	}
 	m := Message{
-		ID:        id,
-		ChatJID:   chatJID,
-		Sender:    sender,
-		Content:   content.String,
-		Timestamp: ts,
-		IsFromMe:  isFromMe,
-		MediaType: mediaType.String,
-		ChatName:  chatName.String,
-		Edited:    edited,
+		ID:              id,
+		ChatJID:         chatJID,
+		Sender:          sender,
+		Content:         content.String,
+		Timestamp:       ts,
+		IsFromMe:        isFromMe,
+		MediaType:       mediaType.String,
+		ChatName:        chatName.String,
+		Edited:          edited,
+		QuotedMessageID: quotedID.String,
+		QuotedChatJID:   quotedChat.String,
+		QuotedSenderJID: quotedSender.String,
+		QuotedText:      quotedText.String,
 	}
 	setRevoked(&m, revokedAt)
 	m.IsGroup = strings.HasSuffix(m.ChatJID, "@g.us")

@@ -23,6 +23,10 @@ CREATE TABLE IF NOT EXISTS messages (
     poll_options_json TEXT,
     edited_at TIMESTAMP,
     revoked_at TIMESTAMP,
+    quoted_message_id TEXT,
+    quoted_chat_jid TEXT,
+    quoted_sender_jid TEXT,
+    quoted_text TEXT,
     PRIMARY KEY (id, chat_jid),
     FOREIGN KEY (chat_jid) REFERENCES chats(jid)
 );

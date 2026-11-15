@@ -153,8 +153,9 @@ func (c *Client) SendReply(ctx context.Context, chatJID, targetMessageID, target
 	if err != nil {
 		return fmt.Errorf("send reply: %w", err)
 	}
-	// Cache the reply like Send does. The cache has no column for the quote,
-	// so the row holds the text only.
+	// Cache the reply like Send does. The row records the quoted message ID
+	// and sender; the quoted text is not sent, so get_message_context reads
+	// it from the cached original.
 	c.persistSent(ctx, chat, resp.ID, body, "", msg)
 	return nil
 }

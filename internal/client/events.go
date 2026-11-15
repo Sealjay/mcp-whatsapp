@@ -90,7 +90,8 @@ type normalizedMessage struct {
 }
 
 // normalizeIncomingMessage resolves sender and chat JIDs (LID → phone),
-// extracts text/media content, and returns a store-ready normalizedMessage.
+// extracts text/media content and any quoted-message context, and returns a
+// store-ready normalizedMessage.
 // It covers the logic shared between handleMessage and handleHistorySync.
 //
 // Parameters:
@@ -138,19 +139,22 @@ func (c *Client) normalizeIncomingMessage(
 	content := extractTextContent(raw)
 	mediaType, filename, url, directPath, mediaKey, fileSHA256, fileEncSHA256, fileLength := extractMediaInfo(raw)
 
+	m := store.Message{
+		ID:         msgID,
+		ChatJID:    chatJID,
+		Sender:     sender,
+		Content:    content,
+		Timestamp:  timestamp,
+		IsFromMe:   isFromMe,
+		MediaType:  mediaType,
+		Filename:   filename,
+		URL:        url,
+		DirectPath: directPath,
+	}
+	c.applyQuote(&m, raw, chatJID)
+
 	return normalizedMessage{
-		msg: store.Message{
-			ID:         msgID,
-			ChatJID:    chatJID,
-			Sender:     sender,
-			Content:    content,
-			Timestamp:  timestamp,
-			IsFromMe:   isFromMe,
-			MediaType:  mediaType,
-			Filename:   filename,
-			URL:        url,
-			DirectPath: directPath,
-		},
+		msg:           m,
 		mediaKey:      mediaKey,
 		fileSHA256:    fileSHA256,
 		fileEncSHA256: fileEncSHA256,
