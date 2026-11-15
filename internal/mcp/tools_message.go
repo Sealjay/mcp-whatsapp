@@ -57,24 +57,28 @@ type deleteMessageArgs struct {
 	ChatJID   string `json:"chat_jid"`
 	MessageID string `json:"message_id"`
 	SenderJID string `json:"sender_jid,omitempty"`
+	Scope     string `json:"scope,omitempty"`
 }
 
 func (s *Server) registerDeleteMessage() {
 	tool := mcp.NewTool("delete_message",
-		mcp.WithDescription("Revoke (delete-for-everyone) a message; recipients see a `message was deleted` notice and the local cache row is marked deleted (with the time) and keeps its text and media. Permanent for recipients — there is no undo. You can only delete your own messages unless you are a group admin. Use edit_message instead when you only want to correct text. Returns the plain-text string `Message deleted` on success."),
+		mcp.WithDescription("Delete a message for everyone or only for this account; neither can be undone. `for_everyone` (the default) revokes it, so participants see a `message was deleted` notice (your own messages, or any message as a group admin); `for_me` removes a cached message from your own devices through WhatsApp app state while other participants keep it, and hides it from this server's cache reads without removing the row. Use edit_message to correct text instead. Returns JSON `{scope, chat_jid, message_id, outcome, reversible, message}`, where `outcome` is `sent` (WhatsApp accepted it), `refused` (nothing was sent) or `unknown` (the send call returned an error, so it may or may not have taken effect; check the phone instead of retrying), flagged as an error unless `sent`."),
 		mcp.WithString("chat_jid", mcp.Required(), mcp.Description(jidDesc)),
-		mcp.WithString("message_id", mcp.Required(), mcp.Description("WhatsApp message ID of the message to revoke (use `message_id` from list_messages)")),
-		mcp.WithString("sender_jid", mcp.Description("JID of the original sender; required when deleting someone else's message as a group admin, leave empty when deleting your own ("+jidDesc+")")),
+		mcp.WithString("message_id", mcp.Required(), mcp.Description("WhatsApp message ID of the message to delete (use `message_id` from list_messages)")),
+		mcp.WithString("scope", mcp.Description("`for_everyone` (default) revokes the message for all participants; `for_me` deletes it from this account's devices only and requires the message to be in the local cache"), mcp.Enum(client.DeleteForEveryone, client.DeleteForMe)),
+		mcp.WithString("sender_jid", mcp.Description("JID of the original sender; with `for_everyone`, required when deleting someone else's message as a group admin and empty for your own; ignored with `for_me`, which reads the sender from the cache ("+jidDesc+")")),
 		mcp.WithReadOnlyHintAnnotation(false),
 		mcp.WithDestructiveHintAnnotation(true),
 		mcp.WithIdempotentHintAnnotation(true),
 		mcp.WithOpenWorldHintAnnotation(true),
 	)
 	s.mcp.AddTool(tool, mcp.NewTypedToolHandler(func(ctx context.Context, _ mcp.CallToolRequest, a deleteMessageArgs) (*mcp.CallToolResult, error) {
-		if err := s.client.DeleteMessage(ctx, a.ChatJID, a.MessageID, a.SenderJID); err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+		r := s.client.DeleteMessageWithScope(ctx, a.ChatJID, a.MessageID, a.SenderJID, a.Scope)
+		res, err := resultJSON(r)
+		if err == nil && r.Outcome != client.DeleteSent {
+			res.IsError = true
 		}
-		return mcp.NewToolResultText("Message deleted"), nil
+		return res, err
 	}))
 }
 

@@ -29,7 +29,8 @@ type ListMessagesParams struct {
 }
 
 // ListMessages returns messages matching the given filters, optionally expanded
-// with surrounding context messages when IncludeContext is true.
+// with surrounding context messages when IncludeContext is true. Messages
+// deleted for me are left out.
 func (s *Store) ListMessages(ctx context.Context, params ListMessagesParams) ([]Message, error) {
 	limit := params.Limit
 	if limit <= 0 {
@@ -41,7 +42,7 @@ func (s *Store) ListMessages(ctx context.Context, params ListMessagesParams) ([]
 	}
 
 	var (
-		whereClauses []string
+		whereClauses = []string{"messages.deleted_for_me_at IS NULL"}
 		args         []any
 	)
 
@@ -255,14 +256,15 @@ func (s *Store) SearchContacts(ctx context.Context, query string) ([]Contact, er
 }
 
 // GetMessageContext returns the target message together with before/after
-// windows from the same chat.
+// windows from the same chat. Messages deleted for me are not found and are
+// left out of the windows.
 func (s *Store) GetMessageContext(ctx context.Context, messageID string, before, after int) (*MessageContext, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.chat_jid, messages.media_type,
 		       messages.edited_at IS NOT NULL, messages.revoked_at
 		FROM messages
 		JOIN chats ON messages.chat_jid = chats.jid
-		WHERE messages.id = ?`, messageID)
+		WHERE messages.id = ? AND messages.deleted_for_me_at IS NULL`, messageID)
 
 	var (
 		ts        time.Time
@@ -369,6 +371,7 @@ func (s *Store) queryContextWindow(ctx context.Context, chatJID string, anchor t
 		FROM messages
 		JOIN chats ON messages.chat_jid = chats.jid
 		WHERE messages.chat_jid = ? AND messages.timestamp %s ?
+		  AND messages.deleted_for_me_at IS NULL
 		ORDER BY messages.timestamp %s
 		LIMIT ?`, op, order)
 
@@ -444,7 +447,8 @@ func (s *Store) resolveSenderPhone(sender string) string {
 // chatSelectSQL returns the shared 8-column chat projection (jid, name,
 // last_message_time, plus the latest message's content/sender/is_from_me and
 // edit/revoke markers when includeLastMessage) used by both ListChats and
-// GetChat. alias
+// GetChat. The latest message is the newest one not deleted for me; the chat's
+// last_message_time (and so the last_active ordering) is left as it was. alias
 // qualifies the chat column references; pass "chats" for an unaliased FROM
 // clause (ListChats) or a short alias like "c" when the caller appends its
 // own WHERE clause on that alias (GetChat).
@@ -478,7 +482,7 @@ func chatSelectSQL(alias string, includeLastMessage bool) string {
 		LEFT JOIN messages AS latest_msg ON %s.jid = latest_msg.chat_jid
 		AND latest_msg.rowid = (
 			SELECT rowid FROM messages
-			WHERE chat_jid = %s.jid
+			WHERE chat_jid = %s.jid AND deleted_for_me_at IS NULL
 			ORDER BY timestamp DESC LIMIT 1
 		)`, alias, alias, alias, from, alias, alias)
 }

@@ -106,11 +106,17 @@ const pollVoteUpsertSQL = `INSERT INTO poll_votes
 		 WHERE excluded.timestamp >= poll_votes.timestamp`
 
 // GetPollResults returns the stored option names and the per-option vote count
-// for a poll. Returns sql.ErrNoRows if the poll metadata is missing.
+// for a poll. Returns sql.ErrNoRows if the poll metadata is missing and
+// ErrDeletedForMe for a poll deleted for me (its votes are still recorded).
 func (s *Store) GetPollResults(ctx context.Context, pollMessageID, pollChatJID string) ([]string, []PollResult, error) {
 	pollChatJID, err := s.ResolvePollChat(ctx, pollMessageID, pollChatJID)
 	if err != nil {
 		return nil, nil, err
+	}
+	if hidden, err := s.IsDeletedForMe(ctx, pollMessageID, pollChatJID); err != nil {
+		return nil, nil, err
+	} else if hidden {
+		return nil, nil, ErrDeletedForMe
 	}
 	opts, err := s.GetPollOptions(ctx, pollMessageID, pollChatJID)
 	if err != nil {
@@ -215,9 +221,12 @@ func (s *Store) QueuePendingPollVote(ctx context.Context, vote PendingPollVote) 
 	return &vote, evicted, nil
 }
 
-// pollChatAlias only trusts the local PN/LID map. Unknown mappings are distinct
-// from database failures, which must not acknowledge pending work.
-func (s *Store) pollChatAlias(ctx context.Context, chat string) (string, error) {
+// pnLIDAlias returns the other address of a phone-number or LID JID (the LID
+// of a phone number, or the phone number of a LID). It only trusts the local
+// PN/LID map: an unknown mapping is sql.ErrNoRows, which is distinct from a
+// database failure (that must not acknowledge pending poll votes, for
+// example). Groups and other servers have no alias.
+func (s *Store) pnLIDAlias(ctx context.Context, chat string) (string, error) {
 	jid, err := types.ParseJID(chat)
 	if err != nil {
 		return "", err
@@ -251,7 +260,7 @@ func (s *Store) ResolvePollChat(ctx context.Context, pollID, observedChatJID str
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return "", err
 	}
-	alias, err := s.pollChatAlias(ctx, observedChatJID)
+	alias, err := s.pnLIDAlias(ctx, observedChatJID)
 	if err != nil {
 		return "", err
 	}
@@ -271,7 +280,7 @@ func (s *Store) PendingPollVotes(ctx context.Context, ownerJID string, chatJIDs 
 		chats := make(map[string]bool)
 		for _, chat := range chatJIDs {
 			chats[chat] = true
-			alias, err := s.pollChatAlias(ctx, chat)
+			alias, err := s.pnLIDAlias(ctx, chat)
 			if err == nil {
 				chats[alias] = true
 			} else if !errors.Is(err, sql.ErrNoRows) {

@@ -14,6 +14,7 @@ import (
 	"github.com/mdp/qrterminal"
 
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/appstate"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
 	wmstore "go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/store/sqlstore"
@@ -77,9 +78,11 @@ type Client struct {
 	transcribeMu  sync.Mutex
 	// isConnected and waSend are wa's IsConnected and SendMessage, used by
 	// SendReply, SendReaction, polls and contact cards (waSend through the
-	// rate-limited sendMessage); tests replace them.
-	isConnected func() bool
-	waSend      func(context.Context, types.JID, *waProto.Message, ...whatsmeow.SendRequestExtra) (whatsmeow.SendResponse, error)
+	// rate-limited sendMessage); tests replace them. sendAppState is wa's
+	// SendAppState, used by a delete for me (see delete_for_me.go).
+	isConnected  func() bool
+	waSend       func(context.Context, types.JID, *waProto.Message, ...whatsmeow.SendRequestExtra) (whatsmeow.SendResponse, error)
+	sendAppState func(context.Context, appstate.PatchInfo) error
 }
 
 // newWAClient creates the whatsmeow client for device. whatsmeow logs through
@@ -183,6 +186,7 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		sendMediaRetry:   wa.SendMediaRetryReceipt,
 		isConnected:      wa.IsConnected,
 		waSend:           wa.SendMessage,
+		sendAppState:     wa.SendAppState,
 		groupInfo:        wa.GetGroupInfo,
 		store:            cfg.Store,
 		log:              logger,
