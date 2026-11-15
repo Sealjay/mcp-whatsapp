@@ -23,12 +23,17 @@ func (c *Client) TranscriptionEnabled() bool { return c.transcribeCfg.Enabled() 
 // The audio is downloaded through the normal media path (so the usual size and
 // hash checks apply), then sent to the configured speech-to-text service. The
 // resulting text is third-party content and must be treated as untrusted.
+// A message deleted for me is refused, including when the deletion arrives
+// while it is being transcribed; its stored transcript is kept.
 func (c *Client) TranscribeAudio(ctx context.Context, messageID, chatJID, language string) (*store.Transcript, bool, error) {
 	if !c.transcribeCfg.Enabled() {
 		return nil, false, transcribe.ErrNotConfigured
 	}
 	if strings.TrimSpace(messageID) == "" || strings.TrimSpace(chatJID) == "" {
 		return nil, false, errors.New("message_id and chat_jid are required")
+	}
+	if err := c.refuseDeletedForMe(ctx, messageID, chatJID); err != nil {
+		return nil, false, err
 	}
 	if t, err := c.store.GetTranscript(ctx, messageID, chatJID); err != nil {
 		return nil, false, err
@@ -39,6 +44,9 @@ func (c *Client) TranscribeAudio(ctx context.Context, messageID, chatJID, langua
 	// One transcription at a time: the service is typically CPU-bound.
 	c.transcribeMu.Lock()
 	defer c.transcribeMu.Unlock()
+	if err := c.refuseDeletedForMe(ctx, messageID, chatJID); err != nil {
+		return nil, false, err
+	}
 	// Another call may have finished the same message while we waited.
 	if t, err := c.store.GetTranscript(ctx, messageID, chatJID); err != nil {
 		return nil, false, err
@@ -74,6 +82,9 @@ func (c *Client) TranscribeAudio(ctx context.Context, messageID, chatJID, langua
 		Duration:  res.Duration,
 	}
 	if err := c.store.PutTranscript(ctx, t); err != nil {
+		return nil, false, err
+	}
+	if err := c.refuseDeletedForMe(ctx, messageID, chatJID); err != nil {
 		return nil, false, err
 	}
 	stored, err := c.store.GetTranscript(ctx, messageID, chatJID)

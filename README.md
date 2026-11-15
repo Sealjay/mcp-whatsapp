@@ -169,7 +169,7 @@ Enable with `serve -enable-labels` or `WHATSAPP_MCP_LABELS=1`. Label tools are n
 | `send_reaction` | React to a message (empty emoji clears an existing reaction) |
 | `send_reply` | Text reply that quotes a prior message |
 | `edit_message` | Edit a previously-sent message |
-| `delete_message` | Revoke (delete for everyone) a message |
+| `delete_message` | Delete a message for everyone (revoke), or only for this account with `scope: for_me` |
 | `send_typing` | Set per-chat composing / recording presence |
 
 ### Groups
@@ -280,11 +280,13 @@ Paths outside the root, including symlinks that resolve outside it, are rejected
 
 ### Edits and deletions
 
-The cache follows edits and deletions for everyone, whether they arrive live, in history sync, or are made through `edit_message` / `delete_message`:
+The cache follows edits and deletions, whether they arrive live, in history sync, or are made through `edit_message` / `delete_message`:
 
 - **Edits** replace the cached text (or media caption) and keep the message's ID and timestamp. `list_messages` marks the row `[edited]` and searches match the new text.
 - **Deletions for everyone** mark the row deleted and record when: `list_messages` shows `[deleted <time> UTC]` before the text, and `get_message_context` adds `revoked: true` and `revoked_at`. The cache never removes the message: its text, media fields, poll data and any downloaded copy are kept, and it still matches searches.
-- Only the original sender's edits and deletions are applied; a deletion of someone else's message is applied only in a group, from an admin. Edits and deletions of messages that are not cached are ignored.
+- Only the original sender's edits and deletions are applied; a deletion of someone else's message is applied only in a group, from an admin. Edits and deletions for everyone of messages that are not cached are ignored.
+- **Deletions for me** (`delete_message` with `scope: for_me`, or a message deleted for me on another of the account's devices) hide the message: `list_messages`, `get_message_context` (including its context windows) and chat previews leave it out, and `download_media`, `whatsapp://media/…` reads, `get_poll_results` and `transcribe_audio` refuse it. The cache still never removes the row, and downloaded files and transcripts stay on disk. A chat's position in `list_chats` (its last message time) is not changed. The deletion is also recorded by message key, under the chat's phone-number and LID forms known at the time, so a message that arrives later (history sync, `request_sync`, or after a restart) stays hidden; a PN/LID mapping learnt only after both have arrived is not linked back.
+- `delete_message` with `scope: for_me` needs the message in the cache, because WhatsApp identifies it by its key and timestamp; it refuses before sending anything otherwise. For another member's message in a group it also needs that member's proven address in the group's addressing mode (LID or phone number): the sender must be a current participant, found with a live group-info lookup, or have a known PN/LID mapping; otherwise the call is refused. The cache is changed only once WhatsApp has accepted the request. If the send call returns an error, the request may or may not have reached WhatsApp: the result says the outcome is unknown, the cache is left unchanged and nothing is retried. Deletions for me made on other devices arrive as app-state updates: incremental updates are always applied, but those in a full app-state sync are only delivered when labels are enabled (`-enable-labels`), because whatsmeow emits full-sync events only then.
 
 ## Running the daemon
 
