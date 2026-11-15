@@ -41,6 +41,8 @@ func (c *Client) StartEventHandler() {
 			c.handleHistorySync(v)
 		case *events.MediaRetry:
 			c.handleMediaRetry(v)
+		case *events.DeleteForMe:
+			c.handleDeleteForMe(v)
 		case *events.Connected:
 			c.log.Infof("Connected to WhatsApp")
 			c.replayPendingPollVotes(nil)

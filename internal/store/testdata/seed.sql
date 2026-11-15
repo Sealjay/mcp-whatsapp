@@ -23,8 +23,16 @@ CREATE TABLE IF NOT EXISTS messages (
     poll_options_json TEXT,
     edited_at TIMESTAMP,
     revoked_at TIMESTAMP,
+    deleted_for_me_at TIMESTAMP,
     PRIMARY KEY (id, chat_jid),
     FOREIGN KEY (chat_jid) REFERENCES chats(jid)
+);
+
+CREATE TABLE IF NOT EXISTS deleted_for_me (
+    message_id TEXT NOT NULL,
+    chat_jid TEXT NOT NULL,
+    deleted_at TIMESTAMP NOT NULL,
+    PRIMARY KEY (message_id, chat_jid)
 );
 
 CREATE TABLE IF NOT EXISTS poll_votes (

@@ -57,6 +57,7 @@ methods=(
   ParseWebMessage
   DecryptSecretEncryptedMessage
   SendMediaRetryReceipt
+  SendAppState
 )
 
 # Package-level functions we call, checked the same way.
