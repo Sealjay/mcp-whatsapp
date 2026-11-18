@@ -350,3 +350,39 @@ func TestConvertToOpusOgg_EnvIsolation(t *testing.T) {
 		t.Fatalf("expected valid output file after env-isolated run, stat=%v size=%d", err, info.Size())
 	}
 }
+
+// WhatsApp voice notes are complete Ogg/Opus streams whose last page is not
+// flagged end-of-stream; the duration check used before transcription must
+// accept them while still rejecting damaged data.
+func TestOggOpusDuration_ToleratesMissingEndOfStream(t *testing.T) {
+	head := opusPages(0, 48000)[:47]
+	voiceNote := append([]byte(nil), head...)
+	voiceNote = append(voiceNote, oggPage(1, 24000+312, 0, []byte{0})...)
+	voiceNote = append(voiceNote, oggPage(2, 5*48000+312, 0, []byte{0})...)
+
+	got, err := OggOpusDuration(voiceNote)
+	if err != nil || got != 5 {
+		t.Fatalf("duration=%d err=%v; want 5s and no error for a stream without EOS", got, err)
+	}
+	if _, _, err := AnalyzeOggOpus(voiceNote); err == nil {
+		t.Fatal("the strict analyser must still require end of stream")
+	}
+	withEOS := opusPages(3*48000+312, 48000)
+	if got, err := OggOpusDuration(withEOS); err != nil || got != 3 {
+		t.Fatalf("duration=%d err=%v; want 3s for a stream with EOS", got, err)
+	}
+
+	truncatedBody := append([]byte(nil), head...)
+	truncatedBody = append(truncatedBody, oggPage(1, 48000+312, 0, []byte{0, 0, 0})[:30]...)
+	for name, data := range map[string][]byte{
+		"truncated page body":   truncatedBody,
+		"trailing partial page": append(append([]byte(nil), voiceNote...), []byte("OggS")...),
+		"missing OpusHead":      oggPage(0, 48000, 0, []byte("not opus")),
+		"granule below pre-skip": append(append([]byte(nil), head...),
+			oggPage(1, 100, 0, []byte{0})...),
+	} {
+		if _, err := OggOpusDuration(data); err == nil {
+			t.Errorf("%s: expected an error even without requiring EOS", name)
+		}
+	}
+}
