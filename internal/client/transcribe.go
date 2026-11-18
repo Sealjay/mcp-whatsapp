@@ -94,7 +94,9 @@ func (c *Client) checkAudioDuration(path string) error {
 	if !bytes.HasPrefix(data, []byte("OggS")) {
 		return nil // Other formats use the service's duration limit.
 	}
-	secs, _, err := media.AnalyzeOggOpus(data)
+	// Voice notes from WhatsApp do not flag the last page as end of stream, so
+	// the strict analyser used for sending would reject every one of them.
+	secs, err := media.OggOpusDuration(data)
 	if err != nil {
 		return fmt.Errorf("analyze Ogg audio: %w", err)
 	}
