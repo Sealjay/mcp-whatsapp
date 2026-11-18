@@ -16,8 +16,22 @@ import (
 )
 
 // AnalyzeOggOpus returns the unclamped duration rounded up to seconds and a
-// 64-byte waveform. Truncated or invalid Ogg/Opus streams return an error.
+// 64-byte waveform. Truncated or invalid Ogg/Opus streams return an error,
+// including streams whose last page lacks the end-of-stream flag.
 func AnalyzeOggOpus(data []byte) (duration uint32, waveform []byte, err error) {
+	return analyzeOggOpus(data, true)
+}
+
+// OggOpusDuration returns the duration of an Ogg/Opus stream rounded up to
+// seconds. Unlike AnalyzeOggOpus it does not require the end-of-stream flag on
+// the last page: WhatsApp voice notes are complete, well-formed streams whose
+// final page is not flagged. Truncated pages and bad headers still fail.
+func OggOpusDuration(data []byte) (uint32, error) {
+	d, _, err := analyzeOggOpus(data, false)
+	return d, err
+}
+
+func analyzeOggOpus(data []byte, requireEOS bool) (duration uint32, waveform []byte, err error) {
 	if len(data) < 4 || string(data[0:4]) != "OggS" {
 		return 0, nil, fmt.Errorf("not a valid Ogg file (missing OggS signature)")
 	}
@@ -92,7 +106,7 @@ func AnalyzeOggOpus(data []byte) (duration uint32, waveform []byte, err error) {
 		i += pageSize
 	}
 
-	if !ended {
+	if requireEOS && !ended {
 		return 0, nil, errors.New("missing Ogg end of stream")
 	}
 	if lastGranule <= uint64(preSkip) {
