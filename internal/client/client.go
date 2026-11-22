@@ -47,7 +47,10 @@ type Config struct {
 
 // Client wraps a whatsmeow.Client together with the message cache and logger.
 type Client struct {
+	// wa is replaced once by RebindAfterPairing; read it through waClient.
+	// waMu guards wa, handlerID and handlerInstalled.
 	wa               *whatsmeow.Client
+	waMu             sync.RWMutex
 	downloadMedia    func(context.Context, whatsmeow.DownloadableMessage) ([]byte, error)
 	groupInfo        func(context.Context, types.JID) (*types.GroupInfo, error)
 	sendMediaRetry   func(context.Context, *types.MessageInfo, []byte) error
@@ -177,13 +180,11 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		return nil, errors.New("failed to create whatsmeow client")
 	}
 
-	return &Client{
+	// downloadMedia, sendMediaRetry and groupInfo stay nil so their callers
+	// fall back to waClient(), and isConnected and waSend resolve it on each
+	// call: none of them may capture wa, which RebindAfterPairing replaces.
+	c := &Client{
 		wa:               wa,
-		downloadMedia:    wa.Download,
-		sendMediaRetry:   wa.SendMediaRetryReceipt,
-		isConnected:      wa.IsConnected,
-		waSend:           wa.SendMessage,
-		groupInfo:        wa.GetGroupInfo,
 		store:            cfg.Store,
 		log:              logger,
 		allowedMediaRoot: cfg.AllowedMediaRoot,
@@ -192,7 +193,20 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		labelsEnabled:    cfg.LabelsEnabled,
 		status:           ConnectionStatus{State: "disconnected", Since: time.Now().UTC()},
 		transcribeCfg:    transcribe.ConfigFromEnv(),
-	}, nil
+	}
+	c.isConnected = func() bool { return c.waClient().IsConnected() }
+	c.waSend = func(ctx context.Context, to types.JID, msg *waProto.Message, extra ...whatsmeow.SendRequestExtra) (whatsmeow.SendResponse, error) {
+		return c.waClient().SendMessage(ctx, to, msg, extra...)
+	}
+	return c, nil
+}
+
+// waClient returns the current whatsmeow client. Use it instead of reading
+// c.wa, which RebindAfterPairing may replace while other goroutines run.
+func (c *Client) waClient() *whatsmeow.Client {
+	c.waMu.RLock()
+	defer c.waMu.RUnlock()
+	return c.wa
 }
 
 // ValidateMediaPath is a bound convenience wrapper around
@@ -214,14 +228,14 @@ func (c *Client) ValidateOutputPath(userPath string) (string, error) {
 // session. A false return means the next Connect call will emit QR pairing
 // events instead of reconnecting.
 func (c *Client) IsLoggedIn() bool {
-	return c.wa.Store.ID != nil
+	return c.waClient().Store.ID != nil
 }
 
 // QRChannel exposes whatsmeow's pairing QR channel. Must be called before
 // Connect when the device is not yet paired. The channel emits QRChannelItem
 // events while pairing is in progress and closes on success.
 func (c *Client) QRChannel(ctx context.Context) (<-chan whatsmeow.QRChannelItem, error) {
-	return c.wa.GetQRChannel(ctx)
+	return c.waClient().GetQRChannel(ctx)
 }
 
 // NewPairingSession creates an independent whatsmeow client for one pairing
@@ -229,7 +243,7 @@ func (c *Client) QRChannel(ctx context.Context) (<-chan whatsmeow.QRChannelItem,
 // affect this Client's connection.
 func (c *Client) NewPairingSession() *Client {
 	return &Client{
-		wa:            newWAClient(c.wa.Store, c.log, c.redactor, c.labelsEnabled),
+		wa:            newWAClient(c.waClient().Store, c.log, c.redactor, c.labelsEnabled),
 		store:         c.store,
 		log:           c.log,
 		redactor:      c.redactor,
@@ -237,11 +251,33 @@ func (c *Client) NewPairingSession() *Client {
 	}
 }
 
+// RebindAfterPairing replaces the underlying whatsmeow client with a fresh one
+// over the same, now paired, device store. whatsmeow records whether a client
+// is paired only in NewClient, so a client created before a pairing session
+// stored the device ID still treats itself as unpaired. Its next connect logs
+// "Received connect success without pairing, ignoring", never completes the
+// login, and WhatsApp removes the new companion device a minute or two later
+// (issue #127). Call this after a pairing session succeeds and before
+// Connect. The old client is disconnected and its event handler removed;
+// StartEventHandler installs the handler on the new client.
+func (c *Client) RebindAfterPairing() {
+	c.waMu.Lock()
+	defer c.waMu.Unlock()
+	old := c.wa
+	old.Disconnect()
+	if c.handlerInstalled {
+		old.RemoveEventHandler(c.handlerID)
+	}
+	c.wa = newWAClient(old.Store, c.log, c.redactor, c.labelsEnabled)
+	c.handlerID = 0
+	c.handlerInstalled = false
+}
+
 // Logout drops the currently paired device from WhatsApp's server and clears
 // the local session. After this call, IsLoggedIn returns false and the next
 // Connect will start a fresh pairing flow.
 func (c *Client) Logout(ctx context.Context) error {
-	if err := c.wa.Logout(ctx); err != nil {
+	if err := c.waClient().Logout(ctx); err != nil {
 		return err
 	}
 	c.trackConnectionEvent(&events.LoggedOut{})
@@ -263,25 +299,25 @@ var errNotPaired = errors.New("device not paired; run login first")
 // when the device has no stored session; set AllowUnpaired to bypass that
 // guard (e.g. during the QR pairing flow).
 func (c *Client) Connect(ctx context.Context, opts ConnectOpts) error {
-	if !opts.AllowUnpaired && c.wa.Store.ID == nil {
+	if !opts.AllowUnpaired && c.waClient().Store.ID == nil {
 		return errNotPaired
 	}
-	return c.wa.ConnectContext(ctx)
+	return c.waClient().ConnectContext(ctx)
 }
 
 // Login runs the QR-code pairing flow. Writes the QR code to qrOut (stdout
 // for the `login` subcommand). Blocks until pairing completes or ctx is done.
 func (c *Client) Login(ctx context.Context, qrOut io.Writer) error {
-	if c.wa.Store.ID != nil {
+	if c.waClient().Store.ID != nil {
 		// Already paired; just connect.
-		return c.wa.ConnectContext(ctx)
+		return c.waClient().ConnectContext(ctx)
 	}
 
-	qrChan, err := c.wa.GetQRChannel(ctx)
+	qrChan, err := c.waClient().GetQRChannel(ctx)
 	if err != nil {
 		return fmt.Errorf("get QR channel: %w", err)
 	}
-	if err := c.wa.ConnectContext(ctx); err != nil {
+	if err := c.waClient().ConnectContext(ctx); err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
 
@@ -318,16 +354,16 @@ func (c *Client) Login(ctx context.Context, qrOut io.Writer) error {
 // requests a pairing code from WhatsApp, writes the formatted code to codeOut,
 // and blocks until the phone confirms pairing (or ctx is done).
 func (c *Client) PairPhoneLogin(ctx context.Context, phone string, codeOut io.Writer) error {
-	if c.wa.Store.ID != nil {
+	if c.waClient().Store.ID != nil {
 		// Already paired; just connect.
-		return c.wa.ConnectContext(ctx)
+		return c.waClient().ConnectContext(ctx)
 	}
 
-	qrChan, err := c.wa.GetQRChannel(ctx)
+	qrChan, err := c.waClient().GetQRChannel(ctx)
 	if err != nil {
 		return fmt.Errorf("get QR channel: %w", err)
 	}
-	if err := c.wa.ConnectContext(ctx); err != nil {
+	if err := c.waClient().ConnectContext(ctx); err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
 
@@ -364,8 +400,8 @@ func (c *Client) PairPhoneLogin(ctx context.Context, phone string, codeOut io.Wr
 
 // Disconnect gracefully disconnects the underlying client.
 func (c *Client) Disconnect() {
-	if c.wa != nil {
-		c.wa.Disconnect()
+	if wa := c.waClient(); wa != nil {
+		wa.Disconnect()
 	}
 	c.trackConnectionEvent(&events.Disconnected{})
 }
@@ -375,7 +411,7 @@ func (c *Client) Disconnect() {
 // skip a second Connect call after a pairing-driven connect has already
 // established the session.
 func (c *Client) IsConnected() bool {
-	return c.wa.IsConnected()
+	return c.waClient().IsConnected()
 }
 
 // AddLoggedOutHandler registers a callback that fires when whatsmeow emits
@@ -383,7 +419,7 @@ func (c *Client) IsConnected() bool {
 // session). The callback runs in whatsmeow's event goroutine; keep it
 // non-blocking.
 func (c *Client) AddLoggedOutHandler(fn func(*events.LoggedOut)) {
-	c.wa.AddEventHandler(func(evt interface{}) {
+	c.waClient().AddEventHandler(func(evt interface{}) {
 		if lo, ok := evt.(*events.LoggedOut); ok {
 			fn(lo)
 		}
@@ -391,7 +427,7 @@ func (c *Client) AddLoggedOutHandler(fn func(*events.LoggedOut)) {
 }
 
 // WA exposes the underlying whatsmeow client for advanced callers.
-func (c *Client) WA() *whatsmeow.Client { return c.wa }
+func (c *Client) WA() *whatsmeow.Client { return c.waClient() }
 
 // Store returns the message cache.
 func (c *Client) Store() *store.Store { return c.store }

@@ -61,10 +61,10 @@ func (c *Client) messageChangeOf(ctx context.Context, m *waProto.Message, evt *e
 		return messageChange{}, false
 	}
 	// Decryption needs the editor's JID and the original's stored secret.
-	if evt.Info.Sender.IsEmpty() || c.wa == nil || c.wa.Store == nil || c.wa.Store.MsgSecrets == nil {
+	if evt.Info.Sender.IsEmpty() || c.waClient() == nil || c.waClient().Store == nil || c.waClient().Store.MsgSecrets == nil {
 		return messageChange{}, false
 	}
-	decrypted, err := c.wa.DecryptSecretEncryptedMessage(ctx, &events.Message{Info: evt.Info, Message: m})
+	decrypted, err := c.waClient().DecryptSecretEncryptedMessage(ctx, &events.Message{Info: evt.Info, Message: m})
 	if err != nil {
 		c.log.Warnf("Failed to decrypt edit of %s in %s: %v",
 			c.redactor.MsgID(enc.GetTargetMessageKey().GetID()), c.redactor.JID(evt.Info.Chat.String()), c.redactor.Err(err))
@@ -169,8 +169,8 @@ func (c *Client) authorOf(rawJID string) store.Author {
 	if err != nil || jid.User == "" {
 		return store.Author{}
 	}
-	if c.wa != nil && c.wa.Store != nil {
-		if (c.wa.Store.ID != nil && jid.User == c.wa.Store.ID.User) || jid.User == c.wa.Store.LID.User {
+	if c.waClient() != nil && c.waClient().Store != nil {
+		if (c.waClient().Store.ID != nil && jid.User == c.waClient().Store.ID.User) || jid.User == c.waClient().Store.LID.User {
 			return store.Author{FromMe: true}
 		}
 	}
@@ -199,8 +199,8 @@ func (c *Client) senderUsers(jids ...types.JID) []string {
 // according to a live group-info lookup. A failed lookup counts as no.
 func (c *Client) isGroupAdmin(ctx context.Context, group types.JID, ids ...types.JID) bool {
 	lookup := c.groupInfo
-	if lookup == nil && c.wa != nil {
-		lookup = c.wa.GetGroupInfo
+	if lookup == nil && c.waClient() != nil {
+		lookup = c.waClient().GetGroupInfo
 	}
 	if lookup == nil {
 		return false

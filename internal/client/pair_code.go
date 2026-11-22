@@ -27,13 +27,13 @@ var errNotConnected = errors.New("not connected: start the pairing flow before r
 // so the QR channel's "success" event (and hence the daemon's pairing state
 // machine) fires for this flow exactly as it does for a QR scan.
 func (c *Client) PairPhone(ctx context.Context, phone string) (string, error) {
-	if c.wa.Store.ID != nil {
+	if c.waClient().Store.ID != nil {
 		return "", errAlreadyPaired
 	}
-	if !c.wa.IsConnected() {
+	if !c.waClient().IsConnected() {
 		return "", errNotConnected
 	}
-	code, err := c.wa.PairPhone(ctx, phone, true, whatsmeow.PairClientChrome, "Chrome (Linux)")
+	code, err := c.waClient().PairPhone(ctx, phone, true, whatsmeow.PairClientChrome, "Chrome (Linux)")
 	if err != nil {
 		return "", fmt.Errorf("pair phone: %w", err)
 	}

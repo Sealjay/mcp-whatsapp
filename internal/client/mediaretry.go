@@ -151,10 +151,10 @@ func (c *Client) awaitMediaRetry(ctx context.Context, call *mediaRetryCall, chat
 	}
 	send := c.sendMediaRetry
 	if send == nil {
-		if c.wa == nil {
+		if c.waClient() == nil {
 			return "", errors.New("media retry is unavailable")
 		}
-		send = c.wa.SendMediaRetryReceipt
+		send = c.waClient().SendMediaRetryReceipt
 	}
 	c.log.Infof("Asking the phone to re-upload media for message %s", c.redactor.MsgID(call.messageID))
 	if err := send(ctx, info, call.mediaKey); err != nil {
@@ -227,12 +227,12 @@ func (c *Client) mediaRetrySender(ctx context.Context, chat, sender types.JID) t
 	}
 	lids := c.mediaRetryLIDs
 	groupInfo := c.mediaRetryGroupInfo
-	if c.wa != nil && c.wa.Store != nil {
+	if c.waClient() != nil && c.waClient().Store != nil {
 		if lids == nil {
-			lids = c.wa.Store.LIDs
+			lids = c.waClient().Store.LIDs
 		}
 		if groupInfo == nil {
-			groupInfo = c.wa.GetGroupInfo
+			groupInfo = c.waClient().GetGroupInfo
 		}
 	}
 	if lids == nil || groupInfo == nil {

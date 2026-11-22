@@ -69,10 +69,10 @@ func (c *Client) SendPresence(ctx context.Context, state string) error {
 	if err != nil {
 		return err
 	}
-	if !c.wa.IsConnected() {
+	if !c.waClient().IsConnected() {
 		return errors.New("not connected to WhatsApp")
 	}
-	if err := c.wa.SendPresence(ctx, p); err != nil {
+	if err := c.waClient().SendPresence(ctx, p); err != nil {
 		return fmt.Errorf("send presence: %w", err)
 	}
 	return nil
@@ -80,10 +80,10 @@ func (c *Client) SendPresence(ctx context.Context, state string) error {
 
 // GetPrivacySettings returns the current privacy settings as JSON.
 func (c *Client) GetPrivacySettings(ctx context.Context) (string, error) {
-	if !c.wa.IsConnected() {
+	if !c.waClient().IsConnected() {
 		return "", errors.New("not connected to WhatsApp")
 	}
-	settings := c.wa.GetPrivacySettings(ctx)
+	settings := c.waClient().GetPrivacySettings(ctx)
 	b, err := json.Marshal(settings)
 	if err != nil {
 		return "", fmt.Errorf("marshal privacy settings: %w", err)
@@ -124,10 +124,10 @@ func (c *Client) SetPrivacySetting(ctx context.Context, name, value string) (str
 	if err := validatePrivacySettingValue(value); err != nil {
 		return "", err
 	}
-	if !c.wa.IsConnected() {
+	if !c.waClient().IsConnected() {
 		return "", errors.New("not connected to WhatsApp")
 	}
-	settings, err := c.wa.SetPrivacySetting(ctx, types.PrivacySettingType(name), types.PrivacySetting(value))
+	settings, err := c.waClient().SetPrivacySetting(ctx, types.PrivacySettingType(name), types.PrivacySetting(value))
 	if err != nil {
 		return "", fmt.Errorf("set privacy setting: %w", err)
 	}
@@ -140,10 +140,10 @@ func (c *Client) SetPrivacySetting(ctx context.Context, name, value string) (str
 
 // SetStatusMessage updates the user's "About" text.
 func (c *Client) SetStatusMessage(ctx context.Context, text string) error {
-	if !c.wa.IsConnected() {
+	if !c.waClient().IsConnected() {
 		return errors.New("not connected to WhatsApp")
 	}
-	if err := c.wa.SetStatusMessage(ctx, types.SetStatusInput{Text: &text}); err != nil {
+	if err := c.waClient().SetStatusMessage(ctx, types.SetStatusInput{Text: &text}); err != nil {
 		return fmt.Errorf("set status message: %w", err)
 	}
 	return nil

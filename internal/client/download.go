@@ -223,8 +223,8 @@ func (c *Client) fetchMedia(ctx context.Context, d *MediaDownloader) ([]byte, er
 	if c.downloadMedia != nil {
 		return c.downloadMedia(ctx, d)
 	}
-	if c.wa != nil {
-		return c.wa.Download(ctx, d)
+	if c.waClient() != nil {
+		return c.waClient().Download(ctx, d)
 	}
 	return nil, errors.New("media downloader is unavailable")
 }

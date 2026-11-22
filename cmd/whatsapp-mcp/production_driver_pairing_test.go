@@ -167,6 +167,51 @@ func TestProductionDriverPairingSuccessHandoff(t *testing.T) {
 	}
 }
 
+// TestProductionDriverPairingSuccessRebindsMainClient guards issue #127: the
+// main client must be rebuilt after the pairing session closes and before
+// onSuccess connects it, or WhatsApp ignores its login and drops the device.
+func TestProductionDriverPairingSuccessRebindsMainClient(t *testing.T) {
+	qrCh := make(chan whatsmeow.QRChannelItem, 1)
+	session := &fakePairingSession{qrCh: qrCh}
+	var mu sync.Mutex
+	var order []string
+	record := func(step string) {
+		mu.Lock()
+		defer mu.Unlock()
+		order = append(order, step)
+	}
+	driver := &productionDriver{
+		newPairingSession: func() pairingSession { return session },
+		rebindAfterPairing: func() {
+			if session.IsConnected() {
+				record("rebind-before-session-closed")
+				return
+			}
+			record("rebind")
+		},
+	}
+
+	succeeded := make(chan struct{})
+	if err := driver.StartPairing(context.Background(), nil, func() {
+		record("connect")
+		close(succeeded)
+	}, nil); err != nil {
+		t.Fatalf("start pairing: %v", err)
+	}
+	qrCh <- whatsmeow.QRChannelItem{Event: "success"}
+
+	select {
+	case <-succeeded:
+	case <-time.After(2 * time.Second):
+		t.Fatal("pairing success was not handed off")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if got := strings.Join(order, ","); got != "rebind,connect" {
+		t.Fatalf("success handoff order = %q, want %q", got, "rebind,connect")
+	}
+}
+
 type realPairingSession struct {
 	wa *whatsmeow.Client
 }

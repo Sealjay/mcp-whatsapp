@@ -28,6 +28,10 @@ type pairingAttempt struct {
 type productionDriver struct {
 	c                 *client.Client
 	newPairingSession func() pairingSession
+	// rebindAfterPairing gives the main client a whatsmeow client that knows
+	// the device is paired; it runs after a pairing success and before
+	// onSuccess connects the main client (issue #127).
+	rebindAfterPairing func()
 
 	pairingMu     sync.Mutex
 	activePairing *pairingAttempt
@@ -35,8 +39,9 @@ type productionDriver struct {
 
 func newProductionDriver(c *client.Client) *productionDriver {
 	return &productionDriver{
-		c:                 c,
-		newPairingSession: func() pairingSession { return c.NewPairingSession() },
+		c:                  c,
+		newPairingSession:  func() pairingSession { return c.NewPairingSession() },
+		rebindAfterPairing: c.RebindAfterPairing,
 	}
 }
 
@@ -104,6 +109,9 @@ func (p *productionDriver) StartPairing(ctx context.Context, onQR func(string), 
 				case "success":
 					session.Disconnect()
 					p.clearPairingAttempt(attempt)
+					if p.rebindAfterPairing != nil {
+						p.rebindAfterPairing()
+					}
 					if onSuccess != nil {
 						onSuccess()
 					}

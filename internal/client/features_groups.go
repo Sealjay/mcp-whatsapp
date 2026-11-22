@@ -31,7 +31,7 @@ func parseParticipantJIDs(raws []string) ([]types.JID, error) {
 // CreateGroup creates a new group with the given name and initial participants.
 // Returns the new group JID as a string and its info serialised as JSON.
 func (c *Client) CreateGroup(ctx context.Context, name string, participants []string) (string, string, error) {
-	if !c.wa.IsConnected() {
+	if !c.waClient().IsConnected() {
 		return "", "", errors.New("not connected to WhatsApp")
 	}
 	if strings.TrimSpace(name) == "" {
@@ -41,7 +41,7 @@ func (c *Client) CreateGroup(ctx context.Context, name string, participants []st
 	if err != nil {
 		return "", "", err
 	}
-	info, err := c.wa.CreateGroup(ctx, whatsmeow.ReqCreateGroup{
+	info, err := c.waClient().CreateGroup(ctx, whatsmeow.ReqCreateGroup{
 		Name:         name,
 		Participants: jids,
 	})
@@ -57,14 +57,14 @@ func (c *Client) CreateGroup(ctx context.Context, name string, participants []st
 
 // LeaveGroup leaves the given group chat.
 func (c *Client) LeaveGroup(ctx context.Context, chatJID string) error {
-	if !c.wa.IsConnected() {
+	if !c.waClient().IsConnected() {
 		return errors.New("not connected to WhatsApp")
 	}
 	jid, err := types.ParseJID(chatJID)
 	if err != nil {
 		return fmt.Errorf("invalid chat JID: %w", err)
 	}
-	if err := c.wa.LeaveGroup(ctx, jid); err != nil {
+	if err := c.waClient().LeaveGroup(ctx, jid); err != nil {
 		return fmt.Errorf("leave group: %w", err)
 	}
 	return nil
@@ -72,10 +72,10 @@ func (c *Client) LeaveGroup(ctx context.Context, chatJID string) error {
 
 // ListJoinedGroups returns JSON of all groups the user is in.
 func (c *Client) ListJoinedGroups(ctx context.Context) (string, error) {
-	if !c.wa.IsConnected() {
+	if !c.waClient().IsConnected() {
 		return "", errors.New("not connected to WhatsApp")
 	}
-	groups, err := c.wa.GetJoinedGroups(ctx)
+	groups, err := c.waClient().GetJoinedGroups(ctx)
 	if err != nil {
 		return "", fmt.Errorf("list joined groups: %w", err)
 	}
@@ -88,14 +88,14 @@ func (c *Client) ListJoinedGroups(ctx context.Context) (string, error) {
 
 // GetGroupInfoJSON returns a JSON-encoded types.GroupInfo for the given chat.
 func (c *Client) GetGroupInfoJSON(ctx context.Context, chatJID string) (string, error) {
-	if !c.wa.IsConnected() {
+	if !c.waClient().IsConnected() {
 		return "", errors.New("not connected to WhatsApp")
 	}
 	jid, err := types.ParseJID(chatJID)
 	if err != nil {
 		return "", fmt.Errorf("invalid chat JID: %w", err)
 	}
-	info, err := c.wa.GetGroupInfo(ctx, jid)
+	info, err := c.waClient().GetGroupInfo(ctx, jid)
 	if err != nil {
 		return "", fmt.Errorf("get group info: %w", err)
 	}
@@ -189,7 +189,7 @@ type ParticipantUpdateReport struct {
 // privacy settings, WhatsApp hands back an invite code; with opts.SendInvite
 // the invite is sent to them as a group-invite message.
 func (c *Client) UpdateGroupParticipants(ctx context.Context, chatJID string, participants []string, action string, opts ParticipantUpdateOptions) (*ParticipantUpdateReport, error) {
-	if !c.wa.IsConnected() {
+	if !c.waClient().IsConnected() {
 		return nil, errors.New("not connected to WhatsApp")
 	}
 	chat, err := types.ParseJID(chatJID)
@@ -211,11 +211,11 @@ func (c *Client) UpdateGroupParticipants(ctx context.Context, chatJID string, pa
 		return nil, err
 	}
 
-	info, err := c.wa.GetGroupInfo(ctx, chat)
+	info, err := c.waClient().GetGroupInfo(ctx, chat)
 	if err != nil {
 		return nil, fmt.Errorf("get group info: %w", err)
 	}
-	self := findParticipant(info, c.wa.Store.GetJID(), c.wa.Store.GetLID())
+	self := findParticipant(info, c.waClient().Store.GetJID(), c.waClient().Store.GetLID())
 	if err := checkParticipantPermission(info, self, parsedAction); err != nil {
 		return nil, err
 	}
@@ -240,7 +240,7 @@ func (c *Client) UpdateGroupParticipants(ctx context.Context, chatJID string, pa
 		for j, p := range batch {
 			toSend[j] = p.jid
 		}
-		changed, err := c.wa.UpdateGroupParticipants(ctx, chat, toSend, parsedAction)
+		changed, err := c.waClient().UpdateGroupParticipants(ctx, chat, toSend, parsedAction)
 		if err != nil {
 			// Nothing has changed yet only if this was the first request.
 			if i == 0 {
@@ -275,7 +275,7 @@ func (c *Client) lidForPN(ctx context.Context, jid types.JID) types.JID {
 	if jid.Server != types.DefaultUserServer {
 		return types.EmptyJID
 	}
-	lid, err := c.wa.Store.LIDs.GetLIDForPN(ctx, jid)
+	lid, err := c.waClient().Store.LIDs.GetLIDForPN(ctx, jid)
 	if err != nil {
 		return types.EmptyJID
 	}
@@ -413,7 +413,7 @@ func (c *Client) resultFor(ctx context.Context, changed []types.GroupParticipant
 			if r.JID.Server != types.HiddenUserServer {
 				continue
 			}
-			if pn, err := c.wa.Store.LIDs.GetPNForLID(ctx, r.JID); err == nil && sameUser(pn, jid) {
+			if pn, err := c.waClient().Store.LIDs.GetPNForLID(ctx, r.JID); err == nil && sameUser(pn, jid) {
 				return r, true
 			}
 		}
@@ -475,7 +475,7 @@ func (c *Client) inviteParticipant(ctx context.Context, out *ParticipantOutcome,
 		return
 	}
 	msg := buildGroupInviteMessage(chat, groupName, caption, req)
-	resp, err := c.wa.SendMessage(ctx, to, msg)
+	resp, err := c.waClient().SendMessage(ctx, to, msg)
 	if err != nil {
 		out.Status = statusInviteFailed
 		out.Error = fmt.Sprintf("send group invite: %v", err)
@@ -492,14 +492,14 @@ func (c *Client) inviteParticipant(ctx context.Context, out *ParticipantOutcome,
 
 // SetGroupName changes a group's display name.
 func (c *Client) SetGroupName(ctx context.Context, chatJID, name string) error {
-	if !c.wa.IsConnected() {
+	if !c.waClient().IsConnected() {
 		return errors.New("not connected to WhatsApp")
 	}
 	jid, err := types.ParseJID(chatJID)
 	if err != nil {
 		return fmt.Errorf("invalid chat JID: %w", err)
 	}
-	if err := c.wa.SetGroupName(ctx, jid, name); err != nil {
+	if err := c.waClient().SetGroupName(ctx, jid, name); err != nil {
 		return fmt.Errorf("set group name: %w", err)
 	}
 	return nil
@@ -508,14 +508,14 @@ func (c *Client) SetGroupName(ctx context.Context, chatJID, name string) error {
 // SetGroupTopic changes a group's description/topic. The previous and new
 // topic IDs are left empty so whatsmeow auto-fetches/generates them.
 func (c *Client) SetGroupTopic(ctx context.Context, chatJID, topic string) error {
-	if !c.wa.IsConnected() {
+	if !c.waClient().IsConnected() {
 		return errors.New("not connected to WhatsApp")
 	}
 	jid, err := types.ParseJID(chatJID)
 	if err != nil {
 		return fmt.Errorf("invalid chat JID: %w", err)
 	}
-	if err := c.wa.SetGroupTopic(ctx, jid, "", "", topic); err != nil {
+	if err := c.waClient().SetGroupTopic(ctx, jid, "", "", topic); err != nil {
 		return fmt.Errorf("set group topic: %w", err)
 	}
 	return nil
@@ -523,14 +523,14 @@ func (c *Client) SetGroupTopic(ctx context.Context, chatJID, topic string) error
 
 // SetGroupAnnounce toggles announce-only mode (only admins can send messages).
 func (c *Client) SetGroupAnnounce(ctx context.Context, chatJID string, announceOnly bool) error {
-	if !c.wa.IsConnected() {
+	if !c.waClient().IsConnected() {
 		return errors.New("not connected to WhatsApp")
 	}
 	jid, err := types.ParseJID(chatJID)
 	if err != nil {
 		return fmt.Errorf("invalid chat JID: %w", err)
 	}
-	if err := c.wa.SetGroupAnnounce(ctx, jid, announceOnly); err != nil {
+	if err := c.waClient().SetGroupAnnounce(ctx, jid, announceOnly); err != nil {
 		return fmt.Errorf("set group announce: %w", err)
 	}
 	return nil
@@ -538,14 +538,14 @@ func (c *Client) SetGroupAnnounce(ctx context.Context, chatJID string, announceO
 
 // SetGroupLocked toggles locked mode (only admins can change metadata).
 func (c *Client) SetGroupLocked(ctx context.Context, chatJID string, locked bool) error {
-	if !c.wa.IsConnected() {
+	if !c.waClient().IsConnected() {
 		return errors.New("not connected to WhatsApp")
 	}
 	jid, err := types.ParseJID(chatJID)
 	if err != nil {
 		return fmt.Errorf("invalid chat JID: %w", err)
 	}
-	if err := c.wa.SetGroupLocked(ctx, jid, locked); err != nil {
+	if err := c.waClient().SetGroupLocked(ctx, jid, locked); err != nil {
 		return fmt.Errorf("set group locked: %w", err)
 	}
 	return nil
@@ -554,14 +554,14 @@ func (c *Client) SetGroupLocked(ctx context.Context, chatJID string, locked bool
 // GetGroupInviteLink returns the group's current invite link. If reset is
 // true, the previous link is revoked and a new one is generated.
 func (c *Client) GetGroupInviteLink(ctx context.Context, chatJID string, reset bool) (string, error) {
-	if !c.wa.IsConnected() {
+	if !c.waClient().IsConnected() {
 		return "", errors.New("not connected to WhatsApp")
 	}
 	jid, err := types.ParseJID(chatJID)
 	if err != nil {
 		return "", fmt.Errorf("invalid chat JID: %w", err)
 	}
-	link, err := c.wa.GetGroupInviteLink(ctx, jid, reset)
+	link, err := c.waClient().GetGroupInviteLink(ctx, jid, reset)
 	if err != nil {
 		return "", fmt.Errorf("get group invite link: %w", err)
 	}
@@ -571,7 +571,7 @@ func (c *Client) GetGroupInviteLink(ctx context.Context, chatJID string, reset b
 // JoinGroupWithLink joins a group given either a full invite URL or a bare
 // invite code. Returns the joined group's JID as a string.
 func (c *Client) JoinGroupWithLink(ctx context.Context, linkOrCode string) (string, error) {
-	if !c.wa.IsConnected() {
+	if !c.waClient().IsConnected() {
 		return "", errors.New("not connected to WhatsApp")
 	}
 	code := strings.TrimSpace(linkOrCode)
@@ -579,7 +579,7 @@ func (c *Client) JoinGroupWithLink(ctx context.Context, linkOrCode string) (stri
 		return "", errors.New("invite link or code is required")
 	}
 	code = strings.TrimPrefix(code, whatsmeow.InviteLinkPrefix)
-	jid, err := c.wa.JoinGroupWithLink(ctx, code)
+	jid, err := c.waClient().JoinGroupWithLink(ctx, code)
 	if err != nil {
 		return "", fmt.Errorf("join group with link: %w", err)
 	}
