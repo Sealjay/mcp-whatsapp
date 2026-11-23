@@ -2,6 +2,8 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
+	"slices"
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -109,5 +111,44 @@ func TestRequestSync_ArgValidation(t *testing.T) {
 				t.Fatalf("args %v: want a rejected (IsError) result, got %+v", tc.args, res)
 			}
 		})
+	}
+}
+
+// TestDeleteMessage_Scope checks the scope argument's schema and that a
+// refused deletion comes back as a JSON result flagged as an error. Argument
+// validation happens before the client touches WhatsApp, so a nil client is
+// safe.
+func TestDeleteMessage_Scope(t *testing.T) {
+	s := NewServer(nil, nil, false)
+	tool, ok := s.MCP().ListTools()["delete_message"]
+	if !ok || tool == nil || tool.Handler == nil {
+		t.Fatal("delete_message not registered")
+	}
+	scope, ok := tool.Tool.InputSchema.Properties["scope"].(map[string]any)
+	if !ok {
+		t.Fatal("delete_message has no scope argument")
+	}
+	if enum, _ := scope["enum"].([]string); len(enum) != 2 || enum[0] != "for_everyone" || enum[1] != "for_me" {
+		t.Errorf("scope enum = %v, want [for_everyone for_me]", scope["enum"])
+	}
+	if slices.Contains(tool.Tool.InputSchema.Required, "scope") {
+		t.Error("scope must be optional (it defaults to for_everyone)")
+	}
+
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = map[string]any{"chat_jid": "447700000001@s.whatsapp.net", "message_id": "a1", "scope": "for_them"}
+	res, err := tool.Handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	if !res.IsError || len(res.Content) != 1 {
+		t.Fatalf("want one content block flagged as an error, got %+v", res)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(res.Content[0].(mcp.TextContent).Text), &got); err != nil {
+		t.Fatalf("result is not JSON: %v", err)
+	}
+	if got["outcome"] != "refused" || got["scope"] != "for_them" || got["reversible"] != false {
+		t.Errorf("result = %v, want a refused, irreversible outcome echoing the scope", got)
 	}
 }

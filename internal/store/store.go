@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -94,6 +96,8 @@ type Store struct {
 	db          *sql.DB
 	whatsmeowDB *sql.DB
 	dir         string
+	// ponytail: serialize delete-marker and message writes per store; per-store lock keeps this race bounded.
+	deletedForMeMu sync.Mutex
 }
 
 // Open creates (if necessary) the store directory and opens both databases.
@@ -183,15 +187,35 @@ func (s *Store) StoreChat(jid, name string, lastMessageTime time.Time) error {
 // no media type are dropped to avoid polluting the cache with signal-only
 // events (typing, receipts, key exchange, etc.). A message that is delivered
 // again (history sync, request_sync) keeps what edits and revokes did to it:
-// an edited row keeps its edited content and a revoked row is left as is.
+// an edited row keeps its edited content and a revoked row is left as is. A
+// message deleted for me stays hidden, including when the deletion was
+// recorded before the message arrived (see MarkDeletedForMe).
 func (s *Store) StoreMessage(ctx context.Context, m Message, mediaKey, fileSHA256, fileEncSHA256 []byte, fileLength uint64) error {
 	if m.Content == "" && m.MediaType == "" {
 		return nil
 	}
-	_, err := s.db.ExecContext(ctx,
+	s.deletedForMeMu.Lock()
+	defer s.deletedForMeMu.Unlock()
+	// A deletion for me recorded before this write hides the row from the
+	// start: the flag is read from the markers in the same statement that
+	// writes the row, so it is never visible, even briefly.
+	markerChats, err := s.deletedForMeMarkerChats(ctx, m.ID, m.ChatJID)
+	if err != nil {
+		return err
+	}
+	args := []any{
+		m.ID, m.ChatJID, m.Sender, m.Content, m.Timestamp, m.IsFromMe,
+		m.MediaType, m.Filename, m.URL, m.DirectPath, mediaKey, fileSHA256, fileEncSHA256, fileLength,
+		m.ID,
+	}
+	for _, chat := range markerChats {
+		args = append(args, chat)
+	}
+	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO messages
-		(id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, direct_path, media_key, file_sha256, file_enc_sha256, file_length)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		(id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, direct_path, media_key, file_sha256, file_enc_sha256, file_length, deleted_for_me_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+			(SELECT MIN(deleted_at) FROM deleted_for_me WHERE message_id = ? AND chat_jid IN (?`+strings.Repeat(", ?", len(markerChats)-1)+`)))
 		ON CONFLICT (id, chat_jid) DO UPDATE SET
 			sender = excluded.sender,
 			content = CASE WHEN messages.edited_at IS NULL THEN excluded.content ELSE messages.content END,
@@ -204,10 +228,10 @@ func (s *Store) StoreMessage(ctx context.Context, m Message, mediaKey, fileSHA25
 			media_key = excluded.media_key,
 			file_sha256 = excluded.file_sha256,
 			file_enc_sha256 = excluded.file_enc_sha256,
-			file_length = excluded.file_length
+			file_length = excluded.file_length,
+			deleted_for_me_at = COALESCE(messages.deleted_for_me_at, excluded.deleted_for_me_at)
 		WHERE messages.revoked_at IS NULL`,
-		m.ID, m.ChatJID, m.Sender, m.Content, m.Timestamp, m.IsFromMe,
-		m.MediaType, m.Filename, m.URL, m.DirectPath, mediaKey, fileSHA256, fileEncSHA256, fileLength,
+		args...,
 	)
 	return err
 }
@@ -225,13 +249,18 @@ func (s *Store) StoreMediaInfo(id, chatJID, url, directPath string, mediaKey, fi
 // is the CDN path captured from the WhatsApp media protobuf at receive time,
 // including the signed `?ccb=&oh=&oe=&_nc_sid=` auth query. It may be empty
 // for legacy rows written before this column existed — callers that need
-// to fetch bytes should fall back to parsing url in that case.
+// to fetch bytes should fall back to parsing url in that case. A message
+// deleted for me returns ErrDeletedForMe.
 func (s *Store) GetMediaInfo(id, chatJID string) (mediaType, filename, url, directPath string, mediaKey, fileSHA256, fileEncSHA256 []byte, fileLength uint64, err error) {
 	var dp sql.NullString
+	var deletedForMe bool
 	err = s.db.QueryRow(
-		"SELECT media_type, filename, url, direct_path, media_key, file_sha256, file_enc_sha256, file_length FROM messages WHERE id = ? AND chat_jid = ?",
+		"SELECT media_type, filename, url, direct_path, media_key, file_sha256, file_enc_sha256, file_length, deleted_for_me_at IS NOT NULL FROM messages WHERE id = ? AND chat_jid = ?",
 		id, chatJID,
-	).Scan(&mediaType, &filename, &url, &dp, &mediaKey, &fileSHA256, &fileEncSHA256, &fileLength)
+	).Scan(&mediaType, &filename, &url, &dp, &mediaKey, &fileSHA256, &fileEncSHA256, &fileLength, &deletedForMe)
+	if err == nil && deletedForMe {
+		return "", "", "", "", nil, nil, nil, 0, ErrDeletedForMe
+	}
 	directPath = dp.String
 	return
 }
@@ -386,8 +415,16 @@ CREATE TABLE IF NOT EXISTS messages (
 	poll_options_json TEXT,
 	edited_at TIMESTAMP,
 	revoked_at TIMESTAMP,
+	deleted_for_me_at TIMESTAMP,
 	PRIMARY KEY (id, chat_jid),
 	FOREIGN KEY (chat_jid) REFERENCES chats(jid)
+);
+
+CREATE TABLE IF NOT EXISTS deleted_for_me (
+	message_id TEXT NOT NULL,
+	chat_jid TEXT NOT NULL,
+	deleted_at TIMESTAMP NOT NULL,
+	PRIMARY KEY (message_id, chat_jid)
 );
 
 CREATE TABLE IF NOT EXISTS poll_votes (
@@ -425,6 +462,7 @@ func migrateSchema(db *sql.DB) error {
 	hasDirectPath := false
 	hasEditedAt := false
 	hasRevokedAt := false
+	hasDeletedForMeAt := false
 	for rows.Next() {
 		var (
 			cid        int
@@ -449,6 +487,9 @@ func migrateSchema(db *sql.DB) error {
 		if name == "revoked_at" {
 			hasRevokedAt = true
 		}
+		if name == "deleted_for_me_at" {
+			hasDeletedForMeAt = true
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate table_info(messages): %w", err)
@@ -471,6 +512,11 @@ func migrateSchema(db *sql.DB) error {
 	if !hasRevokedAt {
 		if _, err := db.Exec("ALTER TABLE messages ADD COLUMN revoked_at TIMESTAMP"); err != nil {
 			return fmt.Errorf("add column revoked_at: %w", err)
+		}
+	}
+	if !hasDeletedForMeAt {
+		if _, err := db.Exec("ALTER TABLE messages ADD COLUMN deleted_for_me_at TIMESTAMP"); err != nil {
+			return fmt.Errorf("add column deleted_for_me_at: %w", err)
 		}
 	}
 	return rekeyDevicePollVoters(db)

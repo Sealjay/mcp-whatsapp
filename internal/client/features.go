@@ -364,7 +364,7 @@ func (c *Client) DeleteMessage(ctx context.Context, chatJID, messageID, senderJI
 
 	revoke := c.waClient().BuildRevoke(chat, sender, types.MessageID(messageID))
 	if _, err := c.waClient().SendMessage(ctx, chat, revoke); err != nil {
-		return fmt.Errorf("send revoke: %w", err)
+		return &dispatchError{fmt.Errorf("send revoke: %w", err)}
 	}
 	c.recordOwnRevoke(ctx, chat, revoke.GetProtocolMessage().GetKey())
 	return nil

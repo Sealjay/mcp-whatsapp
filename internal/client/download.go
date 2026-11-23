@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/sealjay/mcp-whatsapp/internal/security"
+	"github.com/sealjay/mcp-whatsapp/internal/store"
 	"go.mau.fi/whatsmeow"
 )
 
@@ -85,6 +86,9 @@ func (c *Client) download(ctx context.Context, messageID, chatJID, outputPath st
 	// Look up the cached media fields.
 	mediaType, filename, url, directPath, mediaKey, fileSHA256, fileEncSHA256, fileLength, err :=
 		c.store.GetMediaInfo(messageID, chatJID)
+	if errors.Is(err, store.ErrDeletedForMe) {
+		return DownloadResult{Success: false, Message: "media unavailable: " + err.Error()}
+	}
 	if err != nil {
 		return DownloadResult{
 			Success: false,
