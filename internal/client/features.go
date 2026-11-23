@@ -118,8 +118,9 @@ func (c *Client) inferReactionSender(ctx context.Context, chat types.JID, messag
 	}
 
 	groupInfo := c.groupInfo
-	if groupInfo == nil && c.wa != nil {
-		groupInfo = c.wa.GetGroupInfo
+	wa := c.waClient()
+	if groupInfo == nil && wa != nil {
+		groupInfo = wa.GetGroupInfo
 	}
 	if groupInfo == nil {
 		return types.EmptyJID, errors.New("cannot infer reaction participant: group addressing mode is unavailable; pass sender_jid explicitly")
@@ -134,8 +135,8 @@ func (c *Client) inferReactionSender(ctx context.Context, chat types.JID, messag
 		return types.EmptyJID, errors.New("cannot infer reaction participant: group addressing mode is unknown; pass sender_jid explicitly")
 	}
 	var lids wmstore.LIDStore
-	if c.wa != nil && c.wa.Store != nil {
-		lids = c.wa.Store.LIDs
+	if wa != nil && wa.Store != nil {
+		lids = wa.Store.LIDs
 	}
 	participant, err := reactionParticipant(ctx, sender, info, lids)
 	if err != nil {
