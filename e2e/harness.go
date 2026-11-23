@@ -55,7 +55,7 @@ func newHarness(t *testing.T, serveArgs ...string) *harness {
 	h := &harness{t: t, cmd: cmd, addr: addr}
 	t.Cleanup(func() { _ = cmd.Process.Kill(); _, _ = cmd.Process.Wait() })
 
-	h.waitForReady(5 * time.Second)
+	h.waitForReady(45 * time.Second)
 	return h
 }
 

@@ -8,9 +8,15 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
+)
+
+const (
+	maxRequestBodyBytes = 1 << 20
+	requestTimeout      = 30 * time.Second
 )
 
 // pairDriver is the minimal surface the Server needs from the underlying
@@ -128,7 +134,7 @@ func (s *Server) Run(ctx context.Context) error {
 		})
 	}
 
-	rootHandler := authMiddleware(mux, s.cfg.AuthToken)
+	rootHandler := requestLimitMiddleware(originMiddleware(authMiddleware(mux, s.cfg.AuthToken)))
 
 	ln, err := net.Listen("tcp", s.cfg.Addr)
 	if err != nil {
@@ -139,6 +145,8 @@ func (s *Server) Run(ctx context.Context) error {
 	s.httpServer = &http.Server{
 		Handler:           rootHandler,
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       requestTimeout,
+		WriteTimeout:      requestTimeout,
 		IdleTimeout:       120 * time.Second,
 	}
 	s.boundAddr = ln.Addr().String()
@@ -205,6 +213,33 @@ func (s *Server) onLoggedOut() func() {
 		s.cache.Reset()
 		_ = s.flow.start()
 	}
+}
+
+func requestLimitMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.ContentLength > maxRequestBodyBytes {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		if r.Body != nil && r.ContentLength != 0 {
+			r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func originMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			u, err := url.Parse(origin)
+			if err != nil || u.Host == "" || !strings.EqualFold(u.Host, r.Host) {
+				http.Error(w, "origin not allowed", http.StatusForbidden)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func authMiddleware(next http.Handler, token string) http.Handler {

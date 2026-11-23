@@ -1,10 +1,12 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -228,5 +230,51 @@ func TestServer_LogoutErrorFromReset(t *testing.T) {
 	s := newTestServer(t, drv)
 	if err := s.cfg.Driver.Logout(context.Background()); err == nil {
 		t.Fatal("expected logout error to surface")
+	}
+}
+
+func TestRequestLimitMiddlewareRejectsOversizedBody(t *testing.T) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	h := requestLimitMiddleware(next)
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(make([]byte, maxRequestBodyBytes+1)))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413", rec.Code)
+	}
+}
+
+func TestOriginMiddlewareRejectsCrossOriginRequest(t *testing.T) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	h := originMiddleware(next)
+
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8765/mcp", nil)
+	req.Host = "127.0.0.1:8765"
+	req.Header.Set("Origin", "http://evil.example")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+}
+
+func TestOriginMiddlewareAllowsMatchingOrigin(t *testing.T) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	h := originMiddleware(next)
+
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8765/mcp", nil)
+	req.Host = "127.0.0.1:8765"
+	req.Header.Set("Origin", "http://127.0.0.1:8765")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rec.Code)
 	}
 }
