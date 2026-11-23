@@ -48,7 +48,7 @@ func (c *Client) SendMediaWithOptions(ctx context.Context, opts SendMediaOptions
 
 // send is the unified implementation shared by Send and SendMediaWithOptions.
 func (c *Client) send(ctx context.Context, recipient, message, mediaPath string, viewOnce bool) SendResult {
-	if !c.wa.IsConnected() {
+	if !c.waClient().IsConnected() {
 		return SendResult{Success: false, Message: "Not connected to WhatsApp"}
 	}
 
@@ -74,7 +74,7 @@ func (c *Client) send(ctx context.Context, recipient, message, mediaPath string,
 		msg.Conversation = proto.String(message)
 	}
 
-	resp, err := c.wa.SendMessage(ctx, recipientJID, msg)
+	resp, err := c.waClient().SendMessage(ctx, recipientJID, msg)
 	if err != nil {
 		return SendResult{Success: false, Message: fmt.Sprintf("Error sending message: %v", err)}
 	}
@@ -131,7 +131,7 @@ func (c *Client) ephemeralContextInfo(ctx context.Context, chat types.JID) *waPr
 	if chat.Server != "g.us" {
 		return nil
 	}
-	gi, err := c.wa.GetGroupInfo(ctx, chat)
+	gi, err := c.waClient().GetGroupInfo(ctx, chat)
 	if err != nil || gi.DisappearingTimer == 0 {
 		return nil
 	}
@@ -190,7 +190,7 @@ func (c *Client) attachMedia(ctx context.Context, msg *waProto.Message, mediaPat
 
 	mediaType, mimeType := mediaTypeFromExt(safePath)
 
-	resp, err := c.wa.Upload(ctx, mediaData, mediaType)
+	resp, err := c.waClient().Upload(ctx, mediaData, mediaType)
 	if err != nil {
 		return fmt.Errorf("Error uploading media: %v", err)
 	}
@@ -351,8 +351,8 @@ func (c *Client) persistSent(ctx context.Context, recipientJID types.JID, msgID,
 	}
 
 	ourJID := ""
-	if c.wa.Store.ID != nil {
-		ourJID = c.wa.Store.ID.User
+	if c.waClient().Store.ID != nil {
+		ourJID = c.waClient().Store.ID.User
 	}
 
 	var (

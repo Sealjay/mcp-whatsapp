@@ -27,7 +27,9 @@ import (
 // StartEventHandler registers the event handler on the underlying whatsmeow
 // client. Must be called before Connect().
 func (c *Client) StartEventHandler() {
+	c.waMu.Lock()
 	if c.handlerInstalled {
+		c.waMu.Unlock()
 		return
 	}
 	c.handlerID = c.wa.AddEventHandler(func(evt interface{}) {
@@ -73,6 +75,7 @@ func (c *Client) StartEventHandler() {
 		}
 	})
 	c.handlerInstalled = true
+	c.waMu.Unlock()
 	c.replayPendingPollVotes(nil)
 }
 
@@ -245,8 +248,8 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 	}
 
 	ownID := ""
-	if c.wa.Store.ID != nil {
-		ownID = c.wa.Store.ID.User
+	if c.waClient().Store.ID != nil {
+		ownID = c.waClient().Store.ID.User
 	}
 
 	for _, conversation := range historySync.Data.Conversations {
@@ -317,7 +320,7 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 			// its sender, which ParseWebMessage derives as for live events.
 			// Other protocol messages are not stored.
 			if evt.IsEdit || evt.Message.GetProtocolMessage() != nil || evt.Message.GetSecretEncryptedMessage() != nil {
-				if parsed, err := c.wa.ParseWebMessage(jid, msg.Message); err == nil {
+				if parsed, err := c.waClient().ParseWebMessage(jid, msg.Message); err == nil {
 					if ch, ok := c.messageChangeOf(ctx, evt.Message, parsed); ok {
 						changes = append(changes, pendingChange{who: changerOf(parsed), ch: ch})
 					}
@@ -366,7 +369,7 @@ func (c *Client) handleHistorySync(historySync *events.HistorySync) {
 			// Poll votes are signals with no content: tally them through the
 			// same path as live votes instead of storing a message row.
 			if evt.Message.GetPollUpdateMessage() != nil {
-				if parsed, err := c.wa.ParseWebMessage(jid, msg.Message); err == nil {
+				if parsed, err := c.waClient().ParseWebMessage(jid, msg.Message); err == nil {
 					if saved := c.queueHistoryPollVote(ctx, parsed); saved != nil {
 						votes = append(votes, pendingVote{pending: saved})
 					}
@@ -585,12 +588,12 @@ func (c *Client) GetChatName(jid types.JID, chatJID string, conversation *waHist
 // conversation metadata to check first).
 func (c *Client) resolveChatNameFallback(ctx context.Context, jid types.JID, sender string) string {
 	if jid.Server == "g.us" {
-		if gi, err := c.wa.GetGroupInfo(ctx, jid); err == nil && gi.Name != "" {
+		if gi, err := c.waClient().GetGroupInfo(ctx, jid); err == nil && gi.Name != "" {
 			return gi.Name
 		}
 		return "Group " + jid.User
 	}
-	if contact, err := c.wa.Store.Contacts.GetContact(ctx, jid); err == nil && contact.FullName != "" {
+	if contact, err := c.waClient().Store.Contacts.GetContact(ctx, jid); err == nil && contact.FullName != "" {
 		return contact.FullName
 	}
 	if sender != "" {
@@ -686,7 +689,7 @@ func (c *Client) handlePollVote(msg *events.Message, chatJID, voterJID string, p
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	vote, err := c.wa.DecryptPollVote(ctx, msg)
+	vote, err := c.waClient().DecryptPollVote(ctx, msg)
 	if err != nil {
 		return err
 	}
@@ -708,7 +711,7 @@ func (c *Client) recordPollVote(ctx context.Context, pollID, chatJID, voterJID s
 		return errors.New("poll vote missing valid voter")
 	}
 	if voter.Server == types.HiddenUserServer {
-		pn, err := c.wa.Store.LIDs.GetPNForLID(ctx, voter)
+		pn, err := c.waClient().Store.LIDs.GetPNForLID(ctx, voter)
 		if err != nil {
 			return err
 		}
@@ -759,10 +762,10 @@ func (c *Client) recordPollVote(ctx context.Context, pollID, chatJID, voterJID s
 }
 
 func (c *Client) pollVoteOwner() string {
-	if c.wa == nil || c.wa.Store == nil || c.wa.Store.ID == nil || c.store == nil {
+	if c.waClient() == nil || c.waClient().Store == nil || c.waClient().Store.ID == nil || c.store == nil {
 		return ""
 	}
-	owner := c.wa.Store.ID.ToNonAD()
+	owner := c.waClient().Store.ID.ToNonAD()
 	if owner.User == "" || owner.Server != types.DefaultUserServer {
 		return ""
 	}
@@ -896,10 +899,10 @@ func (c *Client) storeHistoryPollMappings(ctx context.Context, history *waProto.
 	if len(mappings) == 0 {
 		return nil
 	}
-	if c.wa.Store.LIDs == nil {
+	if c.waClient().Store.LIDs == nil {
 		return errors.New("history PN/LID store unavailable")
 	}
-	return c.wa.Store.LIDs.PutManyLIDMappings(ctx, mappings)
+	return c.waClient().Store.LIDs.PutManyLIDMappings(ctx, mappings)
 }
 
 // Secret storage follows whatsmeow's historical storage rules, which differ
@@ -912,7 +915,7 @@ func (c *Client) storeHistoryPollSecret(ctx context.Context, chat types.JID, inf
 	var sender types.JID
 	switch {
 	case key.GetFromMe():
-		sender = c.wa.Store.ID.ToNonAD()
+		sender = c.waClient().Store.ID.ToNonAD()
 	case chat.Server == types.DefaultUserServer || chat.Server == types.HiddenUserServer:
 		sender = chat
 	default:
@@ -929,8 +932,8 @@ func (c *Client) storeHistoryPollSecret(ctx context.Context, chat types.JID, inf
 	if sender.User == "" || sender.Server == "" || key.GetID() == "" {
 		return errors.New("invalid history poll secret identity")
 	}
-	if c.wa.Store.MsgSecrets == nil {
+	if c.waClient().Store.MsgSecrets == nil {
 		return errors.New("history poll secret store unavailable")
 	}
-	return c.wa.Store.MsgSecrets.PutMessageSecret(ctx, chat, sender, key.GetID(), info.GetMessageSecret())
+	return c.waClient().Store.MsgSecrets.PutMessageSecret(ctx, chat, sender, key.GetID(), info.GetMessageSecret())
 }

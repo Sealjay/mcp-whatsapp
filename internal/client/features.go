@@ -19,7 +19,7 @@ import (
 // original sender (required by WhatsApp for group reads); empty string is
 // treated as the chat JID itself.
 func (c *Client) MarkRead(ctx context.Context, chatJID string, messageIDs []string, senderJID string) error {
-	if !c.wa.IsConnected() {
+	if !c.waClient().IsConnected() {
 		return errors.New("not connected to WhatsApp")
 	}
 	if len(messageIDs) == 0 {
@@ -42,13 +42,13 @@ func (c *Client) MarkRead(ctx context.Context, chatJID string, messageIDs []stri
 		ids[i] = types.MessageID(id)
 	}
 
-	return c.wa.MarkRead(ctx, ids, time.Now(), chat, sender)
+	return c.waClient().MarkRead(ctx, ids, time.Now(), chat, sender)
 }
 
 // MarkChatRead acks recent incoming messages in a chat so the phone stops
 // showing unread badges. Returns the number of messages acked.
 func (c *Client) MarkChatRead(ctx context.Context, chatJID string, limit int) (int, error) {
-	if !c.wa.IsConnected() {
+	if !c.waClient().IsConnected() {
 		return 0, errors.New("not connected to WhatsApp")
 	}
 	chat, err := types.ParseJID(chatJID)
@@ -79,7 +79,7 @@ func (c *Client) MarkChatRead(ctx context.Context, chatJID string, limit int) (i
 				sender = types.JID{User: senderRaw, Server: types.DefaultUserServer}
 			}
 		}
-		if err := c.wa.MarkRead(ctx, ids, time.Now(), chat, sender); err != nil {
+		if err := c.waClient().MarkRead(ctx, ids, time.Now(), chat, sender); err != nil {
 			return count, fmt.Errorf("mark read (sender=%s): %w", senderRaw, err)
 		}
 		count += len(ids)
@@ -106,7 +106,7 @@ func (c *Client) SendReaction(ctx context.Context, chatJID, messageID, senderJID
 		}
 	}
 
-	reaction := c.wa.BuildReaction(chat, sender, types.MessageID(messageID), emoji)
+	reaction := c.waClient().BuildReaction(chat, sender, types.MessageID(messageID), emoji)
 	if _, err := c.sendMessage(ctx, chat, reaction); err != nil {
 		return fmt.Errorf("send reaction: %w", err)
 	}
@@ -162,7 +162,7 @@ func (c *Client) SendReply(ctx context.Context, chatJID, targetMessageID, target
 // EditMessage edits a previously-sent message. The new body becomes the new
 // conversation text.
 func (c *Client) EditMessage(ctx context.Context, chatJID, messageID, newBody string) error {
-	if !c.wa.IsConnected() {
+	if !c.waClient().IsConnected() {
 		return errors.New("not connected to WhatsApp")
 	}
 	chat, err := types.ParseJID(chatJID)
@@ -173,8 +173,8 @@ func (c *Client) EditMessage(ctx context.Context, chatJID, messageID, newBody st
 	newContent := &waProto.Message{
 		Conversation: proto.String(newBody),
 	}
-	edit := c.wa.BuildEdit(chat, types.MessageID(messageID), newContent)
-	if _, err := c.wa.SendMessage(ctx, chat, edit); err != nil {
+	edit := c.waClient().BuildEdit(chat, types.MessageID(messageID), newContent)
+	if _, err := c.waClient().SendMessage(ctx, chat, edit); err != nil {
 		return fmt.Errorf("send edit: %w", err)
 	}
 	c.recordOwnEdit(ctx, chat, messageID, newBody)
@@ -185,7 +185,7 @@ func (c *Client) EditMessage(ctx context.Context, chatJID, messageID, newBody st
 // when revoking someone else's message as a group admin; for your own
 // messages pass "".
 func (c *Client) DeleteMessage(ctx context.Context, chatJID, messageID, senderJID string) error {
-	if !c.wa.IsConnected() {
+	if !c.waClient().IsConnected() {
 		return errors.New("not connected to WhatsApp")
 	}
 	chat, err := types.ParseJID(chatJID)
@@ -200,8 +200,8 @@ func (c *Client) DeleteMessage(ctx context.Context, chatJID, messageID, senderJI
 		}
 	}
 
-	revoke := c.wa.BuildRevoke(chat, sender, types.MessageID(messageID))
-	if _, err := c.wa.SendMessage(ctx, chat, revoke); err != nil {
+	revoke := c.waClient().BuildRevoke(chat, sender, types.MessageID(messageID))
+	if _, err := c.waClient().SendMessage(ctx, chat, revoke); err != nil {
 		return fmt.Errorf("send revoke: %w", err)
 	}
 	c.recordOwnRevoke(ctx, chat, revoke.GetProtocolMessage().GetKey())
@@ -211,7 +211,7 @@ func (c *Client) DeleteMessage(ctx context.Context, chatJID, messageID, senderJI
 // SendTyping sets chat presence to "composing" when active is true, or
 // "paused" when false. kind may be "audio" to indicate a voice recording.
 func (c *Client) SendTyping(ctx context.Context, chatJID string, active bool, kind string) error {
-	if !c.wa.IsConnected() {
+	if !c.waClient().IsConnected() {
 		return errors.New("not connected to WhatsApp")
 	}
 	chat, err := types.ParseJID(chatJID)
@@ -228,13 +228,13 @@ func (c *Client) SendTyping(ctx context.Context, chatJID string, active bool, ki
 		media = types.ChatPresenceMediaAudio
 	}
 
-	return c.wa.SendChatPresence(ctx, chat, state, media)
+	return c.waClient().SendChatPresence(ctx, chat, state, media)
 }
 
 // IsOnWhatsApp checks whether each phone number (digits only) is registered
 // on WhatsApp. Returns a map keyed by the input phone string.
 func (c *Client) IsOnWhatsApp(ctx context.Context, phones []string) (map[string]bool, error) {
-	if !c.wa.IsConnected() {
+	if !c.waClient().IsConnected() {
 		return nil, errors.New("not connected to WhatsApp")
 	}
 	if len(phones) == 0 {
@@ -262,7 +262,7 @@ func (c *Client) IsOnWhatsApp(ctx context.Context, phones []string) (map[string]
 		}
 	}
 
-	resp, err := c.wa.IsOnWhatsApp(ctx, queries)
+	resp, err := c.waClient().IsOnWhatsApp(ctx, queries)
 	if err != nil {
 		return nil, fmt.Errorf("is on whatsapp: %w", err)
 	}

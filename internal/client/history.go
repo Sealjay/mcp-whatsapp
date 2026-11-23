@@ -42,10 +42,10 @@ const DefaultSyncCount = 50
 func (c *Client) RequestHistorySync(ctx context.Context, chatJID string, fromTimestamp time.Time, anchor string, count int, useLID bool) (string, error) {
 	c.log.Infof("[SYNC] Requesting history sync for chat: %s (anchor=%q, from=%v)", c.redactor.JID(chatJID), anchor, fromTimestamp)
 
-	if c.wa == nil || !c.wa.IsConnected() {
+	if c.waClient() == nil || !c.waClient().IsConnected() {
 		return "", fmt.Errorf("client not connected")
 	}
-	if c.wa.Store.ID == nil {
+	if c.waClient().Store.ID == nil {
 		return "", fmt.Errorf("device not paired")
 	}
 
@@ -73,7 +73,7 @@ func (c *Client) RequestHistorySync(ctx context.Context, chatJID string, fromTim
 	// migration boundary should set useLID=false.
 	requestJID := jid
 	if useLID && jid.Server == types.DefaultUserServer {
-		if lidJID, lerr := c.wa.Store.LIDs.GetLIDForPN(ctx, jid); lerr == nil && !lidJID.IsEmpty() {
+		if lidJID, lerr := c.waClient().Store.LIDs.GetLIDForPN(ctx, jid); lerr == nil && !lidJID.IsEmpty() {
 			c.log.Infof("[SYNC] Found LID mapping: %s -> %s", c.redactor.JID(jid.String()), c.redactor.JID(lidJID.String()))
 			requestJID = lidJID
 		} else {
@@ -92,17 +92,17 @@ func (c *Client) RequestHistorySync(ctx context.Context, chatJID string, fromTim
 		Timestamp: timestamp,
 	}
 
-	historyMsg := c.wa.BuildHistorySyncRequest(messageInfo, count)
+	historyMsg := c.waClient().BuildHistorySyncRequest(messageInfo, count)
 	if historyMsg == nil {
 		return "", fmt.Errorf("failed to build history sync request")
 	}
 
-	ownJID := c.wa.Store.ID.ToNonAD()
+	ownJID := c.waClient().Store.ID.ToNonAD()
 	c.log.Infof("[SYNC] Sending peer message to own JID: %s", c.redactor.JID(ownJID.String()))
 	c.log.Infof("[SYNC] Request details: ChatJID=%s (request uses %s), MsgID=%s, IsFromMe=%v, Timestamp=%v, Count=%d",
 		c.redactor.JID(chatJID), c.redactor.JID(requestJID.String()), c.redactor.MsgID(msgID), isFromMe, timestamp, count)
 
-	resp, err := c.wa.SendMessage(ctx, ownJID, historyMsg, whatsmeow.SendRequestExtra{Peer: true})
+	resp, err := c.waClient().SendMessage(ctx, ownJID, historyMsg, whatsmeow.SendRequestExtra{Peer: true})
 	if err != nil {
 		return "", fmt.Errorf("failed to send sync request: %v", err)
 	}

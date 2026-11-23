@@ -44,13 +44,13 @@ func (c *Client) ResyncLabels(ctx context.Context) error {
 	if !c.labelsEnabled {
 		return errors.New("label support is disabled")
 	}
-	if !c.wa.IsConnected() {
+	if !c.waClient().IsConnected() {
 		return errors.New("not connected to WhatsApp")
 	}
 
 	var errs []string
 	for _, name := range []appstate.WAPatchName{appstate.WAPatchRegular, appstate.WAPatchRegularHigh, appstate.WAPatchRegularLow} {
-		if err := c.wa.FetchAppState(ctx, name, true, false); err != nil {
+		if err := c.waClient().FetchAppState(ctx, name, true, false); err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %v", name, err))
 		}
 	}

@@ -33,7 +33,7 @@ func (c *Client) SendPoll(ctx context.Context, recipient, question string, optio
 
 	// BuildPollCreation generates the 32-byte MessageSecret and wires it onto
 	// MessageContextInfo so that votes on the poll can be decrypted later.
-	msg := c.wa.BuildPollCreation(question, options, selectableCount)
+	msg := c.waClient().BuildPollCreation(question, options, selectableCount)
 
 	resp, err := c.sendMessage(ctx, recipientJID, msg)
 	if err != nil {
@@ -96,7 +96,7 @@ func (c *Client) SendPollVote(ctx context.Context, chatJID, pollMessageID string
 		ID: pollMessageID,
 	}
 
-	voteMsg, err := c.wa.BuildPollVote(ctx, msgInfo, options)
+	voteMsg, err := c.waClient().BuildPollVote(ctx, msgInfo, options)
 	if err != nil {
 		return SendResult{Success: false, Message: fmt.Sprintf("Error building poll vote: %v", err)}
 	}
