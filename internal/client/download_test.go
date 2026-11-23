@@ -296,6 +296,12 @@ func TestDownload_InvalidCacheLogRedactsPath(t *testing.T) {
 	}
 }
 
+func TestValidateMediaPayloadRejectsOversizedMetadata(t *testing.T) {
+	if err := validateMediaPayload([]byte("small"), maxMediaBytes+1, nil); err == nil {
+		t.Fatal("oversized media metadata accepted")
+	}
+}
+
 func TestValidateMediaPayloadRejectsWrongHashAndLength(t *testing.T) {
 	payload := []byte("payload")
 	digest := sha256.Sum256(payload)

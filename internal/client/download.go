@@ -16,6 +16,8 @@ import (
 	"go.mau.fi/whatsmeow"
 )
 
+const maxMediaBytes uint64 = 512 << 20
+
 // DownloadResult is the public return value from Download.
 type DownloadResult struct {
 	Success   bool
@@ -156,6 +158,9 @@ func (c *Client) download(ctx context.Context, messageID, chatJID, outputPath st
 	if url == "" || len(mediaKey) == 0 || len(fileSHA256) == 0 || len(fileEncSHA256) == 0 || fileLength == 0 {
 		return DownloadResult{Success: false, Message: "incomplete media information for download"}
 	}
+	if fileLength > maxMediaBytes {
+		return DownloadResult{Success: false, Message: fmt.Sprintf("media exceeds download limit of %d bytes", maxMediaBytes)}
+	}
 
 	c.log.Infof("Attempting to download media for message %s in chat %s...", c.redactor.MsgID(messageID), c.redactor.JID(chatJID))
 
@@ -255,6 +260,12 @@ func validateCachedMedia(path string, fileLength uint64, fileSHA256 []byte) erro
 }
 
 func validateMediaPayload(data []byte, fileLength uint64, fileSHA256 []byte) error {
+	if fileLength > maxMediaBytes {
+		return fmt.Errorf("media exceeds download limit of %d bytes", maxMediaBytes)
+	}
+	if uint64(len(data)) > maxMediaBytes {
+		return fmt.Errorf("payload exceeds download limit of %d bytes", maxMediaBytes)
+	}
 	if fileLength > 0 && uint64(len(data)) != fileLength {
 		return fmt.Errorf("size mismatch: got %d bytes, want %d", len(data), fileLength)
 	}
