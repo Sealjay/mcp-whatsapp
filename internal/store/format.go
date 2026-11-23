@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -45,8 +46,40 @@ func (s *Store) FormatMessage(ctx context.Context, m Message, showChatInfo bool)
 	b.WriteString(": ")
 	b.WriteString(contentPrefix)
 	b.WriteString(formatMessageContent(m.Content, m.Edited, m.Revoked, m.RevokedAt))
+	if m.QuotedMessageID != "" {
+		b.WriteString(" ")
+		b.WriteString(formatQuote(m))
+	}
 	b.WriteString("\n")
 
+	return b.String()
+}
+
+// maxQuoteAnnotationRunes bounds the quoted text shown in a formatted line;
+// get_message_context returns the stored quote in full.
+const maxQuoteAnnotationRunes = 100
+
+// formatQuote renders a reply's quote as one bracketed annotation, for
+// example `[reply to ID: 3EB0C1 "see you at 3"]`. The quoted text comes from
+// another sender, so it is collapsed to a single line, shortened and written
+// as an escaped Go string literal: it cannot start a new line or close the
+// annotation early. The quoted chat is named only when it is not this one.
+func formatQuote(m Message) string {
+	var b strings.Builder
+	b.WriteString("[reply to ID: ")
+	b.WriteString(m.QuotedMessageID)
+	if m.QuotedChatJID != "" && m.QuotedChatJID != m.ChatJID {
+		b.WriteString(" in Chat JID: ")
+		b.WriteString(m.QuotedChatJID)
+	}
+	if text := strings.Join(strings.Fields(m.QuotedText), " "); text != "" {
+		if r := []rune(text); len(r) > maxQuoteAnnotationRunes {
+			text = string(r[:maxQuoteAnnotationRunes]) + "…"
+		}
+		b.WriteString(" ")
+		b.WriteString(strconv.Quote(text))
+	}
+	b.WriteString("]")
 	return b.String()
 }
 

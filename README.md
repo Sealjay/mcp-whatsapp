@@ -127,10 +127,10 @@ The default set is 43 tools grouped by purpose. `-enable-labels` adds four read-
 | Tool | Purpose |
 |---|---|
 | `search_contacts` | Substring search across cached contact names and phone numbers |
-| `list_messages` | Query + filter messages; returns formatted text with context windows |
+| `list_messages` | Query + filter messages; returns formatted text with context windows; replies show what they quote |
 | `list_chats` | List chats with last-message preview; sort by activity or name |
 | `get_chat` | Chat metadata by JID |
-| `get_message_context` | Before/after window around a specific message |
+| `get_message_context` | Before/after window around a specific message, plus the message it replies to (or a flag when that message is not cached) |
 | `get_poll_results` | Return the tally for a poll we have cached (includes 0-vote options) |
 | `download_media` | Download persisted media to a local path |
 | `request_sync` | Ask WhatsApp to backfill history for a chat that already has at least one cached message |
