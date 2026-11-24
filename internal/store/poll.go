@@ -62,15 +62,23 @@ func (s *Store) GetPollOptions(ctx context.Context, messageID, chatJID string) (
 // GetPollCreator returns the sender JID/user recorded for a poll creation row.
 // Returns sql.ErrNoRows if the row does not exist.
 func (s *Store) GetPollCreator(ctx context.Context, messageID, chatJID string) (string, error) {
+	sender, _, err := s.GetPollOrigin(ctx, messageID, chatJID)
+	return sender, err
+}
+
+// GetPollOrigin returns the sender JID/user and is_from_me flag recorded for a
+// poll creation row. Returns sql.ErrNoRows if the row does not exist.
+func (s *Store) GetPollOrigin(ctx context.Context, messageID, chatJID string) (string, bool, error) {
 	var sender string
+	var isFromMe bool
 	err := s.db.QueryRowContext(ctx,
-		"SELECT sender FROM messages WHERE id = ? AND chat_jid = ?",
+		"SELECT sender, is_from_me FROM messages WHERE id = ? AND chat_jid = ?",
 		messageID, chatJID,
-	).Scan(&sender)
+	).Scan(&sender, &isFromMe)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
-	return sender, nil
+	return sender, isFromMe, nil
 }
 
 // StorePollVote records a voter's latest selection for a poll. voterJID must

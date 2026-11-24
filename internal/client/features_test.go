@@ -423,6 +423,72 @@ func TestSendPollVote_GoesThroughRateLimiter(t *testing.T) {
 	}
 }
 
+func TestSendPollVote_SelfCreatedPollSetsFromMeAndUpdatesLocalTally(t *testing.T) {
+	c, sent := newOfflinePairedClient(t, nil)
+	ctx := context.Background()
+	const chat = "120363000000000001@g.us"
+
+	c.waClient().Store.Account = &waAdv.ADVSignedDeviceIdentity{
+		Details:             []byte{},
+		AccountSignature:    make([]byte, 64),
+		AccountSignatureKey: make([]byte, 32),
+		DeviceSignature:     make([]byte, 64),
+	}
+	if err := c.waClient().Store.Save(ctx); err != nil {
+		t.Fatalf("save device: %v", err)
+	}
+
+	// Send a poll ourselves so messages.is_from_me = 1 and poll metadata exists.
+	pollRes := c.SendPoll(ctx, chat, "Lunch?", []string{"Yes", "No"}, 1)
+	if !pollRes.Success {
+		t.Fatalf("SendPoll failed: %s", pollRes.Message)
+	}
+	chatJID, err := types.ParseJID(chat)
+	if err != nil {
+		t.Fatalf("ParseJID: %v", err)
+	}
+	ownSender := c.waClient().Store.ID.ToNonAD()
+	if err := c.waClient().Store.MsgSecrets.PutMessageSecret(ctx, chatJID, ownSender, pollRes.ID, make([]byte, 32)); err != nil {
+		t.Fatalf("PutMessageSecret: %v", err)
+	}
+
+	voteRes := c.SendPollVote(ctx, chat, pollRes.ID, []string{"Yes"})
+	if !voteRes.Success {
+		t.Fatalf("SendPollVote failed: %s", voteRes.Message)
+	}
+	if len(*sent) != 2 {
+		t.Fatalf("sent %d messages, want 2 (poll + vote)", len(*sent))
+	}
+	voteMsg := (*sent)[1].msg.GetPollUpdateMessage()
+	if voteMsg == nil {
+		t.Fatalf("second sent message is not a PollUpdateMessage")
+	}
+	if !voteMsg.GetPollCreationMessageKey().GetFromMe() {
+		t.Errorf("PollCreationMessageKey.FromMe = false, want true for self-created poll")
+	}
+
+	results, err := c.GetPollResults(ctx, chat, pollRes.ID)
+	if err != nil {
+		t.Fatalf("GetPollResults: %v", err)
+	}
+	if results.Tally["Yes"] != 1 || results.Tally["No"] != 0 {
+		t.Errorf("tally after SendPollVote = %+v, want Yes=1 No=0", results.Tally)
+	}
+
+	// Re-casting replaces the previous vote in the local tally.
+	recastRes := c.SendPollVote(ctx, chat, pollRes.ID, []string{"No"})
+	if !recastRes.Success {
+		t.Fatalf("second SendPollVote failed: %s", recastRes.Message)
+	}
+	results, err = c.GetPollResults(ctx, chat, pollRes.ID)
+	if err != nil {
+		t.Fatalf("GetPollResults after recast: %v", err)
+	}
+	if results.Tally["Yes"] != 0 || results.Tally["No"] != 1 {
+		t.Errorf("tally after recast = %+v, want Yes=0 No=1", results.Tally)
+	}
+}
+
 func TestSendContactCard_GoesThroughRateLimiter(t *testing.T) {
 	c, sent := newOfflinePairedClient(t, ratelimit.New(ratelimit.DefaultConfig()))
 	assertRateLimited(t, sent, func(ctx context.Context) SendResult {
