@@ -40,6 +40,42 @@ func sameIDs(got, want []string) bool {
 	return strings.Join(got, ",") == strings.Join(want, ",")
 }
 
+func TestListMessagesPage_CursorDistinguishesChats(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	at := time.Date(2026, 7, 2, 9, 0, 0, 0, time.UTC)
+	storeCursorMsg(t, s, "same-id", "chat A", at)
+
+	chatB := "987654321@s.whatsapp.net"
+	if err := s.StoreChat(chatB, "Chat B", at); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.StoreMessage(ctx, Message{
+		ID: "same-id", ChatJID: chatB, Sender: "447700000001@s.whatsapp.net",
+		Content: "chat B", Timestamp: at,
+	}, nil, nil, nil, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	first, cursor, err := s.ListMessagesPage(ctx, ListMessagesParams{Limit: 1, IncludeContext: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 1 || cursor == "" {
+		t.Fatalf("first cross-chat page = %v, cursor=%q", idsOf(first), cursor)
+	}
+	second, _, err := s.ListMessagesPage(ctx, ListMessagesParams{Limit: 1, Cursor: cursor, IncludeContext: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second) != 1 {
+		t.Fatalf("second cross-chat page = %v, want one message", idsOf(second))
+	}
+	if first[0].ID == second[0].ID && first[0].ChatJID == second[0].ChatJID {
+		t.Fatalf("cross-chat cursor repeated %s in %s", first[0].ID, first[0].ChatJID)
+	}
+}
+
 func TestListMessagesPage_PreservesNanosecondOrdering(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
@@ -99,7 +135,7 @@ func walkCursors(t *testing.T, s *Store, limit int) []string {
 		if next == "" {
 			return ids
 		}
-		if _, _, err := decodeCursor(next); err != nil {
+		if _, _, _, err := decodeCursor(next); err != nil {
 			t.Fatalf("cursor handed to the client does not decode: %v", err)
 		}
 		cursor = next
@@ -191,9 +227,10 @@ func TestListMessages_InvalidCursorRejected(t *testing.T) {
 	ctx := context.Background()
 	cases := map[string]string{
 		"not base64":        "not a cursor!!",
-		"missing id":        base64.RawURLEncoding.EncodeToString([]byte("2026-01-01T00:00:00Z")),
-		"missing timestamp": base64.RawURLEncoding.EncodeToString([]byte("\x00msg-id")),
-		"bad timestamp":     base64.RawURLEncoding.EncodeToString([]byte("yesterday\x00msg-id")),
+		"missing id":        base64.RawURLEncoding.EncodeToString([]byte("2026-01-01T00:00:00Z\x00\x00123@g.us")),
+		"missing timestamp": base64.RawURLEncoding.EncodeToString([]byte("\x00msg-id\x00123@g.us")),
+		"bad timestamp":     base64.RawURLEncoding.EncodeToString([]byte("yesterday\x00msg-id\x00123@g.us")),
+		"missing chat":      base64.RawURLEncoding.EncodeToString([]byte("2026-01-01T00:00:00Z\x00msg-id")),
 	}
 	for name, cursor := range cases {
 		_, _, err := s.ListMessagesPage(ctx, ListMessagesParams{Cursor: cursor})

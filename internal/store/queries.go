@@ -83,16 +83,16 @@ func (s *Store) ListMessagesPage(ctx context.Context, params ListMessagesParams)
 		args = append(args, "%"+params.Query+"%")
 	}
 	if params.Cursor != "" {
-		ts, id, err := decodeCursor(params.Cursor)
+		ts, id, chatJID, err := decodeCursor(params.Cursor)
 		if err != nil {
 			return nil, "", err
 		}
 		// Keyset predicate mirroring the ORDER BY below: resume strictly after
-		// the cursor position, with the message ID breaking timestamp ties so
-		// rows sharing a timestamp are neither repeated nor skipped.
+		// the cursor position, with message ID and chat JID breaking timestamp ties.
 		whereClauses = append(whereClauses,
-			"("+listMessageTimeKey+" < ? OR ("+listMessageTimeKey+" = ? AND messages.id < ?))")
-		args = append(args, utcTimestampText(ts)[:29], utcTimestampText(ts)[:29], id)
+			"("+listMessageTimeKey+" < ? OR ("+listMessageTimeKey+" = ? AND "+
+				"(messages.id < ? OR (messages.id = ? AND messages.chat_jid < ?))))")
+		args = append(args, utcTimestampText(ts)[:29], utcTimestampText(ts)[:29], id, id, chatJID)
 	}
 
 	var b strings.Builder
@@ -104,7 +104,7 @@ func (s *Store) ListMessagesPage(ctx context.Context, params ListMessagesParams)
 	}
 	// Order on the normalised timestamp key with the message ID as a
 	// deterministic tie-breaker; fetch one extra row to detect a next page.
-	b.WriteString(" ORDER BY " + listMessageTimeKey + " DESC, messages.id DESC")
+	b.WriteString(" ORDER BY " + listMessageTimeKey + " DESC, messages.id DESC, messages.chat_jid DESC")
 	b.WriteString(" LIMIT ?")
 	args = append(args, limit+1)
 	if params.Cursor == "" {
@@ -579,24 +579,24 @@ const listMessageTimeKey = "CASE WHEN length(messages.timestamp) >= 29 AND subst
 // tie-breaker. A cursor names a position, not an offset, so messages arriving
 // between pages cannot shift it.
 func encodeCursor(m Message) string {
-	payload := m.Timestamp.UTC().Format(time.RFC3339Nano) + "\x00" + m.ID
+	payload := m.Timestamp.UTC().Format(time.RFC3339Nano) + "\x00" + m.ID + "\x00" + m.ChatJID
 	return base64.RawURLEncoding.EncodeToString([]byte(payload))
 }
 
 // decodeCursor reverses encodeCursor. Malformed cursors are rejected with an
 // "invalid cursor" error instead of silently falling back to offsets.
-func decodeCursor(cursor string) (time.Time, string, error) {
+func decodeCursor(cursor string) (time.Time, string, string, error) {
 	raw, err := base64.RawURLEncoding.DecodeString(cursor)
 	if err != nil {
-		return time.Time{}, "", fmt.Errorf("invalid cursor: %w", err)
+		return time.Time{}, "", "", fmt.Errorf("invalid cursor: %w", err)
 	}
-	parts := strings.SplitN(string(raw), "\x00", 2)
-	if len(parts) != 2 || parts[1] == "" {
-		return time.Time{}, "", errors.New("invalid cursor: expected timestamp and message id")
+	parts := strings.SplitN(string(raw), "\x00", 3)
+	if len(parts) != 3 || parts[1] == "" || parts[2] == "" {
+		return time.Time{}, "", "", errors.New("invalid cursor: expected timestamp, message id and chat jid")
 	}
 	ts, err := time.Parse(time.RFC3339Nano, parts[0])
 	if err != nil {
-		return time.Time{}, "", fmt.Errorf("invalid cursor: %w", err)
+		return time.Time{}, "", "", fmt.Errorf("invalid cursor: %w", err)
 	}
-	return ts, parts[1], nil
+	return ts, parts[1], parts[2], nil
 }
