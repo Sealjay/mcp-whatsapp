@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"google.golang.org/protobuf/proto"
 
@@ -73,8 +74,9 @@ func (c *Client) SendPollVote(ctx context.Context, chatJID, pollMessageID string
 		return SendResult{Success: false, Message: err.Error()}
 	}
 
-	// Look up the original sender so we can rebuild the MessageInfo BuildPollVote needs.
-	creator, err := c.store.GetPollCreator(ctx, pollMessageID, chat.String())
+	// Look up the original sender and authorship so BuildPollVote constructs the
+	// matching PollCreationMessageKey (including FromMe for self-created polls).
+	creator, isFromMe, err := c.store.GetPollOrigin(ctx, pollMessageID, chat.String())
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return SendResult{Success: false, Message: "poll not found in cache — wait for message sync"}
@@ -90,7 +92,7 @@ func (c *Client) SendPollVote(ctx context.Context, chatJID, pollMessageID string
 		MessageSource: types.MessageSource{
 			Chat:     chat,
 			Sender:   sender,
-			IsFromMe: false,
+			IsFromMe: isFromMe,
 			IsGroup:  chat.Server == types.GroupServer,
 		},
 		ID: pollMessageID,
@@ -104,6 +106,19 @@ func (c *Client) SendPollVote(ctx context.Context, chatJID, pollMessageID string
 	resp, err := c.sendMessage(ctx, chat, voteMsg)
 	if err != nil {
 		return SendResult{Success: false, Message: fmt.Sprintf("Error sending poll vote: %v", err)}
+	}
+
+	// Persist our own vote locally using the same non-AD owner JID as incoming
+	// votes so GetPollResults reflects votes cast via SendPollVote immediately.
+	if voter := c.pollVoteOwner(); voter != "" {
+		ts := resp.Timestamp
+		now := time.Now()
+		if ts.IsZero() || ts.After(now) {
+			ts = now
+		}
+		if err := c.store.StorePollVote(ctx, pollMessageID, chat.String(), voter, options, ts); err != nil {
+			c.log.Warnf("Failed to store local poll vote for %s: %v", c.redactor.MsgID(pollMessageID), err)
+		}
 	}
 
 	return SendResult{
