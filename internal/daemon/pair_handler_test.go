@@ -40,6 +40,9 @@ func TestHandlePairPage_Unpaired(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status: want 200, got %d", w.Code)
 	}
+	if got := w.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("cache-control: want no-store, got %q", got)
+	}
 	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
 		t.Fatalf("content-type: want text/html*, got %q", ct)
 	}
@@ -49,6 +52,38 @@ func TestHandlePairPage_Unpaired(t *testing.T) {
 	}
 	if !strings.Contains(body, `<img src="/pair/qr.png"`) {
 		t.Fatal("unpaired body should reference /pair/qr.png")
+	}
+	if !strings.Contains(body, `id="pair-phone"`) {
+		t.Fatal("unpaired body should give the phone input a stable ID")
+	}
+	if !strings.Contains(body, `sessionStorage`) {
+		t.Fatal("unpaired body should preserve the phone input in browser session storage")
+	}
+	if strings.Contains(body, `name="phone" value=`) {
+		t.Fatal("phone input must not be rendered with server-carried value markup")
+	}
+}
+
+func TestHandlePairPage_RefreshKeepsCSRFToken(t *testing.T) {
+	h, _ := newTestHandlers(false, "abc", nil)
+
+	first := httptest.NewRecorder()
+	h.handlePairPage(first, httptest.NewRequest(http.MethodGet, "/pair?auto=1", nil))
+	second := httptest.NewRecorder()
+	h.handlePairPage(second, httptest.NewRequest(http.MethodGet, "/pair?auto=1", nil))
+
+	firstToken := h.csrfToken
+	if firstToken == "" {
+		t.Fatal("first refresh should mint a CSRF token")
+	}
+	if h.csrfToken != firstToken {
+		t.Fatal("later refresh replaced the CSRF token")
+	}
+	if !strings.Contains(first.Body.String(), `name="csrf_token" value="`+firstToken+`"`) {
+		t.Fatal("first refresh should render the active CSRF token")
+	}
+	if !strings.Contains(second.Body.String(), `name="csrf_token" value="`+firstToken+`"`) {
+		t.Fatal("second refresh should keep the active CSRF token")
 	}
 }
 
@@ -82,6 +117,9 @@ func TestHandlePairPage_Paired(t *testing.T) {
 	}
 	if !strings.Contains(body, `action="/pair/reset"`) {
 		t.Fatal("paired body should include the re-pair form")
+	}
+	if !strings.Contains(body, `sessionStorage.removeItem("whatsapp-mcp:pair-phone")`) {
+		t.Fatal("paired page should clear preserved phone input")
 	}
 }
 
@@ -274,7 +312,7 @@ func TestPairTemplate_EscapesToken(t *testing.T) {
 	}
 	body := w.Body.String()
 	// html/template should escape < and > in the value attribute.
-	if strings.Contains(body, "<script>") {
+	if strings.Contains(body, `value="<script>`) {
 		t.Fatalf("template did not escape <script> tag in CSRFToken: %s", body)
 	}
 	// The escaped form should be present.
@@ -308,6 +346,9 @@ func TestHandlePairCode_Success(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "ABCD-1234") {
 		t.Fatalf("expected formatted code in body, got: %s", w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), `sessionStorage.removeItem("whatsapp-mcp:pair-phone")`) {
+		t.Fatal("successful pairing-code page should retain the phone for retry until paired")
 	}
 }
 
@@ -346,8 +387,33 @@ func TestHandlePairCode_InvalidPhone(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status: want 200, got %d", w.Code)
 	}
+	if got := w.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("cache-control: want no-store, got %q", got)
+	}
 	if !strings.Contains(w.Body.String(), "valid international phone number") {
 		t.Fatalf("expected validation message, got: %s", w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), `sessionStorage.removeItem("whatsapp-mcp:pair-phone")`) {
+		t.Fatal("invalid pairing-code request must preserve the phone input")
+	}
+}
+
+func TestHandlePairCode_PairPhoneErrorPreservesInput(t *testing.T) {
+	cache := NewPairCache()
+	h := newPairHandlers(cache, &fakeResetter{}, &fakePairCoder{err: errors.New("pairing unavailable")})
+	h.csrfToken = "tok"
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/pair/code", strings.NewReader("csrf_token=tok&phone=+919876543210"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	h.handlePairCode(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: want 200, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "Pairing-code request failed") {
+		t.Fatalf("expected pairing failure message, got: %s", w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), `sessionStorage.removeItem("whatsapp-mcp:pair-phone")`) {
+		t.Fatal("failed pairing-code request must preserve the phone input")
 	}
 }
 

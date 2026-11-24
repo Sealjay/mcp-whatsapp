@@ -11,4 +11,7 @@
   <p><button type="submit">Force re-pair</button></p>
 </form>
 <p><small>&ldquo;Force re-pair&rdquo; disconnects this device from WhatsApp and starts a fresh pairing flow. Use it if you want to switch accounts.</small></p>
+<script>
+try { sessionStorage.removeItem("whatsapp-mcp:pair-phone"); } catch (_) {}
+</script>
 </body></html>
