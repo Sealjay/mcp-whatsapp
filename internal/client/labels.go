@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/appstate"
 	"go.mau.fi/whatsmeow/types/events"
 )
@@ -44,18 +45,34 @@ func (c *Client) ResyncLabels(ctx context.Context) error {
 	if !c.labelsEnabled {
 		return errors.New("label support is disabled")
 	}
-	if !c.waClient().IsConnected() {
+	connected := c.isConnected
+	if connected == nil {
+		connected = c.waClient().IsConnected
+	}
+	if !connected() {
 		return errors.New("not connected to WhatsApp")
 	}
 
 	var errs []string
+	var deferred []string
 	for _, name := range []appstate.WAPatchName{appstate.WAPatchRegular, appstate.WAPatchRegularHigh, appstate.WAPatchRegularLow} {
-		if err := c.waClient().FetchAppState(ctx, name, true, false); err != nil {
+		fetch := c.fetchAppState
+		if fetch == nil {
+			fetch = c.waClient().FetchAppState
+		}
+		if err := fetch(ctx, name, true, false); err != nil {
+			if errors.Is(err, whatsmeow.ErrAppStateRateLimited) {
+				deferred = append(deferred, fmt.Sprintf("%s: deferred by WhatsApp until the server backoff expires", name))
+				continue
+			}
 			errs = append(errs, fmt.Sprintf("%s: %v", name, err))
 		}
 	}
 	if len(errs) > 0 {
 		return fmt.Errorf("app state resync: %s", strings.Join(errs, "; "))
+	}
+	if len(deferred) > 0 {
+		return fmt.Errorf("app state resync deferred: %s", strings.Join(deferred, "; "))
 	}
 	return c.store.SetMeta(ctx, metaLabelsSynced, "1")
 }
