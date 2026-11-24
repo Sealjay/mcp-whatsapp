@@ -404,6 +404,7 @@ CREATE TABLE IF NOT EXISTS poll_votes (
 	voter_jid TEXT NOT NULL,
 	selected_options_json TEXT NOT NULL,
 	timestamp TIMESTAMP NOT NULL,
+	received_at TIMESTAMP,
 	PRIMARY KEY (poll_message_id, poll_chat_jid, voter_jid)
 );
 
@@ -481,6 +482,12 @@ func migrateSchema(db *sql.DB) error {
 			return fmt.Errorf("add column revoked_at: %w", err)
 		}
 	}
+	if err := ensurePollVoteReceivedAt(db); err != nil {
+		return err
+	}
+	if err := normalizePollTimestampPrecision(db); err != nil {
+		return err
+	}
 	if err := rekeyDevicePollVoters(db); err != nil {
 		return err
 	}
@@ -509,6 +516,49 @@ func parseStoredTimestamp(raw string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
+func ensurePollVoteReceivedAt(db *sql.DB) error {
+	var tableExists int
+	if err := db.QueryRow(
+		"SELECT count(*) FROM sqlite_master WHERE type='table' AND name='poll_votes'",
+	).Scan(&tableExists); err != nil {
+		return err
+	}
+	if tableExists == 0 {
+		return nil
+	}
+	rows, err := db.Query("PRAGMA table_info(poll_votes)")
+	if err != nil {
+		return err
+	}
+	hasReceivedAt := false
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			rows.Close()
+			return err
+		}
+		if name == "received_at" {
+			hasReceivedAt = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	if !hasReceivedAt {
+		if _, err := db.Exec("ALTER TABLE poll_votes ADD COLUMN received_at TIMESTAMP"); err != nil {
+			return err
+		}
+	}
+	if _, err := db.Exec(`UPDATE poll_votes SET received_at=timestamp WHERE received_at IS NULL`); err != nil {
+		return err
+	}
+	return nil
+}
+
 func normalizePollTimestampPrecision(db *sql.DB) error {
 	var tableExists int
 	if err := db.QueryRow(
@@ -517,34 +567,56 @@ func normalizePollTimestampPrecision(db *sql.DB) error {
 		return err
 	}
 	if tableExists > 0 {
-		rows, err := db.Query(`SELECT poll_message_id, poll_chat_jid, voter_jid, CAST(timestamp AS TEXT) FROM poll_votes WHERE timestamp IS NOT NULL`)
+		rows, err := db.Query(`SELECT poll_message_id, poll_chat_jid, voter_jid,
+			CAST(timestamp AS TEXT), CAST(received_at AS TEXT) FROM poll_votes WHERE timestamp IS NOT NULL`)
 		if err != nil {
 			return fmt.Errorf("read poll timestamps: %w", err)
 		}
 		type update struct {
-			pollID, chatJID, voterJID, timestamp string
+			pollID, chatJID, voterJID, timestamp, receivedAt string
 		}
 		var updates []update
 		for rows.Next() {
 			var u update
-			var raw sql.NullString
-			if err := rows.Scan(&u.pollID, &u.chatJID, &u.voterJID, &raw); err != nil {
+			var raw, receivedAt sql.NullString
+			if err := rows.Scan(&u.pollID, &u.chatJID, &u.voterJID, &raw, &receivedAt); err != nil {
 				rows.Close()
 				return fmt.Errorf("scan poll timestamps: %w", err)
 			}
 			if raw.Valid {
 				if t, ok := parseStoredTimestamp(raw.String); ok {
 					u.timestamp = utcTimestampText(t)
-					updates = append(updates, u)
 				}
 			}
+			if receivedAt.Valid {
+				if t, ok := parseStoredTimestamp(receivedAt.String); ok {
+					u.receivedAt = utcTimestampText(t)
+				}
+			}
+			if u.timestamp != "" || u.receivedAt != "" {
+				updates = append(updates, u)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return fmt.Errorf("iterate poll timestamps: %w", err)
 		}
 		rows.Close()
 		for _, u := range updates {
-			if _, err := db.Exec(
-				`UPDATE poll_votes SET timestamp=? WHERE poll_message_id=? AND poll_chat_jid=? AND voter_jid=?`,
-				u.timestamp, u.pollID, u.chatJID, u.voterJID,
-			); err != nil {
+			set := []string{}
+			args := []any{}
+			if u.timestamp != "" {
+				set = append(set, "timestamp=?")
+				args = append(args, u.timestamp)
+			}
+			if u.receivedAt != "" {
+				set = append(set, "received_at=?")
+				args = append(args, u.receivedAt)
+			}
+			query := "UPDATE poll_votes SET " + strings.Join(set, ", ") +
+				" WHERE poll_message_id=? AND poll_chat_jid=? AND voter_jid=?"
+			args = append(args, u.pollID, u.chatJID, u.voterJID)
+			if _, err := db.Exec(query, args...); err != nil {
 				return fmt.Errorf("normalize poll timestamp: %w", err)
 			}
 		}
@@ -586,6 +658,10 @@ func normalizePollTimestampPrecision(db *sql.DB) error {
 			if u.timestamp != "" || u.receivedAt != "" {
 				updates = append(updates, u)
 			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return fmt.Errorf("iterate pending poll timestamps: %w", err)
 		}
 		rows.Close()
 		for _, u := range updates {
@@ -734,16 +810,19 @@ func rekeyDevicePollVoters(db *sql.DB) error {
 	}
 	defer tx.Rollback()
 	if _, err := tx.Exec(`INSERT INTO poll_votes
-		 (poll_message_id, poll_chat_jid, voter_jid, selected_options_json, timestamp)
+		 (poll_message_id, poll_chat_jid, voter_jid, selected_options_json, timestamp, received_at)
 		 SELECT poll_message_id, poll_chat_jid,
 		        substr(voter_jid, 1, instr(voter_jid, ':') - 1) || substr(voter_jid, instr(voter_jid, '@')),
-		        selected_options_json, timestamp
+		        selected_options_json, timestamp, received_at
 		 FROM poll_votes WHERE ` + devicePollVoter + `
-		 ORDER BY timestamp
+		 ORDER BY timestamp, received_at
 		 ON CONFLICT (poll_message_id, poll_chat_jid, voter_jid) DO UPDATE SET
 		     selected_options_json = excluded.selected_options_json,
-		     timestamp = excluded.timestamp
-		 WHERE excluded.timestamp >= poll_votes.timestamp`); err != nil {
+		     timestamp = excluded.timestamp,
+		     received_at = excluded.received_at
+		 WHERE excluded.timestamp > poll_votes.timestamp
+		    OR (excluded.timestamp = poll_votes.timestamp
+		        AND excluded.received_at >= poll_votes.received_at)`); err != nil {
 		return fmt.Errorf("rekey device poll voters: %w", err)
 	}
 	if _, err := tx.Exec(`DELETE FROM poll_votes WHERE ` + devicePollVoter); err != nil {

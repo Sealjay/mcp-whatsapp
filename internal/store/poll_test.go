@@ -7,12 +7,76 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 )
+
+func TestPollTimestampMigrationAndCanonicalWrites(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	if _, err := s.db.Exec(`
+		INSERT INTO poll_votes
+			(poll_message_id, poll_chat_jid, voter_jid, selected_options_json, timestamp)
+		VALUES ('legacy-poll', '123456789@g.us', '447700000001@s.whatsapp.net', '["yes"]', '2026-11-23 09:30:00.123456789-08:00');
+		INSERT INTO pending_poll_votes
+			(owner_jid, chat_jid, sender_jid, message_id, timestamp, received_at, payload)
+		VALUES ('447700000001@s.whatsapp.net', '123456789@g.us', '447700000002@s.whatsapp.net', 'legacy-vote',
+			'2026-11-23 09:30:00.123456789-08:00', '2026-11-23 10:30:00.987654321-08:00', X'01');
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateSchema(s.db); err != nil {
+		t.Fatal(err)
+	}
+
+	var pollTimestamp, pendingTimestamp, receivedAt string
+	if err := s.db.QueryRow(`SELECT CAST(timestamp AS TEXT) FROM poll_votes
+		WHERE poll_message_id='legacy-poll'`).Scan(&pollTimestamp); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.QueryRow(`SELECT CAST(timestamp AS TEXT), CAST(received_at AS TEXT)
+		FROM pending_poll_votes WHERE message_id='legacy-vote'`).Scan(&pendingTimestamp, &receivedAt); err != nil {
+		t.Fatal(err)
+	}
+	wantPoll := "2026-11-23 17:30:00.123456789+00:00"
+	wantReceived := "2026-11-23 18:30:00.987654321+00:00"
+	if pollTimestamp != wantPoll || pendingTimestamp != wantPoll || receivedAt != wantReceived {
+		t.Fatalf("poll timestamps not canonical UTC: poll=%q pending=%q received=%q",
+			pollTimestamp, pendingTimestamp, receivedAt)
+	}
+
+	pending, _, err := s.QueuePendingPollVote(ctx, PendingPollVote{
+		OwnerJID:  "447700000001@s.whatsapp.net",
+		ChatJID:   "123456789@g.us",
+		SenderJID: "447700000002@s.whatsapp.net",
+		MessageID: "new-vote",
+		Timestamp: time.Date(2026, 11, 23, 9, 30, 0, 123456789, time.FixedZone("test", -8*60*60)),
+		Payload:   []byte{1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var newTimestamp, newReceived string
+	if err := s.db.QueryRow(`SELECT CAST(timestamp AS TEXT), CAST(received_at AS TEXT)
+		FROM pending_poll_votes WHERE message_id='new-vote'`).Scan(&newTimestamp, &newReceived); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(newTimestamp, "+00:00") || !strings.HasSuffix(newReceived, "+00:00") {
+		t.Fatalf("new pending timestamps not canonical UTC: timestamp=%q received=%q", newTimestamp, newReceived)
+	}
+	if err := s.DropPendingPollVote(ctx, *pending); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestPendingPollVotePersistenceAndBounds(t *testing.T) {
 	ctx := context.Background()
@@ -461,7 +525,7 @@ func TestStorePollVote_IgnoresReplayOfOlderTimestamp(t *testing.T) {
 	}
 
 	voter := "447700000002@s.whatsapp.net"
-	t1 := time.Date(2026, 3, 2, 10, 0, 0, 0, time.UTC)
+	t1 := time.Date(2026, 3, 2, 12, 0, 0, 0, time.FixedZone("UTC+2", 2*60*60))
 	t0 := t1.Add(-1 * time.Hour) // older
 
 	// Current vote at T1.
@@ -674,7 +738,7 @@ func TestMigrateSchema_RekeysDevicePollVoters(t *testing.T) {
 		{"447700000001:5@s.whatsapp.net", "Yes", time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)},
 		{"123456789:3@lid", "Yes", time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)},
 	} {
-		if _, err := s.db.Exec(`INSERT INTO poll_votes VALUES ('poll-1', ?, ?, ?, ?)`, chat, v.voter, `["`+v.option+`"]`, v.at); err != nil {
+		if _, err := s.db.Exec(`INSERT INTO poll_votes VALUES ('poll-1', ?, ?, ?, ?, ?)`, chat, v.voter, `["`+v.option+`"]`, v.at, v.at); err != nil {
 			t.Fatalf("seed vote %s: %v", v.voter, err)
 		}
 	}
