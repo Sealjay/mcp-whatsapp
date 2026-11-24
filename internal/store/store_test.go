@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -482,5 +483,255 @@ func TestOpen_StorePermissions(t *testing.T) {
 	}
 	if got := msgInfo.Mode().Perm(); got != 0o600 {
 		t.Errorf("messages.db mode: want 0600, got %o", got)
+	}
+}
+
+func explainQueryPlan(t *testing.T, db *sql.DB, query string, args ...any) []string {
+	t.Helper()
+	rows, err := db.Query("EXPLAIN QUERY PLAN "+query, args...)
+	if err != nil {
+		t.Fatalf("EXPLAIN QUERY PLAN failed: %v\nquery: %s", err, query)
+	}
+	defer rows.Close()
+	var details []string
+	for rows.Next() {
+		var (
+			id, parent, notused int
+			detail              string
+		)
+		if err := rows.Scan(&id, &parent, &notused, &detail); err != nil {
+			t.Fatalf("scan EXPLAIN QUERY PLAN: %v", err)
+		}
+		details = append(details, detail)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate EXPLAIN QUERY PLAN: %v", err)
+	}
+	return details
+}
+
+func hasMessagesIndex(t *testing.T, db *sql.DB, indexName string) bool {
+	t.Helper()
+	var count int
+	if err := db.QueryRow(
+		"SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND tbl_name = 'messages' AND name = ?",
+		indexName,
+	).Scan(&count); err != nil {
+		t.Fatalf("query sqlite_master: %v", err)
+	}
+	return count == 1
+}
+
+// TestOpen_MessagesChatTSIndex verifies that Open creates idx_messages_chat_ts
+// on messages(chat_jid, timestamp DESC, id DESC) and that per-chat queries use
+// it rather than scanning the full messages table.
+func TestOpen_MessagesChatTSIndex(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	if !hasMessagesIndex(t, s.db, "idx_messages_chat_ts") {
+		t.Error("expected idx_messages_chat_ts to exist in sqlite_master after Open")
+	}
+
+	ctx := context.Background()
+	const chatJID = "447700000001@s.whatsapp.net"
+	anchor := time.Date(2026, 1, 5, 12, 0, 0, 0, time.UTC)
+	if err := s.StoreChat(chatJID, "Alice", anchor); err != nil {
+		t.Fatalf("StoreChat: %v", err)
+	}
+	for i, id := range []string{"m1", "m2", "m3"} {
+		if err := s.StoreMessage(ctx, Message{
+			ID:        id,
+			ChatJID:   chatJID,
+			Sender:    chatJID,
+			Content:   "msg " + id,
+			Timestamp: anchor.Add(time.Duration(i) * time.Minute),
+		}, nil, nil, nil, 0); err != nil {
+			t.Fatalf("StoreMessage(%s): %v", id, err)
+		}
+	}
+
+	cases := []struct {
+		name           string
+		query          string
+		args           []any
+		forbidTempSort bool
+	}{
+		{
+			name:           "latest_msg_subquery",
+			query:          `SELECT rowid FROM messages WHERE chat_jid = ? ORDER BY timestamp DESC LIMIT 1`,
+			args:           []any{chatJID},
+			forbidTempSort: true,
+		},
+		{
+			name:           "GetChat_includeLastMessage",
+			query:          chatSelectSQL("c", true) + " WHERE c.jid = ?",
+			args:           []any{chatJID},
+			forbidTempSort: true,
+		},
+		{
+			name:           "ListChats_includeLastMessage",
+			query:          chatSelectSQL("chats", true) + " ORDER BY chats.last_message_time DESC LIMIT ? OFFSET ?",
+			args:           []any{20, 0},
+			forbidTempSort: false, // outer chats ORDER BY last_message_time uses temp B-tree
+		},
+		{
+			name:           "GetNewestMessage",
+			query:          `SELECT id, timestamp, is_from_me FROM messages WHERE chat_jid = ? ORDER BY timestamp DESC, id DESC LIMIT 1`,
+			args:           []any{chatJID},
+			forbidTempSort: true,
+		},
+		{
+			name:           "GetOldestMessage",
+			query:          `SELECT id, timestamp, is_from_me FROM messages WHERE chat_jid = ? ORDER BY timestamp ASC, id ASC LIMIT 1`,
+			args:           []any{chatJID},
+			forbidTempSort: true,
+		},
+		{
+			name:           "GetMessageAtOrBefore",
+			query:          `SELECT id, timestamp, is_from_me FROM messages WHERE chat_jid = ? AND timestamp <= ? ORDER BY timestamp DESC, id DESC LIMIT 1`,
+			args:           []any{chatJID, anchor},
+			forbidTempSort: true,
+		},
+		{
+			name:           "HasInboundFrom",
+			query:          `SELECT EXISTS(SELECT 1 FROM messages WHERE chat_jid = ? AND is_from_me = 0 LIMIT 1)`,
+			args:           []any{chatJID},
+			forbidTempSort: true,
+		},
+		{
+			name:           "RecentIncomingMessages",
+			query:          `SELECT id, sender FROM messages WHERE chat_jid = ? AND is_from_me = 0 ORDER BY timestamp DESC, id DESC LIMIT ?`,
+			args:           []any{chatJID, 50},
+			forbidTempSort: true,
+		},
+		{
+			name: "queryContextWindow_before",
+			query: `SELECT ` + listMessageColumns + `
+				FROM messages
+				JOIN chats ON messages.chat_jid = chats.jid
+				WHERE messages.chat_jid = ? AND messages.timestamp < ?
+				ORDER BY messages.timestamp DESC, messages.id DESC
+				LIMIT ?`,
+			args:           []any{chatJID, anchor.Add(time.Minute), 5},
+			forbidTempSort: true,
+		},
+		{
+			name: "queryContextWindow_after",
+			query: `SELECT ` + listMessageColumns + `
+				FROM messages
+				JOIN chats ON messages.chat_jid = chats.jid
+				WHERE messages.chat_jid = ? AND messages.timestamp > ?
+				ORDER BY messages.timestamp ASC, messages.id ASC
+				LIMIT ?`,
+			args:           []any{chatJID, anchor, 5},
+			forbidTempSort: true,
+		},
+		{
+			name: "ListMessagesPage_byChatJID",
+			query: `SELECT ` + listMessageColumns + `
+				FROM messages
+				JOIN chats ON messages.chat_jid = chats.jid
+				WHERE messages.chat_jid = ?
+				ORDER BY ` + listMessageTimeKey + ` DESC, messages.id DESC, messages.chat_jid DESC
+				LIMIT ? OFFSET ?`,
+			args:           []any{chatJID, 21, 0},
+			forbidTempSort: false, // ORDER BY uses listMessageTimeKey expression
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			plan := explainQueryPlan(t, s.db, tc.query, tc.args...)
+			joined := strings.Join(plan, "\n")
+			t.Logf("plan:\n%s", joined)
+
+			if strings.Contains(joined, "SCAN messages") {
+				t.Errorf("unexpected full table scan on messages:\n%s", joined)
+			}
+			if !strings.Contains(joined, "INDEX idx_messages_chat_ts") {
+				t.Errorf("expected plan to use idx_messages_chat_ts:\n%s", joined)
+			}
+			if tc.forbidTempSort && strings.Contains(joined, "USE TEMP B-TREE FOR ORDER BY") {
+				t.Errorf("unexpected temp B-tree sort:\n%s", joined)
+			}
+		})
+	}
+}
+
+// TestMigrateSchema_AddsMessagesChatTSIndex verifies that migrateSchema creates
+// idx_messages_chat_ts on a legacy database without modifying existing rows and
+// remains idempotent when called repeatedly.
+func TestMigrateSchema_AddsMessagesChatTSIndex(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "messages.db")
+	db, err := sql.Open("sqlite3", "file:"+dbPath+"?_foreign_keys=on")
+	if err != nil {
+		t.Fatalf("open legacy db: %v", err)
+	}
+	defer db.Close()
+
+	_, err = db.Exec(`
+		CREATE TABLE chats (jid TEXT PRIMARY KEY, name TEXT, last_message_time TIMESTAMP);
+		CREATE TABLE messages (
+			id TEXT, chat_jid TEXT, sender TEXT, content TEXT,
+			timestamp TIMESTAMP, is_from_me BOOLEAN,
+			media_type TEXT, filename TEXT, url TEXT,
+			direct_path TEXT,
+			media_key BLOB, file_sha256 BLOB, file_enc_sha256 BLOB,
+			file_length INTEGER,
+			poll_options_json TEXT,
+			edited_at TIMESTAMP,
+			revoked_at TIMESTAMP,
+			PRIMARY KEY (id, chat_jid),
+			FOREIGN KEY (chat_jid) REFERENCES chats(jid)
+		);
+		INSERT INTO chats (jid, name, last_message_time) VALUES
+			('legacy@s.whatsapp.net', 'Legacy', '2026-01-01 09:05:00.000000000+00:00');
+		INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me) VALUES
+			('legacy-1', 'legacy@s.whatsapp.net', 'legacy@s.whatsapp.net', 'first',  '2026-01-01 09:00:00.000000000+00:00', 0),
+			('legacy-2', 'legacy@s.whatsapp.net', 'me',                    'second', '2026-01-01 09:05:00.000000000+00:00', 1);
+	`)
+	if err != nil {
+		t.Fatalf("seed legacy db: %v", err)
+	}
+
+	if hasMessagesIndex(t, db, "idx_messages_chat_ts") {
+		t.Fatal("legacy db unexpectedly already has idx_messages_chat_ts")
+	}
+
+	if err := migrateSchema(db); err != nil {
+		t.Fatalf("first migrateSchema: %v", err)
+	}
+	if !hasMessagesIndex(t, db, "idx_messages_chat_ts") {
+		t.Fatal("expected idx_messages_chat_ts after first migrateSchema")
+	}
+
+	// Second call must be idempotent.
+	if err := migrateSchema(db); err != nil {
+		t.Fatalf("second migrateSchema: %v", err)
+	}
+	if !hasMessagesIndex(t, db, "idx_messages_chat_ts") {
+		t.Fatal("expected idx_messages_chat_ts after second migrateSchema")
+	}
+
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM messages").Scan(&count); err != nil {
+		t.Fatalf("count messages: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("expected 2 preserved messages, got %d", count)
+	}
+	var content1, content2 string
+	if err := db.QueryRow("SELECT content FROM messages WHERE id = 'legacy-1'").Scan(&content1); err != nil {
+		t.Fatalf("read legacy-1: %v", err)
+	}
+	if err := db.QueryRow("SELECT content FROM messages WHERE id = 'legacy-2'").Scan(&content2); err != nil {
+		t.Fatalf("read legacy-2: %v", err)
+	}
+	if content1 != "first" || content2 != "second" {
+		t.Fatalf("unexpected preserved rows: %q, %q", content1, content2)
 	}
 }
