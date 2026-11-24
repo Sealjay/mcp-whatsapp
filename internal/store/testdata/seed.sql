@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS poll_votes (
     voter_jid TEXT NOT NULL,
     selected_options_json TEXT NOT NULL,
     timestamp TIMESTAMP NOT NULL,
+    received_at TIMESTAMP,
     PRIMARY KEY (poll_message_id, poll_chat_jid, voter_jid)
 );
 

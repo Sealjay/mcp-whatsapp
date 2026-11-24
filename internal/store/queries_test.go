@@ -532,6 +532,66 @@ func TestGetMessageAtOrBefore(t *testing.T) {
 	}
 }
 
+func TestNormalizeStoredTimestampPrecision(t *testing.T) {
+	s := openTestStore(t)
+	_, err := s.db.Exec(
+		`INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me)
+		 VALUES ('nano-1', '447700000001@s.whatsapp.net', '447700000002',
+		         'nanosecond test', '2026-11-19 11:55:04.123456789-03:00', 0)`,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := normalizeStoredTimestampPrecision(s.db); err != nil {
+		t.Fatal(err)
+	}
+	var raw string
+	if err := s.db.QueryRow("SELECT CAST(timestamp AS TEXT) FROM messages WHERE id='nano-1'").Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(raw, ".123456789+00:00") {
+		t.Fatalf("normalized timestamp = %q, want nanosecond UTC precision", raw)
+	}
+}
+
+func TestListMessagesTimezoneOffsetBounds(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	const chat = "447700000001@s.whatsapp.net"
+	if err := s.StoreChat(chat, "Alice", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me)
+		 VALUES ('offset-1', ?, '447700000002', 'offset test', '2026-11-19 11:55:04-03:00', 0)`,
+		chat,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := normalizeStoredTimestampPrecision(s.db); err != nil {
+		t.Fatal(err)
+	}
+
+	after := time.Date(2026, 11, 19, 14, 54, 0, 0, time.UTC)
+	before := time.Date(2026, 11, 19, 14, 56, 0, 0, time.UTC)
+	messages, err := s.ListMessages(ctx, ListMessagesParams{ChatJID: chat, After: after, Before: before, Limit: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 1 || messages[0].ID != "offset-1" {
+		t.Fatalf("timezone bounds returned %+v, want offset-1", messages)
+	}
+
+	id, _, _, err := s.GetMessageAtOrBefore(chat, before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "offset-1" {
+		t.Fatalf("history anchor = %q, want offset-1", id)
+	}
+}
+
 func TestGetMessageAtOrBefore_Inclusive(t *testing.T) {
 	s := openTestStore(t)
 

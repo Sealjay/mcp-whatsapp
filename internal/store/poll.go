@@ -81,12 +81,14 @@ func (s *Store) StorePollVote(ctx context.Context, pollMessageID, pollChatJID, v
 	if pollMessageID == "" || pollChatJID == "" || voterJID == "" {
 		return fmt.Errorf("store poll vote: poll_message_id, poll_chat_jid, voter_jid required")
 	}
+	timestamp = timestamp.UTC()
 	payload, err := json.Marshal(selected)
 	if err != nil {
 		return fmt.Errorf("marshal selected options: %w", err)
 	}
 	_, err = s.db.ExecContext(ctx, pollVoteUpsertSQL,
-		pollMessageID, pollChatJID, voterJID, string(payload), timestamp, pollMessageID, pollChatJID,
+		pollMessageID, pollChatJID, voterJID, string(payload), utcTimestampText(timestamp),
+		utcTimestampText(time.Now().UTC()), pollMessageID, pollChatJID,
 	)
 	if err != nil {
 		return fmt.Errorf("insert poll vote: %w", err)
@@ -95,15 +97,18 @@ func (s *Store) StorePollVote(ctx context.Context, pollMessageID, pollChatJID, v
 }
 
 const pollVoteUpsertSQL = `INSERT INTO poll_votes
-		 (poll_message_id, poll_chat_jid, voter_jid, selected_options_json, timestamp)
-		 SELECT ?, ?, ?, ?, ?
+		 (poll_message_id, poll_chat_jid, voter_jid, selected_options_json, timestamp, received_at)
+		 SELECT ?, ?, ?, ?, ?, ?
 		 WHERE NOT EXISTS (
 		     SELECT 1 FROM messages WHERE id = ? AND chat_jid = ? AND revoked_at IS NOT NULL
 		 )
 		 ON CONFLICT (poll_message_id, poll_chat_jid, voter_jid) DO UPDATE SET
 		     selected_options_json = excluded.selected_options_json,
-		     timestamp = excluded.timestamp
-		 WHERE excluded.timestamp >= poll_votes.timestamp`
+		     timestamp = excluded.timestamp,
+		     received_at = excluded.received_at
+		 WHERE excluded.timestamp > poll_votes.timestamp
+		    OR (excluded.timestamp = poll_votes.timestamp
+		        AND excluded.received_at >= poll_votes.received_at)`
 
 // GetPollResults returns the stored option names and the per-option vote count
 // for a poll. Returns sql.ErrNoRows if the poll metadata is missing.
@@ -176,10 +181,9 @@ func (s *Store) QueuePendingPollVote(ctx context.Context, vote PendingPollVote) 
 		return nil, 0, fmt.Errorf("queue poll vote: payload must be between 1 and 16384 bytes")
 	}
 	vote.ReceivedAt = time.Now().UTC()
-	// Keep the timestamp's existing offset: poll_votes compares SQLite time
-	// strings, and live/attached history votes retain their parsed offset.
+	vote.Timestamp = vote.Timestamp.UTC()
 	if vote.Timestamp.After(vote.ReceivedAt) {
-		vote.Timestamp = vote.ReceivedAt.In(vote.Timestamp.Location())
+		vote.Timestamp = vote.ReceivedAt
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -189,7 +193,8 @@ func (s *Store) QueuePendingPollVote(ctx context.Context, vote PendingPollVote) 
 	_, err = tx.ExecContext(ctx, `INSERT INTO pending_poll_votes
 		(owner_jid, chat_jid, sender_jid, message_id, timestamp, received_at, payload)
 		VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
-		vote.OwnerJID, vote.ChatJID, vote.SenderJID, vote.MessageID, vote.Timestamp, vote.ReceivedAt, vote.Payload)
+		vote.OwnerJID, vote.ChatJID, vote.SenderJID, vote.MessageID,
+		utcTimestampText(vote.Timestamp), utcTimestampText(vote.ReceivedAt), vote.Payload)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -304,7 +309,7 @@ const dropPendingPollVoteSQL = `DELETE FROM pending_poll_votes
 
 // DropPendingPollVote removes only the supplied receipt, not a later reinsert.
 func (s *Store) DropPendingPollVote(ctx context.Context, pending PendingPollVote) error {
-	_, err := s.db.ExecContext(ctx, dropPendingPollVoteSQL, pending.OwnerJID, pending.ChatJID, pending.MessageID, pending.ReceivedAt)
+	_, err := s.db.ExecContext(ctx, dropPendingPollVoteSQL, pending.OwnerJID, pending.ChatJID, pending.MessageID, utcTimestampText(pending.ReceivedAt))
 	return err
 }
 
@@ -323,7 +328,7 @@ func (s *Store) CompletePendingPollVote(ctx context.Context, pending PendingPoll
 		return err
 	}
 	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, dropPendingPollVoteSQL, pending.OwnerJID, pending.ChatJID, pending.MessageID, pending.ReceivedAt)
+	result, err := tx.ExecContext(ctx, dropPendingPollVoteSQL, pending.OwnerJID, pending.ChatJID, pending.MessageID, utcTimestampText(pending.ReceivedAt))
 	if err != nil {
 		return err
 	}
@@ -332,7 +337,8 @@ func (s *Store) CompletePendingPollVote(ctx context.Context, pending PendingPoll
 		return err
 	}
 	if n > 0 {
-		if _, err := tx.ExecContext(ctx, pollVoteUpsertSQL, pollID, chatJID, voterJID, string(payload), timestamp, pollID, chatJID); err != nil {
+		if _, err := tx.ExecContext(ctx, pollVoteUpsertSQL, pollID, chatJID, voterJID, string(payload),
+			utcTimestampText(timestamp), utcTimestampText(pending.ReceivedAt), pollID, chatJID); err != nil {
 			return err
 		}
 	}

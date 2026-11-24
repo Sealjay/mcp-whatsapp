@@ -40,8 +40,9 @@ func (a Author) clause() (string, []any) {
 func (s *Store) ApplyEdit(ctx context.Context, chatJID, id string, author Author, content string, editedAt time.Time) (bool, error) {
 	who, whoArgs := author.clause()
 	editedAt = editedAt.UTC()
-	args := append([]any{content, editedAt, id, chatJID}, whoArgs...)
-	args = append(args, editedAt)
+	editedAtText := utcTimestampText(editedAt)
+	args := append([]any{content, editedAtText, id, chatJID}, whoArgs...)
+	args = append(args, editedAtText)
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE messages SET content = ?, edited_at = ?
 		WHERE id = ? AND chat_jid = ? AND `+who+`
@@ -60,7 +61,7 @@ func (s *Store) ApplyEdit(ctx context.Context, chatJID, id string, author Author
 // revoked message changes nothing.
 func (s *Store) ApplyRevoke(ctx context.Context, chatJID, id string, author Author, revokedAt time.Time) (bool, error) {
 	who, whoArgs := author.clause()
-	args := append([]any{revokedAt.UTC(), id, chatJID}, whoArgs...)
+	args := append([]any{utcTimestampText(revokedAt.UTC()), id, chatJID}, whoArgs...)
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE messages SET revoked_at = ?
 		WHERE id = ? AND chat_jid = ? AND `+who+`

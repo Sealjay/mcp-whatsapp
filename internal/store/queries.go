@@ -73,7 +73,7 @@ func (s *Store) ListMessages(ctx context.Context, params ListMessagesParams) ([]
 		b.WriteString(" WHERE ")
 		b.WriteString(strings.Join(whereClauses, " AND "))
 	}
-	b.WriteString(" ORDER BY messages.timestamp DESC")
+	b.WriteString(" ORDER BY messages.timestamp DESC, messages.id DESC")
 	b.WriteString(" LIMIT ? OFFSET ?")
 
 	offset := page * limit
@@ -369,8 +369,8 @@ func (s *Store) queryContextWindow(ctx context.Context, chatJID string, anchor t
 		FROM messages
 		JOIN chats ON messages.chat_jid = chats.jid
 		WHERE messages.chat_jid = ? AND messages.timestamp %s ?
-		ORDER BY messages.timestamp %s
-		LIMIT ?`, op, order)
+		ORDER BY messages.timestamp %s, messages.id %s
+		LIMIT ?`, op, order, order)
 
 	rows, err := s.db.QueryContext(ctx, q, chatJID, anchor, limit)
 	if err != nil {
