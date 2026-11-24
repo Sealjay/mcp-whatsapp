@@ -398,6 +398,8 @@ CREATE TABLE IF NOT EXISTS messages (
 	FOREIGN KEY (chat_jid) REFERENCES chats(jid)
 );
 
+CREATE INDEX IF NOT EXISTS idx_messages_chat_ts ON messages(chat_jid, timestamp DESC, id DESC);
+
 CREATE TABLE IF NOT EXISTS poll_votes (
 	poll_message_id TEXT NOT NULL,
 	poll_chat_jid TEXT NOT NULL,
@@ -491,7 +493,13 @@ func migrateSchema(db *sql.DB) error {
 	if err := rekeyDevicePollVoters(db); err != nil {
 		return err
 	}
-	return normalizeStoredTimestampPrecision(db)
+	if err := normalizeStoredTimestampPrecision(db); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_chat_ts ON messages(chat_jid, timestamp DESC, id DESC)`); err != nil {
+		return fmt.Errorf("create idx_messages_chat_ts: %w", err)
+	}
+	return nil
 }
 
 func utcTimestampText(t time.Time) string {
