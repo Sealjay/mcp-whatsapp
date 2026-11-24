@@ -509,6 +509,107 @@ func parseStoredTimestamp(raw string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
+func normalizePollTimestampPrecision(db *sql.DB) error {
+	var tableExists int
+	if err := db.QueryRow(
+		"SELECT count(*) FROM sqlite_master WHERE type='table' AND name='poll_votes'",
+	).Scan(&tableExists); err != nil {
+		return err
+	}
+	if tableExists > 0 {
+		rows, err := db.Query(`SELECT poll_message_id, poll_chat_jid, voter_jid, CAST(timestamp AS TEXT) FROM poll_votes WHERE timestamp IS NOT NULL`)
+		if err != nil {
+			return fmt.Errorf("read poll timestamps: %w", err)
+		}
+		type update struct {
+			pollID, chatJID, voterJID, timestamp string
+		}
+		var updates []update
+		for rows.Next() {
+			var u update
+			var raw sql.NullString
+			if err := rows.Scan(&u.pollID, &u.chatJID, &u.voterJID, &raw); err != nil {
+				rows.Close()
+				return fmt.Errorf("scan poll timestamps: %w", err)
+			}
+			if raw.Valid {
+				if t, ok := parseStoredTimestamp(raw.String); ok {
+					u.timestamp = utcTimestampText(t)
+					updates = append(updates, u)
+				}
+			}
+		}
+		rows.Close()
+		for _, u := range updates {
+			if _, err := db.Exec(
+				`UPDATE poll_votes SET timestamp=? WHERE poll_message_id=? AND poll_chat_jid=? AND voter_jid=?`,
+				u.timestamp, u.pollID, u.chatJID, u.voterJID,
+			); err != nil {
+				return fmt.Errorf("normalize poll timestamp: %w", err)
+			}
+		}
+	}
+
+	tableExists = 0
+	if err := db.QueryRow(
+		"SELECT count(*) FROM sqlite_master WHERE type='table' AND name='pending_poll_votes'",
+	).Scan(&tableExists); err != nil {
+		return err
+	}
+	if tableExists > 0 {
+		rows, err := db.Query(`SELECT owner_jid, chat_jid, message_id,
+			CAST(timestamp AS TEXT), CAST(received_at AS TEXT) FROM pending_poll_votes`)
+		if err != nil {
+			return fmt.Errorf("read pending poll timestamps: %w", err)
+		}
+		type update struct {
+			ownerJID, chatJID, messageID, timestamp, receivedAt string
+		}
+		var updates []update
+		for rows.Next() {
+			var u update
+			var timestamp, receivedAt sql.NullString
+			if err := rows.Scan(&u.ownerJID, &u.chatJID, &u.messageID, &timestamp, &receivedAt); err != nil {
+				rows.Close()
+				return fmt.Errorf("scan pending poll timestamps: %w", err)
+			}
+			if timestamp.Valid {
+				if t, ok := parseStoredTimestamp(timestamp.String); ok {
+					u.timestamp = utcTimestampText(t)
+				}
+			}
+			if receivedAt.Valid {
+				if t, ok := parseStoredTimestamp(receivedAt.String); ok {
+					u.receivedAt = utcTimestampText(t)
+				}
+			}
+			if u.timestamp != "" || u.receivedAt != "" {
+				updates = append(updates, u)
+			}
+		}
+		rows.Close()
+		for _, u := range updates {
+			set := []string{}
+			args := []any{}
+			if u.timestamp != "" {
+				set = append(set, "timestamp=?")
+				args = append(args, u.timestamp)
+			}
+			if u.receivedAt != "" {
+				set = append(set, "received_at=?")
+				args = append(args, u.receivedAt)
+			}
+			query := "UPDATE pending_poll_votes SET " + strings.Join(set, ", ") +
+				" WHERE owner_jid=? AND chat_jid=? AND message_id=?"
+			args = append(args, u.ownerJID, u.chatJID, u.messageID)
+			if _, err := db.Exec(query, args...); err != nil {
+				return fmt.Errorf("normalize pending poll timestamp: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
 func normalizeStoredTimestampPrecision(db *sql.DB) error {
 	tx, err := db.Begin()
 	if err != nil {
@@ -570,6 +671,41 @@ func normalizeStoredTimestampPrecision(db *sql.DB) error {
 		args = append(args, u.id, u.chatJID)
 		if _, err := tx.Exec(query, args...); err != nil {
 			return fmt.Errorf("normalize message timestamps: %w", err)
+		}
+	}
+
+	var chatTableExists int
+	if err := tx.QueryRow(
+		"SELECT count(*) FROM sqlite_master WHERE type='table' AND name='chats'",
+	).Scan(&chatTableExists); err != nil {
+		return fmt.Errorf("check chats table: %w", err)
+	}
+	if chatTableExists > 0 {
+		chatRows, err := tx.Query(`SELECT jid, CAST(last_message_time AS TEXT) FROM chats WHERE last_message_time IS NOT NULL`)
+		if err != nil {
+			return fmt.Errorf("read chat timestamps: %w", err)
+		}
+		type chatUpdate struct{ jid, timestamp string }
+		var chatUpdates []chatUpdate
+		for chatRows.Next() {
+			var u chatUpdate
+			var raw sql.NullString
+			if err := chatRows.Scan(&u.jid, &raw); err != nil {
+				chatRows.Close()
+				return fmt.Errorf("scan chat timestamps: %w", err)
+			}
+			if raw.Valid {
+				if t, ok := parseStoredTimestamp(raw.String); ok {
+					u.timestamp = utcTimestampText(t)
+					chatUpdates = append(chatUpdates, u)
+				}
+			}
+		}
+		chatRows.Close()
+		for _, u := range chatUpdates {
+			if _, err := tx.Exec(`UPDATE chats SET last_message_time=? WHERE jid=?`, u.timestamp, u.jid); err != nil {
+				return fmt.Errorf("normalize chat timestamp: %w", err)
+			}
 		}
 	}
 

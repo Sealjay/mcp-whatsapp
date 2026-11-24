@@ -65,8 +65,8 @@ type listMessagesArgs struct {
 func (s *Server) registerListMessages() {
 	tool := mcp.NewTool("list_messages",
 		mcp.WithDescription(offlineSafePrefix+"Search and page through cached WhatsApp messages, optionally filtering by chat, sender, time range, and substring; can include surrounding context messages. Read-only; no side effects. Use get_message_context to expand around a single known message ID, or request_sync to backfill missing history. Returns a human-readable formatted text block listing matching messages; edited messages show an `[edited]` marker and messages deleted for everyone keep their text behind a `[deleted <time> UTC]` marker."),
-		mcp.WithString("after", mcp.Description("ISO-8601 UTC lower bound on message timestamp (inclusive)")),
-		mcp.WithString("before", mcp.Description("ISO-8601 UTC upper bound on message timestamp (inclusive)")),
+		mcp.WithString("after", mcp.Description("ISO-8601 UTC lower bound on message timestamp (exclusive)")),
+		mcp.WithString("before", mcp.Description("ISO-8601 UTC upper bound on message timestamp (exclusive)")),
 		mcp.WithString("sender_phone_number", mcp.Description("filter to messages sent by this phone or JID ("+jidDesc+")")),
 		mcp.WithString("chat_jid", mcp.Description("filter to messages in this chat ("+jidDesc+")")),
 		mcp.WithString("query", mcp.Description("case-insensitive substring to match within message body (text, or the caption of an image, video or document; edited messages match their latest text; messages deleted for everyone still match)")),
