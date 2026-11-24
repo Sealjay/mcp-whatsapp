@@ -18,7 +18,30 @@
 <p>Or pair without scanning: enter your phone number (country code first) and type the code into WhatsApp via <em>Link with phone number instead</em>.</p>
 <form method="post" action="/pair/code">
 <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-<input type="text" name="phone" placeholder="+919876543210" inputmode="tel" required>
+<input id="pair-phone" type="text" name="phone" placeholder="+919876543210" inputmode="tel" required>
 <button type="submit">Get pairing code</button>
 </form>
+<script>
+(() => {
+  const key = "whatsapp-mcp:pair-phone";
+  const input = document.getElementById("pair-phone");
+  if (!input) return;
+  try {
+    const saved = sessionStorage.getItem(key);
+    if (saved !== null) input.value = saved;
+    input.addEventListener("input", () => {
+      try {
+        if (input.value) sessionStorage.setItem(key, input.value);
+        else sessionStorage.removeItem(key);
+      } catch (_) {}
+    });
+    input.form.addEventListener("submit", () => {
+      try {
+        if (input.value) sessionStorage.setItem(key, input.value);
+        else sessionStorage.removeItem(key);
+      } catch (_) {}
+    });
+  } catch (_) {}
+})();
+</script>
 </body></html>

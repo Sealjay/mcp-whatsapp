@@ -96,19 +96,29 @@ func newPairHandlers(cache *PairCache, reset resetter, coder pairCoder) *pairHan
 	}
 }
 
-// generateCSRFToken creates a new random CSRF token, stores it in the
-// handler, and returns it. Thread-safe.
+// generateCSRFToken returns the active random CSRF token, minting only once
+// when none remains. Repeated GETs during auto-refresh must not invalidate a
+// form that the operator already rendered. Thread-safe.
 func (h *pairHandlers) generateCSRFToken() string {
+	h.csrfMu.Lock()
+	defer h.csrfMu.Unlock()
+	if h.csrfToken != "" {
+		return h.csrfToken
+	}
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
 		// Fallback should never be reached in practice.
 		panic(fmt.Sprintf("crypto/rand.Read failed: %v", err))
 	}
 	token := hex.EncodeToString(b)
-	h.csrfMu.Lock()
 	h.csrfToken = token
-	h.csrfMu.Unlock()
 	return token
+}
+
+func setPairNoStore(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
 }
 
 // validCSRFToken checks whether the supplied token matches the stored one.
@@ -139,6 +149,7 @@ func (h *pairHandlers) handlePairPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 		return
 	}
+	setPairNoStore(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	data := pairPageData{
 		CSRFToken: h.generateCSRFToken(),
@@ -191,6 +202,7 @@ func (h *pairHandlers) handlePairReset(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
+	setPairNoStore(w)
 	if !h.pairResetLimiter.Allow() {
 		w.Header().Set("Retry-After", "60")
 		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
@@ -240,6 +252,7 @@ func (h *pairHandlers) handlePairCode(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
+	setPairNoStore(w)
 	if !h.pairCodeLimiter.Allow() {
 		w.Header().Set("Retry-After", "20")
 		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
