@@ -569,6 +569,9 @@ func TestListMessagesTimezoneOffsetBounds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := normalizeStoredTimestampPrecision(s.db); err != nil {
+		t.Fatal(err)
+	}
 
 	after := time.Date(2026, 11, 19, 14, 54, 0, 0, time.UTC)
 	before := time.Date(2026, 11, 19, 14, 56, 0, 0, time.UTC)

@@ -46,11 +46,11 @@ func (s *Store) ListMessages(ctx context.Context, params ListMessagesParams) ([]
 	)
 
 	if !params.After.IsZero() {
-		whereClauses = append(whereClauses, "strftime('%Y-%m-%d %H:%M:%f', messages.timestamp) >= strftime('%Y-%m-%d %H:%M:%f', ?)")
+		whereClauses = append(whereClauses, "messages.timestamp > ?")
 		args = append(args, params.After)
 	}
 	if !params.Before.IsZero() {
-		whereClauses = append(whereClauses, "strftime('%Y-%m-%d %H:%M:%f', messages.timestamp) <= strftime('%Y-%m-%d %H:%M:%f', ?)")
+		whereClauses = append(whereClauses, "messages.timestamp < ?")
 		args = append(args, params.Before)
 	}
 	if params.SenderPhone != "" {
@@ -73,7 +73,7 @@ func (s *Store) ListMessages(ctx context.Context, params ListMessagesParams) ([]
 		b.WriteString(" WHERE ")
 		b.WriteString(strings.Join(whereClauses, " AND "))
 	}
-	b.WriteString(" ORDER BY strftime('%Y-%m-%d %H:%M:%f', messages.timestamp) DESC, messages.id DESC")
+	b.WriteString(" ORDER BY messages.timestamp DESC, messages.id DESC")
 	b.WriteString(" LIMIT ? OFFSET ?")
 
 	offset := page * limit
@@ -368,8 +368,8 @@ func (s *Store) queryContextWindow(ctx context.Context, chatJID string, anchor t
 		SELECT `+listMessageColumns+`
 		FROM messages
 		JOIN chats ON messages.chat_jid = chats.jid
-		WHERE messages.chat_jid = ? AND strftime('%%Y-%%m-%%d %%H:%%M:%%f', messages.timestamp) %s strftime('%%Y-%%m-%%d %%H:%%M:%%f', ?)
-		ORDER BY strftime('%%Y-%%m-%%d %%H:%%M:%%f', messages.timestamp) %s, messages.id %s
+		WHERE messages.chat_jid = ? AND messages.timestamp %s ?
+		ORDER BY messages.timestamp %s, messages.id %s
 		LIMIT ?`, op, order, order)
 
 	rows, err := s.db.QueryContext(ctx, q, chatJID, anchor, limit)

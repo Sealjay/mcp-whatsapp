@@ -189,7 +189,8 @@ func (s *Store) QueuePendingPollVote(ctx context.Context, vote PendingPollVote) 
 	_, err = tx.ExecContext(ctx, `INSERT INTO pending_poll_votes
 		(owner_jid, chat_jid, sender_jid, message_id, timestamp, received_at, payload)
 		VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
-		vote.OwnerJID, vote.ChatJID, vote.SenderJID, vote.MessageID, vote.Timestamp, vote.ReceivedAt, vote.Payload)
+		vote.OwnerJID, vote.ChatJID, vote.SenderJID, vote.MessageID,
+		vote.Timestamp, vote.ReceivedAt, vote.Payload)
 	if err != nil {
 		return nil, 0, err
 	}
