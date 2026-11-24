@@ -14,6 +14,7 @@ import (
 	"github.com/mdp/qrterminal"
 
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/appstate"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
 	wmstore "go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/store/sqlstore"
@@ -81,8 +82,9 @@ type Client struct {
 	// isConnected and waSend are wa's IsConnected and SendMessage, used by
 	// SendReply, SendReaction, polls and contact cards (waSend through the
 	// rate-limited sendMessage); tests replace them.
-	isConnected func() bool
-	waSend      func(context.Context, types.JID, *waProto.Message, ...whatsmeow.SendRequestExtra) (whatsmeow.SendResponse, error)
+	isConnected   func() bool
+	waSend        func(context.Context, types.JID, *waProto.Message, ...whatsmeow.SendRequestExtra) (whatsmeow.SendResponse, error)
+	fetchAppState func(context.Context, appstate.WAPatchName, bool, bool) error
 }
 
 // newWAClient creates the whatsmeow client for device. whatsmeow logs through
@@ -197,6 +199,9 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 	c.isConnected = func() bool { return c.waClient().IsConnected() }
 	c.waSend = func(ctx context.Context, to types.JID, msg *waProto.Message, extra ...whatsmeow.SendRequestExtra) (whatsmeow.SendResponse, error) {
 		return c.waClient().SendMessage(ctx, to, msg, extra...)
+	}
+	c.fetchAppState = func(ctx context.Context, name appstate.WAPatchName, fullSync, onlyIfNotSynced bool) error {
+		return c.waClient().FetchAppState(ctx, name, fullSync, onlyIfNotSynced)
 	}
 	return c, nil
 }
