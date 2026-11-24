@@ -153,6 +153,24 @@ func TestTranscribeAudio_DurationLimit(t *testing.T) {
 	}
 }
 
+// WhatsApp voice notes do not flag the last Ogg page as end of stream; they
+// must still be transcribed (and measured against the duration limit).
+func TestTranscribeAudio_VoiceNoteWithoutEndOfStream(t *testing.T) {
+	note := transcriptionOpus(2 * 48000)
+	note[47+5] = 0 // last page without the EOS flag, as WhatsApp sends it
+	c, calls := transcribeFixture(t, "audio", note)
+	if _, _, err := c.TranscribeAudio(context.Background(), trMsg, trJID, ""); err != nil || *calls != 1 {
+		t.Fatalf("err=%v backend calls=%d; a note without EOS must be transcribed", err, *calls)
+	}
+
+	long := transcriptionOpus(601 * 48000)
+	long[47+5] = 0
+	c, calls = transcribeFixture(t, "audio", long)
+	if _, _, err := c.TranscribeAudio(context.Background(), trMsg, trJID, ""); err == nil || !strings.Contains(err.Error(), "transcription limit") || *calls != 0 {
+		t.Fatalf("err=%v backend calls=%d; the duration limit must still apply without EOS", err, *calls)
+	}
+}
+
 func TestTranscribeAudio_MalformedOggNotUploaded(t *testing.T) {
 	c, calls := transcribeFixture(t, "audio", []byte("OggS"))
 	if _, _, err := c.TranscribeAudio(context.Background(), trMsg, trJID, ""); err == nil || *calls != 0 {

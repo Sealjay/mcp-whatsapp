@@ -16,17 +16,35 @@ import (
 )
 
 // AnalyzeOggOpus returns the unclamped duration rounded up to seconds and a
-// 64-byte waveform. Truncated or invalid Ogg/Opus streams return an error.
+// 64-byte waveform. Truncated or invalid Ogg/Opus streams return an error,
+// including streams whose last page lacks the end-of-stream flag.
 func AnalyzeOggOpus(data []byte) (duration uint32, waveform []byte, err error) {
+	return analyzeOggOpus(data, true)
+}
+
+// OggOpusDuration returns the duration of an Ogg/Opus stream rounded up to
+// seconds. Unlike AnalyzeOggOpus it does not require the end-of-stream flag on
+// the last page: WhatsApp voice notes are complete, well-formed streams whose
+// final page is not flagged. Truncated pages and bad headers still fail.
+func OggOpusDuration(data []byte) (uint32, error) {
+	d, _, err := analyzeOggOpus(data, false)
+	return d, err
+}
+
+func analyzeOggOpus(data []byte, requireEOS bool) (duration uint32, waveform []byte, err error) {
 	if len(data) < 4 || string(data[0:4]) != "OggS" {
 		return 0, nil, fmt.Errorf("not a valid Ogg file (missing OggS signature)")
 	}
 
 	var lastGranule uint64
 	var preSkip uint16
-	var foundOpusHead bool
+	var firstSerial uint32
+	var serialSet bool
+	var lastSequence uint32
+	var sequenceSet bool
 	var ended bool
 	var unfinishedPacket bool
+	pageIndex := 0
 
 	for i := 0; i < len(data); {
 		if ended {
@@ -42,57 +60,83 @@ func AnalyzeOggOpus(data []byte) (duration uint32, waveform []byte, err error) {
 		if data[i+4] != 0 {
 			return 0, nil, errors.New("unsupported Ogg page version")
 		}
+		serial := binary.LittleEndian.Uint32(data[i+14 : i+18])
+		sequence := binary.LittleEndian.Uint32(data[i+18 : i+22])
+		if !serialSet {
+			firstSerial = serial
+			serialSet = true
+		} else if serial != firstSerial {
+			return 0, nil, errors.New("inconsistent Ogg stream serial")
+		}
+		if sequenceSet {
+			if sequence != lastSequence+1 {
+				return 0, nil, errors.New("non-sequential Ogg page sequence")
+			}
+		}
+		lastSequence = sequence
+		sequenceSet = true
 
 		granulePos := binary.LittleEndian.Uint64(data[i+6 : i+14])
 		numSegments := int(data[i+26])
 
-		if numSegments > len(data)-i-27 {
+		remaining := len(data) - i
+		if remaining < 27 || numSegments > remaining-27 {
 			return 0, nil, errors.New("truncated Ogg segment table")
 		}
 		segmentTable := data[i+27 : i+27+numSegments]
 
 		pageSize := 27 + numSegments
 		for _, segLen := range segmentTable {
+			if int(segLen) > remaining-pageSize {
+				return 0, nil, errors.New("truncated Ogg page body")
+			}
 			pageSize += int(segLen)
 		}
-		if pageSize > len(data)-i {
+		if pageSize > remaining {
 			return 0, nil, errors.New("truncated Ogg page body")
 		}
 
-		if !foundOpusHead {
+		if pageIndex == 0 {
+			if data[i+5]&2 == 0 {
+				return 0, nil, errors.New("Ogg Opus header page is missing BOS")
+			}
+			if numSegments == 0 || segmentTable[0] < 19 || segmentTable[0] == 255 {
+				return 0, nil, errors.New("truncated OpusHead identification packet")
+			}
 			pageData := data[i+27+numSegments : i+pageSize]
 			if !bytes.HasPrefix(pageData, []byte("OpusHead")) {
 				return 0, nil, errors.New("missing OpusHead identification header")
 			}
-			if len(pageData) < 19 {
+			headPacket := data[i+27+numSegments : i+27+numSegments+int(segmentTable[0])]
+			if len(headPacket) < 19 {
 				return 0, nil, errors.New("truncated OpusHead identification header")
 			}
-			preSkip = binary.LittleEndian.Uint16(pageData[10:12])
-			foundOpusHead = true
+			preSkip = binary.LittleEndian.Uint16(headPacket[10:12])
 		}
 
 		ended = data[i+5]&4 != 0
-		if numSegments > 0 {
-			unfinishedPacket = segmentTable[numSegments-1] == 255
-		}
-		if ended && unfinishedPacket {
-			return 0, nil, errors.New("unfinished packet at Ogg end of stream")
+		for _, segLen := range segmentTable {
+			if segLen < 255 {
+				unfinishedPacket = false
+			} else {
+				unfinishedPacket = true
+			}
 		}
 		if granulePos == math.MaxUint64 {
-			if ended {
-				return 0, nil, errors.New("undefined final Ogg granule position")
-			}
-		} else {
-			if granulePos > math.MaxInt64 || granulePos < lastGranule {
-				return 0, nil, errors.New("invalid Ogg granule position")
-			}
-			lastGranule = granulePos
+			return 0, nil, errors.New("undefined final Ogg granule position")
 		}
-
+		if unfinishedPacket && (ended || i+pageSize == len(data)) {
+			return 0, nil, errors.New("unfinished packet at Ogg end of stream")
+		}
+		if granulePos > math.MaxInt64 || granulePos < lastGranule {
+			return 0, nil, errors.New("invalid Ogg granule position")
+		}
+		lastGranule = granulePos
+		pageIndex++
 		i += pageSize
 	}
 
-	if !ended {
+	if requireEOS && !ended {
 		return 0, nil, errors.New("missing Ogg end of stream")
 	}
 	if lastGranule <= uint64(preSkip) {
@@ -100,8 +144,13 @@ func AnalyzeOggOpus(data []byte) (duration uint32, waveform []byte, err error) {
 	}
 
 	// Opus granules always count 48 kHz samples, regardless of the input-rate hint.
-	seconds := (lastGranule - uint64(preSkip) + 47999) / 48000
-	if seconds > math.MaxUint32 {
+	playback := lastGranule - uint64(preSkip)
+	const maxSeconds = uint64(math.MaxUint32)
+	if playback > maxSeconds*48000 {
+		return 0, nil, errors.New("Ogg duration exceeds the supported range")
+	}
+	seconds := (playback + 47999) / 48000
+	if seconds > maxSeconds {
 		return 0, nil, errors.New("Ogg duration exceeds the supported range")
 	}
 	duration = uint32(seconds)

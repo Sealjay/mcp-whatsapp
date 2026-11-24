@@ -350,3 +350,78 @@ func TestConvertToOpusOgg_EnvIsolation(t *testing.T) {
 		t.Fatalf("expected valid output file after env-isolated run, stat=%v size=%d", err, info.Size())
 	}
 }
+
+// WhatsApp voice notes are complete Ogg/Opus streams whose last page is not
+// flagged end-of-stream; the duration check used before transcription must
+// accept them while still rejecting damaged data.
+func TestOggOpusDuration_ToleratesMissingEndOfStream(t *testing.T) {
+	head := opusPages(0, 48000)[:47]
+	voiceNote := append([]byte(nil), head...)
+	voiceNote = append(voiceNote, oggPage(1, 24000+312, 0, []byte{0})...)
+	voiceNote = append(voiceNote, oggPage(2, 5*48000+312, 0, []byte{0})...)
+
+	got, err := OggOpusDuration(voiceNote)
+	if err != nil || got != 5 {
+		t.Fatalf("duration=%d err=%v; want 5s and no error for a stream without EOS", got, err)
+	}
+	if _, _, err := AnalyzeOggOpus(voiceNote); err == nil {
+		t.Fatal("the strict analyser must still require end of stream")
+	}
+	withEOS := opusPages(3*48000+312, 48000)
+	if got, err := OggOpusDuration(withEOS); err != nil || got != 3 {
+		t.Fatalf("duration=%d err=%v; want 3s for a stream with EOS", got, err)
+	}
+
+	truncatedBody := append([]byte(nil), head...)
+	truncatedBody = append(truncatedBody, oggPage(1, 48000+312, 0, []byte{0, 0, 0})[:30]...)
+	mismatchedSerial := append([]byte(nil), head...)
+	serialPage := oggPage(1, 48000+312, 0, []byte{0})
+	binary.LittleEndian.PutUint32(serialPage[14:18], 2)
+	mismatchedSerial = append(mismatchedSerial, serialPage...)
+	mismatchedSequence := append([]byte(nil), head...)
+	mismatchedSequence = append(mismatchedSequence, oggPage(3, 48000+312, 0, []byte{0})...)
+	missingBOS := append([]byte(nil), head...)
+	missingBOS[5] = 0
+	splitOpusHead := make([]byte, 48)
+	copy(splitOpusHead, "OggS")
+	splitOpusHead[5] = 2
+	binary.LittleEndian.PutUint32(splitOpusHead[14:18], 1)
+	splitOpusHead[26] = 2
+	splitOpusHead[27] = 10
+	splitOpusHead[28] = 9
+	copy(splitOpusHead[29:], append([]byte("OpusHead"), make([]byte, 11)...))
+	continuedPacket := append([]byte(nil), head...)
+	continuedPacket = append(continuedPacket, oggPage(1, 48000+312, 0, make([]byte, 255))...)
+	emptyFinal := oggPage(2, 2*48000+312, 4, nil)
+	emptyFinal[26] = 0
+	emptyFinal = emptyFinal[:27]
+	continuedPacket = append(continuedPacket, emptyFinal...)
+	for name, data := range map[string][]byte{
+		"truncated page body":                 truncatedBody,
+		"trailing partial page":               append(append([]byte(nil), voiceNote...), []byte("OggS")...),
+		"missing OpusHead":                    oggPage(0, 48000, 0, []byte("not opus")),
+		"missing BOS":                         missingBOS,
+		"split OpusHead packet":               splitOpusHead,
+		"unfinished packet across empty page": continuedPacket,
+		"inconsistent serial":                 mismatchedSerial,
+		"non-sequential page":                 mismatchedSequence,
+		"granule below pre-skip": append(append([]byte(nil), head...),
+			oggPage(1, 100, 0, []byte{0})...),
+		"undefined final granule": append(append([]byte(nil), head...),
+			oggPage(1, math.MaxUint64, 0, []byte{0})...),
+		"unfinished final packet": append(append([]byte(nil), head...),
+			oggPage(1, 48000+312, 0, make([]byte, 255))...),
+		"duration overflow": opusPages(math.MaxInt64, 48000),
+	} {
+		if _, err := OggOpusDuration(data); err == nil {
+			t.Errorf("%s: expected an error even without requiring EOS", name)
+		}
+	}
+
+	if got, err := OggOpusDuration(opusPages(uint64(math.MaxUint32)*48000+312, 48000)); err != nil || got != math.MaxUint32 {
+		t.Fatalf("maximum duration: got=%d err=%v; want %d", got, err, uint32(math.MaxUint32))
+	}
+	if _, err := OggOpusDuration(opusPages(uint64(math.MaxUint32)*48000+313, 48000)); err == nil {
+		t.Fatal("duration above uint32 seconds must be rejected")
+	}
+}
