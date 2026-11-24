@@ -63,12 +63,12 @@ func (s *Store) ListMessagesPage(ctx context.Context, params ListMessagesParams)
 	)
 
 	if !params.After.IsZero() {
-		whereClauses = append(whereClauses, "messages.timestamp > ?")
-		args = append(args, utcTimestampText(params.After))
+		whereClauses = append(whereClauses, listMessageTimeKey+" > ?")
+		args = append(args, utcTimestampText(params.After)[:29])
 	}
 	if !params.Before.IsZero() {
-		whereClauses = append(whereClauses, "messages.timestamp < ?")
-		args = append(args, utcTimestampText(params.Before))
+		whereClauses = append(whereClauses, listMessageTimeKey+" < ?")
+		args = append(args, utcTimestampText(params.Before)[:29])
 	}
 	if params.SenderPhone != "" {
 		whereClauses = append(whereClauses, "messages.sender = ?")
@@ -91,8 +91,8 @@ func (s *Store) ListMessagesPage(ctx context.Context, params ListMessagesParams)
 		// the cursor position, with the message ID breaking timestamp ties so
 		// rows sharing a timestamp are neither repeated nor skipped.
 		whereClauses = append(whereClauses,
-			"("+listMessageTimeKey+" < "+cursorTimeParam+" OR ("+listMessageTimeKey+" = "+cursorTimeParam+" AND messages.id < ?))")
-		args = append(args, ts, ts, id)
+			"("+listMessageTimeKey+" < ? OR ("+listMessageTimeKey+" = ? AND messages.id < ?))")
+		args = append(args, utcTimestampText(ts)[:29], utcTimestampText(ts)[:29], id)
 	}
 
 	var b strings.Builder
@@ -570,16 +570,9 @@ func setRevoked(m *Message, revokedAt sql.NullTime) {
 }
 
 // listMessageTimeKey normalises a stored timestamp into a fixed-width UTC
-// millisecond key through strftime. Rows written by the driver (RFC3339 text
-// with a zone offset) and legacy rows inserted as bare "2006-01-02 15:04:05"
-// text are not compared consistently as raw text, so both the ordering and the
-// cursor predicate go through this key. Millisecond resolution plus the
-// message ID keeps the total order deterministic.
-const listMessageTimeKey = "strftime('%Y-%m-%d %H:%M:%f', messages.timestamp)"
-
-// cursorTimeParam is listMessageTimeKey applied to a bound cursor timestamp,
-// so the cursor key is computed by the same code as every row key.
-const cursorTimeParam = "strftime('%Y-%m-%d %H:%M:%f', ?)"
+// nanosecond key. Canonical rows already carry nine fractional digits; legacy
+// bare rows receive zero fractional digits through strftime.
+const listMessageTimeKey = "CASE WHEN length(messages.timestamp) >= 29 AND substr(messages.timestamp, 20, 1) = '.' THEN substr(messages.timestamp, 1, 29) ELSE strftime('%Y-%m-%d %H:%M:%S.000000000', messages.timestamp) END"
 
 // encodeCursor returns an opaque continuation cursor for the last message
 // returned on a page: its timestamp plus the message ID as the deterministic

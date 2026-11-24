@@ -40,6 +40,37 @@ func sameIDs(got, want []string) bool {
 	return strings.Join(got, ",") == strings.Join(want, ",")
 }
 
+func TestListMessagesPage_PreservesNanosecondOrdering(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	base := time.Date(2026, 7, 1, 9, 0, 0, 123000000, time.UTC)
+	storeCursorMsg(t, s, "nano-a", "older nanosecond", base)
+	storeCursorMsg(t, s, "nano-b", "newer nanosecond", base.Add(456*time.Nanosecond))
+
+	msgs, cursor, err := s.ListMessagesPage(ctx, ListMessagesParams{
+		ChatJID: cursorChat, Limit: 1, IncludeContext: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sameIDs(idsOf(msgs), []string{"nano-b"}) {
+		t.Fatalf("first nanosecond page = %v, want nano-b", idsOf(msgs))
+	}
+	if cursor == "" {
+		t.Fatal("expected continuation cursor")
+	}
+
+	msgs, _, err = s.ListMessagesPage(ctx, ListMessagesParams{
+		ChatJID: cursorChat, Limit: 1, Cursor: cursor, IncludeContext: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sameIDs(idsOf(msgs), []string{"nano-a"}) {
+		t.Fatalf("second nanosecond page = %v, want nano-a", idsOf(msgs))
+	}
+}
+
 // walkCursors pages through the chat with limit messages per page until the
 // cursor runs out, returning every message ID seen in order. It checks that no
 // page exceeds the limit and that every cursor handed back decodes.
