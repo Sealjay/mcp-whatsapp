@@ -178,7 +178,11 @@ func (c *Client) handleMessage(msg *events.Message) {
 		msg.Message,
 	)
 
-	name := c.GetChatName(msg.Info.Chat, nm.chatJID, nil, nm.msg.Sender)
+	chatNameJID := msg.Info.Chat
+	if normalized, err := types.ParseJID(nm.chatJID); err == nil {
+		chatNameJID = normalized
+	}
+	name := c.GetChatName(chatNameJID, nm.chatJID, nil, nm.msg.Sender)
 
 	if err := c.store.StoreChat(nm.chatJID, name, msg.Info.Timestamp); err != nil {
 		c.log.Warnf("Failed to store chat: %v", err)
@@ -582,8 +586,9 @@ func (c *Client) GetChatName(jid types.JID, chatJID string, conversation *waHist
 }
 
 // resolveChatNameFallback looks up a chat's name via GetGroupInfo (for
-// groups) or the contact store (for DMs), falling back to sender (if given)
-// and finally jid.User. This is the shared tail of GetChatName's group and
+// groups) or the contact store (for DMs), then finally jid.User. Direct chats
+// never fall back to the sender because sender may be the paired account.
+// This is the shared tail of GetChatName's group and
 // contact branches, also used directly by persistSent (which has no
 // conversation metadata to check first).
 func (c *Client) resolveChatNameFallback(ctx context.Context, jid types.JID, sender string) string {
@@ -593,11 +598,16 @@ func (c *Client) resolveChatNameFallback(ctx context.Context, jid types.JID, sen
 		}
 		return "Group " + jid.User
 	}
-	if contact, err := c.waClient().Store.Contacts.GetContact(ctx, jid); err == nil && contact.FullName != "" {
-		return contact.FullName
+	if name := c.store.ContactName(jid.String()); name != "" {
+		return name
 	}
-	if sender != "" {
-		return sender
+	if contact, err := c.waClient().Store.Contacts.GetContact(ctx, jid); err == nil {
+		if contact.FullName != "" {
+			return contact.FullName
+		}
+		if contact.FirstName != "" {
+			return contact.FirstName
+		}
 	}
 	return jid.User
 }

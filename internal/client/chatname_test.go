@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"database/sql"
 	"path/filepath"
 	"testing"
@@ -47,6 +48,20 @@ func newTestStoreWithLIDMap(t *testing.T, lidMap map[string]string) *store.Store
 		waDB.Close()
 		t.Fatalf("create lid map: %v", err)
 	}
+	if _, err := waDB.Exec(`CREATE TABLE IF NOT EXISTS whatsmeow_contacts (
+		our_jid TEXT, their_jid TEXT PRIMARY KEY, first_name TEXT,
+		full_name TEXT, push_name TEXT, business_name TEXT
+	)`); err != nil {
+		waDB.Close()
+		t.Fatalf("create contacts: %v", err)
+	}
+	if _, err := waDB.Exec(`INSERT OR REPLACE INTO whatsmeow_contacts
+		(our_jid, their_jid, first_name, full_name, push_name, business_name)
+		VALUES ('447700000009@s.whatsapp.net', '919900000000@s.whatsapp.net',
+		        'Jane', 'Jane Smith Delhi', 'Jane S', '')`); err != nil {
+		waDB.Close()
+		t.Fatalf("seed contact: %v", err)
+	}
 	for lid, pn := range lidMap {
 		if _, err := waDB.Exec(`INSERT OR REPLACE INTO whatsmeow_lid_map (lid, pn) VALUES (?, ?)`, lid, pn); err != nil {
 			waDB.Close()
@@ -79,6 +94,17 @@ func TestGetChatName_UsesExistingName(t *testing.T) {
 	got := c.GetChatName(jid, jidStr, nil, "")
 	if got != "Alice" {
 		t.Fatalf("GetChatName = %q, want \"Alice\"", got)
+	}
+}
+
+func TestResolveChatNameFallback_NeverUsesOwnSender(t *testing.T) {
+	s := newTestStoreWithLIDMap(t, nil)
+	c := newClientWithStore(t, s)
+
+	jid := types.NewJID("919900000000", types.DefaultUserServer)
+	got := c.resolveChatNameFallback(context.Background(), jid, "447700000009")
+	if got != "Jane Smith Delhi" {
+		t.Fatalf("direct chat fallback = %q, want address-book name", got)
 	}
 }
 

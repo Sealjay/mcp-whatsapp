@@ -327,6 +327,45 @@ func TestGetSenderName_AddressBook(t *testing.T) {
 	}
 }
 
+func TestGetSenderName_AddressBookWithBareSender(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	for _, sender := range []string{"919900000000", "919900000000:2", "919900000000:2@s.whatsapp.net"} {
+		if got := s.GetSenderName(ctx, sender); got != "Jane Smith Delhi" {
+			t.Fatalf("sender %q address-book name = %q, want Jane Smith Delhi", sender, got)
+		}
+	}
+}
+
+func TestRepairOwnNumberChatNames(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	if _, err := s.whatsmeowDB.Exec(`CREATE TABLE IF NOT EXISTS whatsmeow_device (jid TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.whatsmeowDB.Exec(`INSERT INTO whatsmeow_device (jid) VALUES ('447700000009:2@s.whatsapp.net')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.StoreChat("447700000009@s.whatsapp.net", "447700000009:2@s.whatsapp.net", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.StoreChat("919900000000@s.whatsapp.net", "447700000009:2@s.whatsapp.net", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.RepairOwnNumberChatNames(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.FindChatName("447700000009@s.whatsapp.net"); got != "447700000009:2@s.whatsapp.net" {
+		t.Fatalf("notes-to-self chat changed: %q", got)
+	}
+	if got := s.FindChatName("919900000000@s.whatsapp.net"); got != "Jane Smith Delhi" {
+		t.Fatalf("corrupted direct chat name = %q, want Jane Smith Delhi", got)
+	}
+}
+
 func TestContactName_ResolvesLID(t *testing.T) {
 	s := openTestStore(t)
 
