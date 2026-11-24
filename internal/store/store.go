@@ -150,7 +150,12 @@ func Open(dir string) (*Store, error) {
 		return nil, fmt.Errorf("chmod whatsapp.db: %w", err)
 	}
 
-	return &Store{db: db, whatsmeowDB: waDB, dir: dir}, nil
+	s := &Store{db: db, whatsmeowDB: waDB, dir: dir}
+	if err := s.RepairOwnNumberChatNames(context.Background()); err != nil {
+		s.Close()
+		return nil, fmt.Errorf("repair own-number chat names: %w", err)
+	}
+	return s, nil
 }
 
 // DB returns the underlying message database handle (tests only).

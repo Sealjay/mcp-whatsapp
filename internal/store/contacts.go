@@ -1,6 +1,10 @@
 package store
 
-import "database/sql"
+import (
+	"context"
+	"database/sql"
+	"strings"
+)
 
 // contactNameExpr coalesces the whatsmeow_contacts name columns in preference
 // order: the saved address-book name first, then push name, first name, and
@@ -15,6 +19,14 @@ func (s *Store) ContactName(jid string) string {
 		return ""
 	}
 	jid = s.ResolveLIDToJID(jid)
+	jidUser := strings.Split(jidUser(jid), ":")[0]
+	if strings.HasSuffix(jid, "@lid") {
+		return ""
+	}
+	if strings.Contains(jid, "@") && !strings.HasSuffix(jid, "@s.whatsapp.net") {
+		return ""
+	}
+	jid = jidUser + "@s.whatsapp.net"
 	var name sql.NullString
 	err := s.whatsmeowDB.QueryRow(
 		`SELECT `+contactNameExpr+` FROM whatsmeow_contacts WHERE their_jid = ?`, jid).Scan(&name)
@@ -22,6 +34,69 @@ func (s *Store) ContactName(jid string) string {
 		return ""
 	}
 	return name.String
+}
+
+// RepairOwnNumberChatNames replaces direct-chat names that were accidentally
+// persisted as the paired account's own phone number. It leaves groups and the
+// notes-to-self chat untouched.
+func (s *Store) RepairOwnNumberChatNames(ctx context.Context) error {
+	if s.db == nil || s.whatsmeowDB == nil {
+		return nil
+	}
+	var ownJID string
+	err := s.whatsmeowDB.QueryRowContext(ctx, "SELECT jid FROM whatsmeow_device LIMIT 1").Scan(&ownJID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		return nil
+	}
+	ownPhone := strings.Split(jidUser(ownJID), ":")[0]
+	if ownPhone == "" {
+		return nil
+	}
+	ownFullJID := ownPhone + "@s.whatsapp.net"
+
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT jid, name FROM chats WHERE jid LIKE '%@s.whatsapp.net'")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	type repair struct {
+		jid  string
+		name string
+	}
+	var repairs []repair
+	for rows.Next() {
+		var jid, name string
+		if err := rows.Scan(&jid, &name); err != nil {
+			return err
+		}
+		if strings.Split(jidUser(jid), ":")[0] == ownPhone {
+			continue
+		}
+		namePhone := strings.Split(jidUser(name), ":")[0]
+		if namePhone != ownPhone && name != ownFullJID {
+			continue
+		}
+		repaired := s.ContactName(jid)
+		if repaired == "" {
+			repaired = jidUser(jid)
+		}
+		repairs = append(repairs, repair{jid: jid, name: repaired})
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, r := range repairs {
+		if _, err := s.db.ExecContext(ctx,
+			"UPDATE chats SET name = ? WHERE jid = ?", r.name, r.jid); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // searchContactNames returns address-book contacts whose name or JID matches

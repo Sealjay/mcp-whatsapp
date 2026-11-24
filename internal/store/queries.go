@@ -327,7 +327,7 @@ func (s *Store) GetSenderName(ctx context.Context, senderJID string) string {
 		return name
 	}
 
-	phonePart := jidUser(senderJID)
+	phonePart := strings.Split(jidUser(senderJID), ":")[0]
 
 	// Prefer an exact direct-chat match on phone + @s.whatsapp.net before
 	// falling back to a LIKE — the LIKE can cross-match unrelated rows.
