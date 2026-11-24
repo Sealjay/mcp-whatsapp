@@ -171,25 +171,32 @@ func TestOutgoingDocumentMessageFileName(t *testing.T) {
 			wantMIME:  "application/pdf",
 		},
 		{
-			name:      "degenerate basename keeps the raw title",
+			name:      "degenerate basename uses the fallback for title and filename",
 			path:      ".",
-			wantTitle: ".",
+			wantTitle: "",
 			wantMIME:  "application/octet-stream",
 			fallback:  true,
 		},
 		{
-			name:      "parent basename keeps the raw title",
+			name:      "parent basename uses the fallback for title and filename",
 			path:      "..",
-			wantTitle: "..",
+			wantTitle: "",
 			wantMIME:  "application/octet-stream",
 			fallback:  true,
 		},
 		{
-			name:      "null byte keeps the raw title",
+			name:      "null byte uses the fallback for title and filename",
 			path:      "evil\x00name.pdf",
-			wantTitle: filepath.Base("evil\x00name.pdf"),
+			wantTitle: "",
 			wantMIME:  "application/pdf",
 			fallback:  true,
+		},
+		{
+			name:      "control separators are sanitised consistently",
+			path:      "folder\\evil\nname.pdf",
+			wantTitle: "folder_evil_name.pdf",
+			wantFile:  "folder_evil_name.pdf",
+			wantMIME:  "application/pdf",
 		},
 	}
 
@@ -200,7 +207,11 @@ func TestOutgoingDocumentMessageFileName(t *testing.T) {
 				t.Fatalf("mediaTypeFromExt(%q) mime = %q, want %q", tc.path, mimeType, tc.wantMIME)
 			}
 			doc := outgoingDocumentMessage(tc.path, tc.caption, mimeType, uploaded)
-			if doc.GetTitle() != tc.wantTitle {
+			if tc.fallback {
+				if doc.GetTitle() != doc.GetFileName() {
+					t.Errorf("title = %q, filename = %q, want one consistent sanitised name", doc.GetTitle(), doc.GetFileName())
+				}
+			} else if doc.GetTitle() != tc.wantTitle {
 				t.Errorf("title = %q, want %q", doc.GetTitle(), tc.wantTitle)
 			}
 			if doc.GetMimetype() != mimeType {
@@ -209,9 +220,6 @@ func TestOutgoingDocumentMessageFileName(t *testing.T) {
 			if tc.fallback {
 				if !strings.HasPrefix(doc.GetFileName(), "document_") {
 					t.Errorf("filename = %q, want sanitised document_* fallback", doc.GetFileName())
-				}
-				if doc.GetFileName() == doc.GetTitle() {
-					t.Errorf("filename = %q, want it sanitised away from the raw title", doc.GetFileName())
 				}
 			} else if doc.GetFileName() != tc.wantFile {
 				t.Errorf("filename = %q, want %q", doc.GetFileName(), tc.wantFile)

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"mime"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -266,9 +265,10 @@ func (c *Client) attachMedia(ctx context.Context, msg *waProto.Message, mediaPat
 // chose. FileName is the sanitised source filename, which is what recipients
 // display and save.
 func outgoingDocumentMessage(mediaPath, caption, mimeType string, uploaded whatsmeow.UploadResponse) *waProto.DocumentMessage {
+	filename := security.SafeFilename(mediaPath)
 	return &waProto.DocumentMessage{
-		Title:         proto.String(filepath.Base(mediaPath)),
-		FileName:      proto.String(security.SafeFilename(mediaPath)),
+		Title:         proto.String(filename),
+		FileName:      proto.String(filename),
 		Caption:       proto.String(caption),
 		Mimetype:      proto.String(mimeType),
 		URL:           &uploaded.URL,

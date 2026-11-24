@@ -218,6 +218,8 @@ func TestSafeFilename(t *testing.T) {
 		{"plain", "photo.jpg", "photo.jpg"},
 		{"path strips to base", "a/b/c.txt", "c.txt"},
 		{"traversal strips to leaf", "../etc/passwd", "passwd"},
+		{"cross-platform separators", `folder\evil\name.pdf`, "folder_evil_name.pdf"},
+		{"control characters", "evil\nname.pdf", "evil_name.pdf"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

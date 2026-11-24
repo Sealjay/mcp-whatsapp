@@ -108,7 +108,16 @@ func SafeFilename(raw string) string {
 	case "", ".", "..", "/":
 		return fallbackFilename()
 	}
-	return base
+	sanitised := strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f || r == '/' || r == '\\' {
+			return '_'
+		}
+		return r
+	}, base)
+	if strings.TrimSpace(sanitised) == "" {
+		return fallbackFilename()
+	}
+	return sanitised
 }
 
 func fallbackFilename() string {
