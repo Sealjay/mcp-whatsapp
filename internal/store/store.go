@@ -483,67 +483,115 @@ func migrateSchema(db *sql.DB) error {
 	if err := rekeyDevicePollVoters(db); err != nil {
 		return err
 	}
-	return normalizeStoredTimestamps(db)
+	return normalizeStoredTimestampPrecision(db)
 }
 
-// normalizeStoredTimestamps migrates legacy offset-bearing TEXT timestamps to
-// a single UTC representation. It is idempotent; strftime parses existing UTC
-// values without changing the instant.
-func normalizeStoredTimestamps(db *sql.DB) error {
-	tables := []struct {
-		table  string
-		column string
-	}{
-		{"messages", "timestamp"},
-		{"messages", "edited_at"},
-		{"messages", "revoked_at"},
-		{"chats", "last_message_time"},
-		{"poll_votes", "timestamp"},
-		{"pending_poll_votes", "timestamp"},
-		{"pending_poll_votes", "received_at"},
+func normalizeStoredTimestampPrecision(db *sql.DB) error {
+	if err := normalizeTableTimestamp(db, "messages", "id", "timestamp"); err != nil {
+		return err
 	}
-	for _, v := range tables {
-		var exists int
-		if err := db.QueryRow(
-			"SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?", v.table,
-		).Scan(&exists); err != nil {
-			return fmt.Errorf("check table %s: %w", v.table, err)
+	if err := normalizeTableTimestamp(db, "messages", "id", "edited_at"); err != nil {
+		return err
+	}
+	if err := normalizeTableTimestamp(db, "messages", "id", "revoked_at"); err != nil {
+		return err
+	}
+	if err := normalizeTableTimestamp(db, "chats", "jid", "last_message_time"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func normalizeTableTimestamp(db *sql.DB, table, keyColumn, timestampColumn string) error {
+	var exists int
+	if err := db.QueryRow(
+		"SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?", table,
+	).Scan(&exists); err != nil {
+		return fmt.Errorf("check table %s: %w", table, err)
+	}
+	if exists == 0 {
+		return nil
+	}
+
+	columnRows, err := db.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return fmt.Errorf("pragma table_info(%s): %w", table, err)
+	}
+	columnExists := false
+	for columnRows.Next() {
+		var cid, notnull, primaryKey int
+		var name, ctype string
+		var dflt sql.NullString
+		if err := columnRows.Scan(&cid, &name, &ctype, &notnull, &dflt, &primaryKey); err != nil {
+			columnRows.Close()
+			return fmt.Errorf("scan table_info(%s): %w", table, err)
 		}
-		if exists == 0 {
+		if name == timestampColumn {
+			columnExists = true
+			break
+		}
+	}
+	columnRows.Close()
+	if !columnExists {
+		return nil
+	}
+
+	rows, err := db.Query(fmt.Sprintf(
+		"SELECT %s, CAST(%s AS TEXT) FROM %s WHERE %s IS NOT NULL",
+		keyColumn, timestampColumn, table, timestampColumn,
+	))
+	if err != nil {
+		return fmt.Errorf("read %s.%s: %w", table, timestampColumn, err)
+	}
+	defer rows.Close()
+
+	type update struct {
+		key  string
+		text string
+	}
+	var updates []update
+	formats := []string{
+		time.RFC3339Nano,
+		"2006-01-02 15:04:05.999999999-07:00",
+		"2006-01-02 15:04:05.999999999",
+		"2006-01-02 15:04:05",
+		"2006-01-02T15:04:05",
+		"2006-01-02",
+	}
+	for rows.Next() {
+		var key string
+		var raw sql.NullString
+		if err := rows.Scan(&key, &raw); err != nil {
+			return fmt.Errorf("scan %s.%s: %w", table, timestampColumn, err)
+		}
+		if !raw.Valid || raw.String == "" {
 			continue
 		}
-		columnRows, err := db.Query("PRAGMA table_info(" + v.table + ")")
-		if err != nil {
-			return fmt.Errorf("pragma table_info(%s): %w", v.table, err)
-		}
-		columnExists := false
-		for columnRows.Next() {
-			var cid, notnull, primaryKey int
-			var name, ctype string
-			var dflt sql.NullString
-			if err := columnRows.Scan(&cid, &name, &ctype, &notnull, &dflt, &primaryKey); err != nil {
-				columnRows.Close()
-				return fmt.Errorf("scan table_info(%s): %w", v.table, err)
-			}
-			if name == v.column {
-				columnExists = true
+		var parsed time.Time
+		var parsedOK bool
+		for _, layout := range formats {
+			if t, err := time.Parse(layout, raw.String); err == nil {
+				parsed = t.UTC()
+				parsedOK = true
 				break
 			}
 		}
-		if err := columnRows.Err(); err != nil {
-			columnRows.Close()
-			return fmt.Errorf("iterate table_info(%s): %w", v.table, err)
+		if parsedOK {
+			updates = append(updates, update{
+				key:  key,
+				text: parsed.Format("2006-01-02 15:04:05.999999999-07:00"),
+			})
 		}
-		columnRows.Close()
-		if !columnExists {
-			continue
-		}
-		query := fmt.Sprintf(
-			"UPDATE %s SET %s = strftime('%%Y-%%m-%%d %%H:%%M:%%f+00:00', %s) WHERE %s IS NOT NULL",
-			v.table, v.column, v.column, v.column,
-		)
-		if _, err := db.Exec(query); err != nil {
-			return fmt.Errorf("normalize %s.%s: %w", v.table, v.column, err)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate %s.%s: %w", table, timestampColumn, err)
+	}
+	rows.Close()
+
+	for _, u := range updates {
+		query := fmt.Sprintf("UPDATE %s SET %s=? WHERE %s=?", table, timestampColumn, keyColumn)
+		if _, err := db.Exec(query, u.text, u.key); err != nil {
+			return fmt.Errorf("normalize %s.%s: %w", table, timestampColumn, err)
 		}
 	}
 	return nil

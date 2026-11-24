@@ -532,6 +532,28 @@ func TestGetMessageAtOrBefore(t *testing.T) {
 	}
 }
 
+func TestNormalizeStoredTimestampPrecision(t *testing.T) {
+	s := openTestStore(t)
+	_, err := s.db.Exec(
+		`INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me)
+		 VALUES ('nano-1', '447700000001@s.whatsapp.net', '447700000002',
+		         'nanosecond test', '2026-11-19 11:55:04.123456789-03:00', 0)`,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := normalizeStoredTimestampPrecision(s.db); err != nil {
+		t.Fatal(err)
+	}
+	var raw string
+	if err := s.db.QueryRow("SELECT CAST(timestamp AS TEXT) FROM messages WHERE id='nano-1'").Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(raw, ".123456789+00:00") {
+		t.Fatalf("normalized timestamp = %q, want nanosecond UTC precision", raw)
+	}
+}
+
 func TestListMessagesTimezoneOffsetBounds(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
