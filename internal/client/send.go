@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"mime"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -17,6 +16,7 @@ import (
 
 	"github.com/sealjay/mcp-whatsapp/internal/media"
 	"github.com/sealjay/mcp-whatsapp/internal/ratelimit"
+	"github.com/sealjay/mcp-whatsapp/internal/security"
 	"github.com/sealjay/mcp-whatsapp/internal/store"
 )
 
@@ -255,19 +255,29 @@ func (c *Client) attachMedia(ctx context.Context, msg *waProto.Message, mediaPat
 		}
 	case whatsmeow.MediaDocument:
 		// View-once on documents is not supported by WhatsApp clients; silently ignored.
-		msg.DocumentMessage = &waProto.DocumentMessage{
-			Title:         proto.String(filepath.Base(mediaPath)),
-			Caption:       proto.String(caption),
-			Mimetype:      proto.String(mimeType),
-			URL:           &resp.URL,
-			DirectPath:    &resp.DirectPath,
-			MediaKey:      resp.MediaKey,
-			FileEncSHA256: resp.FileEncSHA256,
-			FileSHA256:    resp.FileSHA256,
-			FileLength:    &resp.FileLength,
-		}
+		msg.DocumentMessage = outgoingDocumentMessage(mediaPath, caption, mimeType, resp)
 	}
 	return nil
+}
+
+// outgoingDocumentMessage builds the document attached to an outgoing message.
+// Title stays the source basename and Mimetype is the type the caller already
+// chose. FileName is the sanitised source filename, which is what recipients
+// display and save.
+func outgoingDocumentMessage(mediaPath, caption, mimeType string, uploaded whatsmeow.UploadResponse) *waProto.DocumentMessage {
+	filename := security.SafeFilename(mediaPath)
+	return &waProto.DocumentMessage{
+		Title:         proto.String(filename),
+		FileName:      proto.String(filename),
+		Caption:       proto.String(caption),
+		Mimetype:      proto.String(mimeType),
+		URL:           &uploaded.URL,
+		DirectPath:    &uploaded.DirectPath,
+		MediaKey:      uploaded.MediaKey,
+		FileEncSHA256: uploaded.FileEncSHA256,
+		FileSHA256:    uploaded.FileSHA256,
+		FileLength:    &uploaded.FileLength,
+	}
 }
 
 // mediaTypeFromExt maps a file extension to a whatsmeow MediaType + mime type.
