@@ -177,6 +177,7 @@ func (s *Store) Close() error {
 
 // StoreChat upserts a chat row.
 func (s *Store) StoreChat(jid, name string, lastMessageTime time.Time) error {
+	lastMessageTime = lastMessageTime.UTC()
 	_, err := s.db.Exec(
 		"INSERT OR REPLACE INTO chats (jid, name, last_message_time) VALUES (?, ?, ?)",
 		jid, name, lastMessageTime,
@@ -193,6 +194,7 @@ func (s *Store) StoreMessage(ctx context.Context, m Message, mediaKey, fileSHA25
 	if m.Content == "" && m.MediaType == "" {
 		return nil
 	}
+	m.Timestamp = m.Timestamp.UTC()
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO messages
 		(id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, direct_path, media_key, file_sha256, file_enc_sha256, file_length)
@@ -278,7 +280,7 @@ func (s *Store) GetNewestMessage(chatJID string) (id string, ts time.Time, isFro
 		SELECT id, timestamp, is_from_me
 		FROM messages
 		WHERE chat_jid = ?
-		ORDER BY timestamp DESC
+		ORDER BY strftime('%Y-%m-%d %H:%M:%f', timestamp) DESC, id DESC
 		LIMIT 1`, chatJID).Scan(&id, &ts, &isFromMe)
 	return
 }
@@ -293,7 +295,7 @@ func (s *Store) GetOldestMessage(chatJID string) (id string, ts time.Time, isFro
 		SELECT id, timestamp, is_from_me
 		FROM messages
 		WHERE chat_jid = ?
-		ORDER BY timestamp ASC
+		ORDER BY strftime('%Y-%m-%d %H:%M:%f', timestamp) ASC, id ASC
 		LIMIT 1`, chatJID).Scan(&id, &ts, &isFromMe)
 	return
 }
@@ -307,8 +309,8 @@ func (s *Store) GetMessageAtOrBefore(chatJID string, before time.Time) (id strin
 	err = s.db.QueryRow(`
 		SELECT id, timestamp, is_from_me
 		FROM messages
-		WHERE chat_jid = ? AND timestamp <= ?
-		ORDER BY timestamp DESC
+		WHERE chat_jid = ? AND strftime('%Y-%m-%d %H:%M:%f', timestamp) <= strftime('%Y-%m-%d %H:%M:%f', ?)
+		ORDER BY strftime('%Y-%m-%d %H:%M:%f', timestamp) DESC, id DESC
 		LIMIT 1`, chatJID, before).Scan(&id, &ts, &isFromMe)
 	return
 }
@@ -349,7 +351,7 @@ func (s *Store) RecentIncomingMessages(ctx context.Context, chatJID string, limi
 		SELECT id, sender
 		FROM messages
 		WHERE chat_jid = ? AND is_from_me = 0
-		ORDER BY timestamp DESC
+		ORDER BY strftime('%Y-%m-%d %H:%M:%f', timestamp) DESC, id DESC
 		LIMIT ?`, chatJID, limit)
 	if err != nil {
 		return nil, nil, err
@@ -478,7 +480,73 @@ func migrateSchema(db *sql.DB) error {
 			return fmt.Errorf("add column revoked_at: %w", err)
 		}
 	}
-	return rekeyDevicePollVoters(db)
+	if err := rekeyDevicePollVoters(db); err != nil {
+		return err
+	}
+	return normalizeStoredTimestamps(db)
+}
+
+// normalizeStoredTimestamps migrates legacy offset-bearing TEXT timestamps to
+// a single UTC representation. It is idempotent; strftime parses existing UTC
+// values without changing the instant.
+func normalizeStoredTimestamps(db *sql.DB) error {
+	tables := []struct {
+		table  string
+		column string
+	}{
+		{"messages", "timestamp"},
+		{"messages", "edited_at"},
+		{"messages", "revoked_at"},
+		{"chats", "last_message_time"},
+		{"poll_votes", "timestamp"},
+		{"pending_poll_votes", "timestamp"},
+		{"pending_poll_votes", "received_at"},
+	}
+	for _, v := range tables {
+		var exists int
+		if err := db.QueryRow(
+			"SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?", v.table,
+		).Scan(&exists); err != nil {
+			return fmt.Errorf("check table %s: %w", v.table, err)
+		}
+		if exists == 0 {
+			continue
+		}
+		columnRows, err := db.Query("PRAGMA table_info(" + v.table + ")")
+		if err != nil {
+			return fmt.Errorf("pragma table_info(%s): %w", v.table, err)
+		}
+		columnExists := false
+		for columnRows.Next() {
+			var cid, notnull, primaryKey int
+			var name, ctype string
+			var dflt sql.NullString
+			if err := columnRows.Scan(&cid, &name, &ctype, &notnull, &dflt, &primaryKey); err != nil {
+				columnRows.Close()
+				return fmt.Errorf("scan table_info(%s): %w", v.table, err)
+			}
+			if name == v.column {
+				columnExists = true
+				break
+			}
+		}
+		if err := columnRows.Err(); err != nil {
+			columnRows.Close()
+			return fmt.Errorf("iterate table_info(%s): %w", v.table, err)
+		}
+		columnRows.Close()
+		if !columnExists {
+			continue
+		}
+		query := fmt.Sprintf(
+			"UPDATE %s SET %s = strftime('%%Y-%%m-%%d %%H:%%M:%%f+00:00', %s) WHERE %s IS NOT NULL",
+			v.table, v.column, v.column, v.column,
+		)
+		if _, err := db.Exec(query); err != nil {
+			return fmt.Errorf("normalize %s.%s: %w", v.table, v.column, err)
+		}
+	}
+	return nil
 }
 
 // devicePollVoter matches voter_jid values carrying a device suffix
@@ -512,7 +580,7 @@ func rekeyDevicePollVoters(db *sql.DB) error {
 		 ON CONFLICT (poll_message_id, poll_chat_jid, voter_jid) DO UPDATE SET
 		     selected_options_json = excluded.selected_options_json,
 		     timestamp = excluded.timestamp
-		 WHERE excluded.timestamp >= poll_votes.timestamp`); err != nil {
+		 WHERE strftime('%Y-%m-%d %H:%M:%f', excluded.timestamp) >= strftime('%Y-%m-%d %H:%M:%f', poll_votes.timestamp)`); err != nil {
 		return fmt.Errorf("rekey device poll voters: %w", err)
 	}
 	if _, err := tx.Exec(`DELETE FROM poll_votes WHERE ` + devicePollVoter); err != nil {

@@ -81,6 +81,7 @@ func (s *Store) StorePollVote(ctx context.Context, pollMessageID, pollChatJID, v
 	if pollMessageID == "" || pollChatJID == "" || voterJID == "" {
 		return fmt.Errorf("store poll vote: poll_message_id, poll_chat_jid, voter_jid required")
 	}
+	timestamp = timestamp.UTC()
 	payload, err := json.Marshal(selected)
 	if err != nil {
 		return fmt.Errorf("marshal selected options: %w", err)
@@ -176,10 +177,9 @@ func (s *Store) QueuePendingPollVote(ctx context.Context, vote PendingPollVote) 
 		return nil, 0, fmt.Errorf("queue poll vote: payload must be between 1 and 16384 bytes")
 	}
 	vote.ReceivedAt = time.Now().UTC()
-	// Keep the timestamp's existing offset: poll_votes compares SQLite time
-	// strings, and live/attached history votes retain their parsed offset.
+	vote.Timestamp = vote.Timestamp.UTC()
 	if vote.Timestamp.After(vote.ReceivedAt) {
-		vote.Timestamp = vote.ReceivedAt.In(vote.Timestamp.Location())
+		vote.Timestamp = vote.ReceivedAt
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
